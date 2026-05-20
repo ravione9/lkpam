@@ -116,6 +116,13 @@
     <input id="p" type="password" placeholder="password" value="admin"/>
     <input id="otp" placeholder="MFA code (if enrolled)" style="display:none"/>
     <button class="primary" id="loginBtn">Sign in</button>
+    <div id="ssoOptions" style="display:none">
+      <div style="text-align:center;color:var(--muted);font-size:11px;margin:14px 0 10px;letter-spacing:0.06em">— OR —</div>
+      <button id="ssoBtn" style="width:100%;padding:10px;background:#fff;color:#1a1d23;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:10px">
+        <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C12.955 4 4 12.955 4 24s8.955 20 20 20s20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="m6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4C16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002l6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
+        <span id="ssoBtnLabel">Sign in with Google</span>
+      </button>
+    </div>
     <div class="hint">Default credentials on first run: <b>admin / admin</b></div>
   </div>
 </div>
@@ -131,18 +138,18 @@
       <button data-tab="dash" class="active"><span class="ico">▦</span> Dashboard</button>
       <div class="section-title">Access Control</div>
       <button data-tab="targets"><span class="ico">▢</span> Targets</button>
-      <button data-tab="users"><span class="ico">○</span> Users</button>
-      <button data-tab="groups"><span class="ico">◇</span> Groups</button>
-      <button data-tab="policies"><span class="ico">△</span> Policies</button>
+      <button data-tab="users" data-admin><span class="ico">○</span> Users</button>
+      <button data-tab="groups" data-admin><span class="ico">◇</span> Groups</button>
+      <button data-tab="policies" data-admin><span class="ico">△</span> Policies</button>
       <button data-tab="requests"><span class="ico">✦</span> Access Requests</button>
-      <div class="section-title">Secrets &amp; Sessions</div>
-      <button data-tab="secrets"><span class="ico">⚿</span> Secrets</button>
+      <div class="section-title" data-admin>Secrets &amp; Sessions</div>
+      <button data-tab="secrets" data-admin><span class="ico">⚿</span> Secrets</button>
       <button data-tab="sessions"><span class="ico">▷</span> Sessions</button>
       <div class="section-title">Compliance</div>
-      <button data-tab="audit"><span class="ico">≡</span> Audit Log</button>
-      <button data-tab="ca"><span class="ico">★</span> SSH CA</button>
-      <div class="section-title">System</div>
-      <button data-tab="settings"><span class="ico">⚙</span> Settings</button>
+      <button data-tab="audit" data-admin><span class="ico">≡</span> Audit Log</button>
+      <button data-tab="ca" data-admin><span class="ico">★</span> SSH CA</button>
+      <div class="section-title" data-admin>System</div>
+      <button data-tab="settings" data-admin><span class="ico">⚙</span> Settings</button>
     </nav>
   </aside>
 
@@ -426,6 +433,29 @@
           <span id="ldapStatus" class="muted"></span>
         </div>
 
+        <h4 style="margin-top:24px">SAML SSO (Google / Okta / Azure AD)</h4>
+        <p class="muted" style="font-size:12px;margin-top:0">After saving with Enabled = on, download the SP metadata and upload it to your IdP. Set the IdP ACS URL to <code id="samlACS">https://&lt;host&gt;/api/auth/saml/acs</code>.</p>
+        <div class="form-grid">
+          <label>Enabled</label><div><input type="checkbox" id="samlEnabled" style="width:auto"/></div>
+          <label>Portal root URL</label><input id="samlRootURL" placeholder="https://pam.corp.local"/>
+          <label>Entity ID (optional)</label><input id="samlEntityID" placeholder="defaults to {root}/api/auth/saml/metadata"/>
+          <label>IdP metadata XML</label><textarea id="samlIdPXML" placeholder="Paste the full IdP metadata XML downloaded from your IdP admin console" style="min-height:130px"></textarea>
+          <label>Email attribute</label><input id="samlEmailAttr" placeholder="email"/>
+          <label>Display-name attribute</label><input id="samlNameAttr" placeholder="displayName"/>
+          <label>Group attribute</label><input id="samlGroupAttr" placeholder="groups"/>
+          <label>Default role</label>
+          <select id="samlDefaultRole">
+            <option value="user">user</option><option value="viewer">viewer</option>
+            <option value="netops">netops</option><option value="secops">secops</option>
+            <option value="sysadmin">sysadmin</option>
+          </select>
+        </div>
+        <div class="row" style="margin-top:14px">
+          <button class="primary" id="samlSaveBtn">Save</button>
+          <a id="samlMetadataBtn" class="ghost" style="text-decoration:none;display:inline-block;padding:6px 10px;border:1px solid var(--border);border-radius:6px" target="_blank">Download SP metadata</a>
+          <span id="samlStatus" class="muted"></span>
+        </div>
+
         <h4 style="margin-top:24px">Multi-factor authentication</h4>
         <div class="form-grid">
           <label>Policy</label>
@@ -488,6 +518,21 @@ let cache = { targets: [], users: [], groups: [] };
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
+function isAdmin() { return currentUser && currentUser.role === "admin"; }
+
+// applyRoleUI hides admin-only nav, buttons, and form panels for non-admins.
+function applyRoleUI() {
+  const admin = isAdmin();
+  document.querySelectorAll("[data-admin]").forEach(el => {
+    el.style.display = admin ? "" : "none";
+  });
+  // Hide "+ Add" buttons for non-admins; they aren't allowed to mutate.
+  ["targetAddBtn","userAddBtn","groupAddBtn","policyAddBtn","secretAddBtn"].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.style.display = admin ? "" : "none";
+  });
+}
+
 const TAB_TITLES = {
   dash: "Dashboard", targets: "Targets", users: "Users", groups: "Groups",
   secrets: "Vault Secrets", policies: "Access Policies", requests: "Access Requests",
@@ -528,7 +573,12 @@ function tierLabel(t) {
 
 function fmtTime(unix) { return unix ? new Date(unix*1000).toLocaleString() : "—"; }
 
+const ADMIN_TABS = new Set(["users","groups","policies","secrets","audit","ca","settings"]);
+
 function showTab(name) {
+  // Non-admins are silently redirected to the dashboard if they try to open
+  // an admin tab via stale state.
+  if (!isAdmin() && ADMIN_TABS.has(name)) name = "dash";
   $$(".tab").forEach(el => el.style.display = "none");
   const tab = $("#tab-" + name);
   if (tab) tab.style.display = "block";
@@ -564,6 +614,7 @@ async function doLogin() {
     $("#login-wrap").style.display = "none";
     $("#app").style.display = "grid";
     $("#me").textContent = currentUser.username + " · " + currentUser.role + (currentUser.mfa_enabled ? " · MFA ✓" : "");
+    applyRoleUI();
     showTab("dash");
   } catch (e) { toast(e.message, "err"); }
 }
@@ -577,33 +628,41 @@ $$("aside nav button[data-tab]").forEach(b => b.onclick = () => showTab(b.datase
 
 // --- Dashboard ---
 async function loadDashboard() {
+  // Each call is independent — non-admins get 403 on /auth/users and /auth/groups
+  // but should still see their dashboard with target + session info.
+  const safe = p => p.catch(() => null);
   try {
     const [targets, users, groupsList, requests, sessions, audit] = await Promise.all([
-      api("/policy/targets"),
-      api("/auth/users"),
-      api("/auth/groups"),
-      api("/approval/requests/pending"),
-      api("/audit/sessions?limit=200"),
-      api("/audit/events?limit=300"),
+      safe(api("/policy/targets")),
+      safe(api("/auth/users")),
+      safe(api("/auth/groups")),
+      safe(api("/approval/requests/pending")),
+      safe(api("/audit/sessions?limit=200")),
+      safe(api("/audit/events?limit=300")),
     ]);
     cache.targets = targets || [];
     cache.users = users || [];
     cache.groups = groupsList || [];
     $("#stat-targets").textContent = (targets || []).length;
-    $("#stat-users").textContent = (users || []).length;
-    $("#stat-users-mfa").textContent = (users || []).filter(u => u.mfa_enabled).length + " with MFA";
-    $("#stat-groups").textContent = (groupsList || []).length;
-    $("#stat-requests").textContent = (requests || []).length;
+    $("#stat-users").textContent = users ? users.length : (isAdmin() ? "—" : "n/a");
+    $("#stat-users-mfa").textContent = users ? users.filter(u => u.mfa_enabled).length + " with MFA" : "";
+    $("#stat-groups").textContent = groupsList ? groupsList.length : (isAdmin() ? "—" : "n/a");
+    $("#stat-requests").textContent = requests ? requests.length : "—";
     const weekAgo = Math.floor(Date.now()/1000) - 7*86400;
     const recentSess = (sessions || []).filter(s => s.started_at >= weekAgo);
     $("#stat-sessions").textContent = recentSess.length;
 
-    // LDAP status
-    try {
-      const ldap = await api("/auth/settings/ldap");
-      $("#stat-ldap").textContent = ldap.enabled ? "Enabled" : "Disabled";
-      $("#stat-ldap-detail").textContent = ldap.enabled ? (ldap.url || "—") : "click Settings to configure";
-    } catch { $("#stat-ldap").textContent = "—"; }
+    // LDAP status (admin only)
+    if (isAdmin()) {
+      try {
+        const ldap = await api("/auth/settings/ldap");
+        $("#stat-ldap").textContent = ldap.enabled ? "Enabled" : "Disabled";
+        $("#stat-ldap-detail").textContent = ldap.enabled ? (ldap.url || "—") : "click Settings to configure";
+      } catch { $("#stat-ldap").textContent = "—"; }
+    } else {
+      $("#stat-ldap").textContent = "—";
+      $("#stat-ldap-detail").textContent = "admin only";
+    }
 
     const first = (targets || [])[0];
     $("#sshHint").textContent = first
@@ -666,15 +725,16 @@ async function loadTargets() {
       $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">No targets yet.</td></tr>`;
       return;
     }
+    const tActions = t => isAdmin()
+      ? `<button class="ghost" onclick="editTarget(${t.id})">Edit</button>
+         <button class="ghost danger" onclick="deleteTarget(${t.id})">Delete</button>`
+      : `<button class="ghost" onclick="requestForTarget(${t.id})">Request access</button>`;
     $("#targetRows").innerHTML = cache.targets.map(t => `
       <tr>
         <td><b>${esc(t.name)}</b></td><td>${esc(t.kind)}</td><td>${esc(t.host)}</td><td>${t.port}</td>
         <td><span class="pill">${tierLabel(t.tier)}</span></td>
         <td class="muted">${esc(t.tags)}</td>
-        <td class="actions">
-          <button class="ghost" onclick="editTarget(${t.id})">Edit</button>
-          <button class="ghost danger" onclick="deleteTarget(${t.id})">Delete</button>
-        </td>
+        <td class="actions">${tActions(t)}</td>
       </tr>`).join("");
   } catch (e) { $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
 }
@@ -712,6 +772,15 @@ window.deleteTarget = async id => {
   if (!t || !confirm(`Delete target "${t.name}"?`)) return;
   try { await api("/policy/targets/"+id, {method:"DELETE"}); toast("Deleted", "ok"); loadTargets(); }
   catch (e) { toast(e.message, "err"); }
+};
+
+// requestForTarget: shortcut from a target row in the user view.
+window.requestForTarget = id => {
+  showTab("requests");
+  setTimeout(() => {
+    $("#reqTarget").value = id;
+    $("#reqReason").focus();
+  }, 100);
 };
 
 // --- Users ---
@@ -896,16 +965,17 @@ async function loadPolicies() {
     const rows = await api("/policy/policies");
     if (!(rows||[]).length) { $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">No policies.</td></tr>`; return; }
     window._policies = rows;
+    const actions = p => isAdmin()
+      ? `<button class="ghost" onclick="editPolicy(${p.id})">Edit</button>
+         <button class="ghost danger" onclick="deletePolicy(${p.id})">Delete</button>`
+      : `<span class="muted">read-only</span>`;
     $("#policyRows").innerHTML = rows.map(p => `
       <tr>
         <td><b>${esc(p.role)}</b></td><td>${esc(p.target_kind)}</td><td>${p.tier_max}</td>
         <td>${p.require_approval ? '<span class="pill warn">required</span>' : '<span class="pill">no</span>'}</td>
         <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.allowed_commands)}">${esc(p.allowed_commands) || '—'}</td>
         <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.denied_commands)}">${esc(p.denied_commands) || '—'}</td>
-        <td class="actions">
-          <button class="ghost" onclick="editPolicy(${p.id})">Edit</button>
-          <button class="ghost danger" onclick="deletePolicy(${p.id})">Delete</button>
-        </td>
+        <td class="actions">${actions(p)}</td>
       </tr>`).join("");
   } catch (e) { $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
 }
@@ -920,7 +990,9 @@ window.editPolicy = id => {
   $("#policyId").value = p.id; $("#policyRole").value = p.role; $("#policyKind").value = p.target_kind;
   $("#policyTier").value = p.tier_max; $("#policyApproval").checked = p.require_approval;
   $("#policyAllow").value = p.allowed_commands || ""; $("#policyDeny").value = p.denied_commands || "";
+  $("#policyFormTitle").textContent = "Edit policy";
   $("#policyForm").classList.remove("hidden");
+  $("#policyRole").focus();
 };
 $("#policySaveBtn").onclick = async () => {
   const body = {
@@ -1130,8 +1202,80 @@ $("#mfaVerifyBtn").onclick = async () => {
 };
 $("#mfaCancelBtn").onclick = () => $("#mfaModal").classList.remove("show");
 
+// --- SSO / SAML ---
+async function discoverSSO() {
+  try {
+    const s = await api("/auth/sso/status");
+    if (s.saml_enabled) {
+      $("#ssoOptions").style.display = "block";
+      $("#ssoBtn").onclick = () => { window.location.href = "/api/auth/saml/login"; };
+    }
+  } catch {}
+}
+
+async function captureSSOToken() {
+  // Auth-service redirects with #sso=<jwt> in the URL fragment.
+  const m = location.hash.match(/[#&]sso=([^&]+)/);
+  if (!m) return false;
+  history.replaceState(null, "", location.pathname);
+  token = decodeURIComponent(m[1]);
+  try {
+    const claims = await api("/auth/verify", {method:"POST", body: JSON.stringify({Token: token})});
+    currentUser = { id: claims.uid, username: claims.u, role: claims.r, mfa_enabled: false, source: "saml" };
+    $("#login-wrap").style.display = "none";
+    $("#app").style.display = "grid";
+    $("#me").textContent = currentUser.username + " · " + currentUser.role + " · SSO";
+    applyRoleUI();
+    showTab("dash");
+    return true;
+  } catch (e) { token = null; toast("SSO verify failed: " + e.message, "err"); }
+  return false;
+}
+
+async function loadSAMLSettings() {
+  try {
+    const cfg = await api("/auth/settings/saml");
+    $("#samlEnabled").checked = !!cfg.enabled;
+    $("#samlRootURL").value = cfg.root_url || (location.origin || "");
+    $("#samlEntityID").value = cfg.entity_id || "";
+    $("#samlIdPXML").value = cfg.idp_metadata_xml || "";
+    $("#samlEmailAttr").value = cfg.email_attribute || "email";
+    $("#samlNameAttr").value = cfg.name_attribute || "displayName";
+    $("#samlGroupAttr").value = cfg.group_attribute || "groups";
+    $("#samlDefaultRole").value = cfg.default_role || "user";
+    $("#samlACS").textContent = (cfg.root_url || location.origin) + "/api/auth/saml/acs";
+    $("#samlMetadataBtn").href = "/api/auth/saml/metadata";
+    $("#samlStatus").innerHTML = cfg.enabled && cfg.sp_cert_set
+      ? '<span class="pill ok">Active</span>'
+      : (cfg.enabled ? '<span class="pill warn">SP keys missing — save to generate</span>' : '<span class="pill">Disabled</span>');
+  } catch (e) { /* may 404 on first install */ }
+}
+
+$("#samlSaveBtn").onclick = async () => {
+  const body = {
+    enabled: $("#samlEnabled").checked,
+    root_url: $("#samlRootURL").value.trim() || location.origin,
+    entity_id: $("#samlEntityID").value.trim(),
+    idp_metadata_xml: $("#samlIdPXML").value.trim(),
+    email_attribute: $("#samlEmailAttr").value.trim() || "email",
+    name_attribute: $("#samlNameAttr").value.trim(),
+    group_attribute: $("#samlGroupAttr").value.trim(),
+    default_role: $("#samlDefaultRole").value,
+  };
+  try { await api("/auth/settings/saml", {method:"PUT", body: JSON.stringify(body)}); toast("SAML settings saved", "ok"); loadSAMLSettings(); discoverSSO(); }
+  catch (e) { toast(e.message, "err"); }
+};
+
+// Hook SAML settings load into the Settings tab loader.
+const _origLoadSettings = loadSettings;
+loadSettings = async function() { await _origLoadSettings(); await loadSAMLSettings(); };
+
 // Boot
-$("#login-wrap").style.display = "flex";
+(async () => {
+  if (await captureSSOToken()) return;
+  $("#login-wrap").style.display = "flex";
+  discoverSSO();
+})();
 </script>
 </body>
 </html>

@@ -1,13 +1,19 @@
 // api-gateway is the only externally-exposed HTTP service. It:
-//   - serves the embedded admin web UI at /
+//   - serves the embedded admin / user web UI at /
 //   - proxies REST calls to the internal services after JWT verification
+//   - enforces role-based access on admin-only write endpoints (a non-admin
+//     hitting POST/PUT/DELETE on management resources gets a 403 even if
+//     they hand-craft the request)
 //
 // In production this would be replaced with Kong/Envoy with custom plugins;
 // the Go implementation here keeps the reference stack small.
 package main
 
 import (
+	"context"
 	"embed"
+	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -22,6 +28,41 @@ import (
 //go:embed web/*
 var webFS embed.FS
 
+// claims is the verified JWT payload we get back from auth-service /verify.
+type claims struct {
+	UID  int64  `json:"uid"`
+	User string `json:"u"`
+	Role string `json:"r"`
+}
+
+type ctxKey struct{}
+
+// adminWriteMatchers gates write methods on admin-only resources. Each entry
+// matches by method + path prefix. Add new admin routes here and they'll be
+// automatically protected for non-admins.
+var adminWriteMatchers = []struct {
+	method string
+	prefix string
+}{
+	{"POST", "/api/policy/policies"},
+	{"PUT", "/api/policy/policies/"},
+	{"DELETE", "/api/policy/policies/"},
+	{"POST", "/api/policy/targets"},
+	{"PUT", "/api/policy/targets/"},
+	{"DELETE", "/api/policy/targets/"},
+	{"POST", "/api/auth/users"},
+	{"POST", "/api/auth/groups"},
+	{"PUT", "/api/auth/groups/"},
+	{"DELETE", "/api/auth/groups/"},
+	{"POST", "/api/auth/groups/"}, // member add
+	{"DELETE", "/api/auth/groups/"},
+	{"PUT", "/api/auth/settings/"},
+	{"POST", "/api/auth/settings/"},
+	{"POST", "/api/vault/secrets"},
+	{"DELETE", "/api/vault/secrets/"},
+	{"POST", "/api/approval/requests/"}, // decide
+}
+
 func main() {
 	authURL := mustURL(config.Get("PAM_AUTH_URL", "http://localhost:8081"))
 	vaultURL := mustURL(config.Get("PAM_VAULT_URL", "http://localhost:8082"))
@@ -32,15 +73,22 @@ func main() {
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
 
+	// Public endpoints (no JWT)
 	mux.Handle("POST /api/auth/login", forwardTo(authURL, "/login"))
 	mux.Handle("POST /api/auth/verify", forwardTo(authURL, "/verify"))
-	mux.Handle("/api/auth/", protected(http.StripPrefix("/api/auth", reverse(authURL)), authURL))
-	mux.Handle("/api/vault/", http.StripPrefix("/api/vault", protected(reverse(vaultURL), authURL)))
-	mux.Handle("/api/policy/", http.StripPrefix("/api/policy", protected(reverse(policyURL), authURL)))
-	mux.Handle("/api/approval/", http.StripPrefix("/api/approval", protected(reverse(approvalURL), authURL)))
-	mux.Handle("/api/audit/", http.StripPrefix("/api/audit", protected(reverse(auditURL), authURL)))
+	mux.Handle("GET /api/auth/saml/login", forwardTo(authURL, "/saml/login"))
+	mux.Handle("POST /api/auth/saml/acs", forwardTo(authURL, "/saml/acs"))
+	mux.Handle("GET /api/auth/saml/metadata", forwardTo(authURL, "/saml/metadata"))
+	mux.Handle("GET /api/auth/sso/status", forwardTo(authURL, "/sso/status"))
 
-	// Static UI (never swallow unknown /api/* routes)
+	// Authenticated + role-gated
+	mux.Handle("/api/auth/", gated(http.StripPrefix("/api/auth", reverse(authURL)), authURL))
+	mux.Handle("/api/vault/", gated(http.StripPrefix("/api/vault", reverse(vaultURL)), authURL))
+	mux.Handle("/api/policy/", gated(http.StripPrefix("/api/policy", reverse(policyURL)), authURL))
+	mux.Handle("/api/approval/", gated(http.StripPrefix("/api/approval", reverse(approvalURL)), authURL))
+	mux.Handle("/api/audit/", gated(http.StripPrefix("/api/audit", reverse(auditURL)), authURL))
+
+	// Static UI
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			http.NotFound(w, r)
@@ -71,38 +119,71 @@ func main() {
 	}
 }
 
-// reverse builds a single-host reverse proxy.
 func reverse(target *url.URL) http.Handler {
 	return httputil.NewSingleHostReverseProxy(target)
 }
 
-// protected gates the downstream handler with JWT verification by calling
-// auth-service /verify. Fast-path: if the token is missing/invalid, return
-// 401 immediately. Real deployments would cache verifications.
-func protected(next http.Handler, authBase *url.URL) http.Handler {
+// gated wraps a handler with JWT verification AND role enforcement. The JWT
+// claims live on the request context as a *claims for downstream introspection;
+// non-admins are blocked from any path/method pair listed in adminWriteMatchers.
+func gated(next http.Handler, authBase *url.URL) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tok, err := httpx.BearerToken(r)
 		if err != nil {
 			httpx.Error(w, http.StatusUnauthorized, err)
 			return
 		}
-		// Verify with auth-service
-		body := strings.NewReader(`{"Token":"` + tok + `"}`)
-		req, _ := http.NewRequestWithContext(r.Context(), "POST", authBase.String()+"/verify", body)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		c, status, err := verifyToken(r.Context(), authBase, tok)
 		if err != nil {
-			httpx.Error(w, http.StatusBadGateway, err)
+			httpx.Error(w, status, err)
 			return
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			io.Copy(w, resp.Body)
-			w.WriteHeader(resp.StatusCode)
+		if requiresAdmin(r.Method, r.URL.Path) && c.Role != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
 			return
 		}
-		next.ServeHTTP(w, r)
+		// Forward identity to downstream services in case they want to log /
+		// enforce on top.
+		r2 := r.Clone(context.WithValue(r.Context(), ctxKey{}, c))
+		r2.Header.Set("X-PAM-User", c.User)
+		r2.Header.Set("X-PAM-Role", c.Role)
+		next.ServeHTTP(w, r2)
 	})
+}
+
+func requiresAdmin(method, path string) bool {
+	for _, m := range adminWriteMatchers {
+		if m.method == method && strings.HasPrefix(path, m.prefix) {
+			// Special case: PUT/POST/DELETE under /api/auth/users/{id}/mfa/* is
+			// allowed for any authenticated user (acting on themselves). The
+			// MFA endpoints live under /api/auth/users/{id}/mfa.
+			if strings.HasPrefix(path, "/api/auth/users/") && strings.Contains(path, "/mfa") {
+				return false
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func verifyToken(ctx context.Context, authBase *url.URL, tok string) (*claims, int, error) {
+	body := strings.NewReader(`{"Token":"` + tok + `"}`)
+	req, _ := http.NewRequestWithContext(ctx, "POST", authBase.String()+"/verify", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, http.StatusBadGateway, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, resp.StatusCode, errors.New(strings.TrimSpace(string(raw)))
+	}
+	var c claims
+	if err := json.NewDecoder(resp.Body).Decode(&c); err != nil {
+		return nil, http.StatusBadGateway, err
+	}
+	return &c, http.StatusOK, nil
 }
 
 func mustURL(s string) *url.URL {
@@ -114,7 +195,6 @@ func mustURL(s string) *url.URL {
 }
 
 // forwardTo proxies a request to target host, rewriting the path to dstPath.
-// target must be a base URL (e.g. http://auth:8081) without a path component.
 func forwardTo(target *url.URL, dstPath string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r2 := r.Clone(r.Context())

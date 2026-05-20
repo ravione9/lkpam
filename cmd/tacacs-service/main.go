@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/example/pam-platform/internal/authclient"
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
@@ -43,6 +44,7 @@ func main() {
 		DB:     d,
 		Policy: &policy.Engine{DB: d},
 		Bus:    events.New(),
+		Auth:   authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

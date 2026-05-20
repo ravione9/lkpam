@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -22,14 +23,18 @@ import (
 	"github.com/example/pam-platform/internal/httpx"
 	ldappkg "github.com/example/pam-platform/internal/ldap"
 	"github.com/example/pam-platform/internal/mfa"
+	samlpkg "github.com/example/pam-platform/internal/saml"
 	"github.com/example/pam-platform/internal/settings"
 	"github.com/example/pam-platform/internal/vault"
 )
 
 const (
 	settingsKeyLDAP       = "ldap"
-	settingsKeyMFAPolicy  = "mfa_policy"  // "off" | "optional" | "required"
+	settingsKeySAML       = "saml"
+	settingsKeyMFAPolicy  = "mfa_policy"
 	vaultLDAPBindPassword = "_ldap_bind_password"
+	vaultSAMLCert         = "_saml_sp_cert"
+	vaultSAMLKey          = "_saml_sp_key"
 )
 
 func main() {
@@ -317,6 +322,87 @@ func main() {
 		}
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
+
+	// --- SAML ---
+	mux.HandleFunc("GET /settings/saml", func(w http.ResponseWriter, r *http.Request) {
+		cfg := loadSAMLConfig(r.Context(), settingsStore, v)
+		httpx.JSON(w, http.StatusOK, cfg)
+	})
+	mux.HandleFunc("PUT /settings/saml", func(w http.ResponseWriter, r *http.Request) {
+		var cfg samlpkg.Config
+		if err := httpx.ReadJSON(r, &cfg); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		if cfg.Enabled && cfg.RootURL == "" {
+			httpx.Error(w, http.StatusBadRequest, errors.New("root_url is required when SAML is enabled"))
+			return
+		}
+		// Auto-generate SP keypair on first save (or when missing).
+		if cfg.Enabled {
+			if _, err := v.GetSecret(r.Context(), vaultSAMLCert); err != nil {
+				cert, key, err := samlpkg.GenerateSPKeypair("pam-platform-saml-sp")
+				if err != nil {
+					httpx.Error(w, http.StatusInternalServerError, err)
+					return
+				}
+				if err := v.PutSecret(r.Context(), vaultSAMLCert, cert, nil); err != nil {
+					httpx.Error(w, http.StatusInternalServerError, err)
+					return
+				}
+				if err := v.PutSecret(r.Context(), vaultSAMLKey, key, nil); err != nil {
+					httpx.Error(w, http.StatusInternalServerError, err)
+					return
+				}
+			}
+			cfg.SPCertSet = true
+		}
+		if err := settingsStore.SetJSON(r.Context(), settingsKeySAML, cfg); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "saml.config.updated", Severity: "info"})
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /saml/metadata", func(w http.ResponseWriter, r *http.Request) {
+		p, err := buildSAMLProvider(r.Context(), settingsStore, v)
+		if err != nil {
+			httpx.Error(w, http.StatusServiceUnavailable, err)
+			return
+		}
+		md, err := p.Metadata()
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/samlmetadata+xml")
+		w.Header().Set("Content-Disposition", `attachment; filename="pam-sp-metadata.xml"`)
+		w.Write(md)
+	})
+	mux.HandleFunc("GET /saml/login", func(w http.ResponseWriter, r *http.Request) {
+		p, err := buildSAMLProvider(r.Context(), settingsStore, v)
+		if err != nil {
+			httpx.Error(w, http.StatusServiceUnavailable, err)
+			return
+		}
+		u, err := p.MakeAuthnRequestURL(r.URL.Query().Get("next"))
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		http.Redirect(w, r, u, http.StatusFound)
+	})
+	mux.HandleFunc("POST /saml/acs", func(w http.ResponseWriter, r *http.Request) {
+		samlACSHandler(w, r, svc, groupSvc, settingsStore, v, bus)
+	})
+
+	mux.HandleFunc("GET /sso/status", func(w http.ResponseWriter, r *http.Request) {
+		s := loadSAMLConfig(r.Context(), settingsStore, v)
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"saml_enabled":   s.Enabled && s.IdPMetadataXML != "" && s.SPCertSet,
+			"saml_login_url": "/api/auth/saml/login",
+		})
+	})
 	mux.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) {
 		all, err := settingsStore.All(r.Context())
 		if err != nil {
@@ -480,6 +566,109 @@ func loadLDAPConfig(ctx context.Context, settingsStore *settings.Store, v *vault
 		cfg.BindPasswordSet = true
 	}
 	return cfg
+}
+
+// loadSAMLConfig returns the persisted SAML config with the cert-set flag.
+func loadSAMLConfig(ctx context.Context, settingsStore *settings.Store, v *vault.Vault) samlpkg.Config {
+	cfg := samlpkg.DefaultConfig()
+	_ = settingsStore.GetJSON(ctx, settingsKeySAML, &cfg)
+	if _, err := v.GetSecret(ctx, vaultSAMLCert); err == nil {
+		cfg.SPCertSet = true
+	}
+	return cfg
+}
+
+// buildSAMLProvider materializes a SAML SP from settings + vaulted keypair.
+func buildSAMLProvider(ctx context.Context, settingsStore *settings.Store, v *vault.Vault) (*samlpkg.Provider, error) {
+	cfg := loadSAMLConfig(ctx, settingsStore, v)
+	if !cfg.Enabled {
+		return nil, errors.New("saml: not enabled")
+	}
+	certPEM, err := v.GetSecret(ctx, vaultSAMLCert)
+	if err != nil {
+		return nil, errors.New("saml: SP cert missing — save settings to generate")
+	}
+	keyPEM, err := v.GetSecret(ctx, vaultSAMLKey)
+	if err != nil {
+		return nil, errors.New("saml: SP key missing — save settings to generate")
+	}
+	return samlpkg.NewProvider(cfg, certPEM, keyPEM)
+}
+
+// samlACSHandler validates the SAMLResponse from the IdP, upserts the local
+// user, syncs group memberships, mints a JWT, and redirects to the SPA with
+// the token in the URL hash (HTML-meta refresh + JS for safety).
+func samlACSHandler(
+	w http.ResponseWriter, r *http.Request,
+	svc *auth.Service, groupSvc *groups.Service,
+	settingsStore *settings.Store, v *vault.Vault,
+	bus events.Publisher,
+) {
+	p, err := buildSAMLProvider(r.Context(), settingsStore, v)
+	if err != nil {
+		httpx.Error(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	cfg := p.Cfg
+
+	claims, err := p.ParseACS(r)
+	if err != nil {
+		bus.Publish(events.Event{Source: "auth", Kind: "saml.failed", Severity: "warn", Detail: map[string]string{"err": err.Error()}})
+		httpx.Error(w, http.StatusUnauthorized, err)
+		return
+	}
+	if claims.Email == "" {
+		httpx.Error(w, http.StatusUnauthorized, errors.New("saml: no email/nameID returned by IdP"))
+		return
+	}
+
+	username := claims.Email
+	role := cfg.DefaultRole
+	if role == "" {
+		role = "user"
+	}
+	// Map SAML group claims to local groups by name.
+	var matchedGroupIDs []int64
+	allGroups, _ := groupSvc.List(r.Context())
+	for _, gname := range claims.Groups {
+		for _, g := range allGroups {
+			if strings.EqualFold(g.Name, gname) || g.LDAPDN == gname {
+				matchedGroupIDs = append(matchedGroupIDs, g.ID)
+				if g.Role == "admin" {
+					role = "admin"
+				} else if role != "admin" {
+					role = g.Role
+				}
+			}
+		}
+	}
+
+	u, err := svc.UpsertSAMLUser(r.Context(), username, claims.Email, role, claims.NameID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(matchedGroupIDs) > 0 {
+		_ = groupSvc.ReplaceMemberships(r.Context(), u.ID, matchedGroupIDs)
+	}
+	_ = svc.RecordLogin(r.Context(), u.ID)
+	tok, err := svc.IssueToken(u)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, err)
+		return
+	}
+	bus.Publish(events.Event{Source: "auth", Kind: "login.ok", Severity: "info", Actor: u.Username, Detail: map[string]string{"method": "saml"}})
+
+	// Redirect the browser to the SPA with the token in the URL fragment so it
+	// never hits the server logs or referer headers.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `<!doctype html><meta charset=utf-8><title>Signing in…</title>
+<script>
+  var tok = %q;
+  window.location.replace('/#sso=' + encodeURIComponent(tok));
+</script>
+<p>Signing in… if you are not redirected, <a href="/#sso=%s">click here</a>.</p>`, tok, tok)
 }
 
 func bootstrap(svc *auth.Service, groupSvc *groups.Service) {

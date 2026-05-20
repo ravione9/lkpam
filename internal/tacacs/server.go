@@ -7,7 +7,9 @@ import (
 	"log"
 	"net"
 	"strings"
+	"time"
 
+	"github.com/example/pam-platform/internal/authclient"
 	"github.com/example/pam-platform/internal/cryptox"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
@@ -21,6 +23,10 @@ type Server struct {
 	DB     *db.DB
 	Policy *policy.Engine
 	Bus    events.Publisher
+	// Auth, when set, delegates AAA password checks to auth-service so AD/LDAP
+	// users authenticate the same way they do everywhere else. Falls back to
+	// the local password hash check when nil.
+	Auth *authclient.Client
 }
 
 // Run starts the TCP listener and blocks until ctx is done.
@@ -127,6 +133,18 @@ func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP strin
 }
 
 func (s *Server) checkPassword(user, pass string) bool {
+	if s.Auth != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		res, err := s.Auth.Login(ctx, user, pass, "")
+		if err == nil && res != nil && res.User != nil {
+			return true
+		}
+		// MFA-required users can't authenticate over TACACS+ (network devices
+		// don't carry a second factor in the AAA exchange). Fall through to
+		// local check below; this lets break-glass local accounts work even
+		// when the IdP enforces MFA for portal logins.
+	}
 	var hash string
 	err := s.DB.QueryRow(`SELECT password_hash FROM users WHERE username = ? AND disabled = 0`, user).Scan(&hash)
 	if err != nil {

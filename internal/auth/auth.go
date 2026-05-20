@@ -117,6 +117,15 @@ func (s *Service) RecordLogin(ctx context.Context, userID int64) error {
 // UpsertLDAPUser creates or updates a local user record sourced from LDAP.
 // The password hash stays empty — these users can only log in via LDAP bind.
 func (s *Service) UpsertLDAPUser(ctx context.Context, username, email, role, dn string) (*User, error) {
+	return s.upsertExternalUser(ctx, "ldap", username, email, role, dn)
+}
+
+// UpsertSAMLUser creates or updates a local user record sourced from a SAML IdP.
+func (s *Service) UpsertSAMLUser(ctx context.Context, username, email, role, nameID string) (*User, error) {
+	return s.upsertExternalUser(ctx, "saml", username, email, role, nameID)
+}
+
+func (s *Service) upsertExternalUser(ctx context.Context, source, username, email, role, externalID string) (*User, error) {
 	if role == "" {
 		role = "user"
 	}
@@ -126,11 +135,11 @@ func (s *Service) UpsertLDAPUser(ctx context.Context, username, email, role, dn 
 		ON CONFLICT(username) DO UPDATE SET
 		  email=excluded.email,
 		  role=excluded.role,
-		  source='ldap',
+		  source=excluded.source,
 		  external_dn=excluded.external_dn`,
-		username, email, "", role, "ldap", dn, db.Now())
+		username, email, "", role, source, externalID, db.Now())
 	if err != nil {
-		return nil, fmt.Errorf("auth: upsert ldap user: %w", err)
+		return nil, fmt.Errorf("auth: upsert %s user: %w", source, err)
 	}
 	u, _, err := s.loadUser(ctx, username)
 	return u, err

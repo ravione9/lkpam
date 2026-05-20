@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/example/pam-platform/internal/authclient"
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
@@ -49,6 +50,7 @@ func main() {
 		HostKey:      hostSigner,
 		RecordingDir: config.Get("PAM_REC_DIR", "./recordings"),
 		ListenAddr:   config.Get("PAM_SSH_PROXY_ADDR", ":2222"),
+		Auth:         authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

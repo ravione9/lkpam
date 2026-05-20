@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/example/pam-platform/internal/authclient"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/policy"
@@ -31,13 +32,17 @@ import (
 
 // Server is the public listener.
 type Server struct {
-	Vault       *vault.Vault
-	DB          *db.DB
-	Policy      *policy.Engine
-	Bus         events.Publisher
-	HostKey     ssh.Signer
+	Vault        *vault.Vault
+	DB           *db.DB
+	Policy       *policy.Engine
+	Bus          events.Publisher
+	HostKey      ssh.Signer
 	RecordingDir string
-	ListenAddr  string
+	ListenAddr   string
+	// Auth delegates credential checks to auth-service so AD/LDAP users and
+	// TOTP-enrolled users get the same authentication flow they have in the
+	// portal. If nil, falls back to the legacy local-DB password check.
+	Auth *authclient.Client
 }
 
 // Run starts the proxy. Blocks until ctx is done.
@@ -47,7 +52,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	cfg := &ssh.ServerConfig{
-		PasswordCallback: s.passwordAuth,
+		PasswordCallback:            s.passwordAuth,
+		KeyboardInteractiveCallback: s.keyboardInteractiveAuth,
 	}
 	cfg.AddHostKey(s.HostKey)
 
@@ -75,32 +81,101 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-// passwordAuth verifies "user@target" syntax against the DB.
-// In production this is replaced with public-key cert auth where the cert
-// itself is the gate; password mode is for the reference impl + lab.
+// passwordAuth verifies "user@target" SSH login. It first delegates the
+// credential check to auth-service (so AD/LDAP users authenticate the same way
+// they do in the portal). If auth-service signals that MFA is required, this
+// path fails with a hint — the SSH client retries via keyboard-interactive,
+// which prompts for the OTP.
 func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, error) {
 	user, target, ok := splitUserTarget(c.User())
 	if !ok {
 		return nil, errors.New("login must be user@target")
 	}
-
-	// Look up user
-	var (
-		uid     int64
-		uHash   string
-		uRole   string
-	)
-	err := s.DB.QueryRow(`SELECT id, password_hash, role FROM users WHERE username = ?`, user).
-		Scan(&uid, &uHash, &uRole)
+	authedUser, err := s.authenticate(user, string(pw), "")
 	if err != nil {
-		return nil, errors.New("invalid credentials")
+		if errors.Is(err, errMFANeeded) {
+			return nil, errors.New("MFA required — retry with keyboard-interactive")
+		}
+		return nil, err
 	}
-	// Re-use cryptox verify via the auth package would be cleaner; inline keeps deps tight.
-	if !verifyPwd(string(pw), uHash) {
-		return nil, errors.New("invalid credentials")
-	}
+	return s.authorizeAndStash(authedUser, target)
+}
 
-	// Look up target
+// keyboardInteractiveAuth is the SSH fallback that lets us prompt for an MFA
+// code over the SSH session itself: "Password:" then "MFA code:".
+func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
+	user, target, ok := splitUserTarget(c.User())
+	if !ok {
+		return nil, errors.New("login must be user@target")
+	}
+	answers, err := ch(user, "Authenticating to PAM Platform — AD or local credentials accepted.",
+		[]string{"Password: ", "MFA code (blank if not enrolled): "},
+		[]bool{false, true})
+	if err != nil {
+		return nil, err
+	}
+	if len(answers) < 1 {
+		return nil, errors.New("no password provided")
+	}
+	pw := answers[0]
+	otp := ""
+	if len(answers) > 1 {
+		otp = answers[1]
+	}
+	authedUser, err := s.authenticate(user, pw, otp)
+	if err != nil {
+		return nil, err
+	}
+	return s.authorizeAndStash(authedUser, target)
+}
+
+// errMFANeeded is returned by authenticate when the user has TOTP enrolled and
+// we got an HTTP 202 from auth-service.
+var errMFANeeded = errors.New("mfa required")
+
+// authedUser is what authenticate returns to authorizeAndStash.
+type authedUser struct {
+	ID    int64
+	Role  string
+	Email string
+}
+
+// authenticate prefers auth-service (local + LDAP + MFA) and falls back to the
+// legacy local-DB hash check if no client is configured.
+func (s *Server) authenticate(username, password, otp string) (*authedUser, error) {
+	if s.Auth != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		res, err := s.Auth.Login(ctx, username, password, otp)
+		if err != nil {
+			return nil, err
+		}
+		if res.MFARequired && otp == "" {
+			return nil, errMFANeeded
+		}
+		if res.User == nil {
+			return nil, errors.New("invalid credentials")
+		}
+		return &authedUser{ID: res.User.ID, Role: res.User.Role, Email: res.User.Email}, nil
+	}
+	// Legacy local-only fallback.
+	var (
+		uid   int64
+		uHash string
+		uRole string
+	)
+	err := s.DB.QueryRow(`SELECT id, password_hash, role FROM users WHERE username = ?`, username).
+		Scan(&uid, &uHash, &uRole)
+	if err != nil || !verifyPwd(password, uHash) {
+		return nil, errors.New("invalid credentials")
+	}
+	return &authedUser{ID: uid, Role: uRole}, nil
+}
+
+// authorizeAndStash looks up the target, evaluates policy with the user's
+// effective roles, and packages routing info into ssh.Permissions for the
+// connection handler to consume.
+func (s *Server) authorizeAndStash(u *authedUser, target string) (*ssh.Permissions, error) {
 	var (
 		tid  int64
 		kind string
@@ -108,15 +183,14 @@ func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, 
 		port int
 		tier int
 	)
-	err = s.DB.QueryRow(`SELECT id, kind, host, port, tier FROM targets WHERE name = ?`, target).
+	err := s.DB.QueryRow(`SELECT id, kind, host, port, tier FROM targets WHERE name = ?`, target).
 		Scan(&tid, &kind, &host, &port, &tier)
 	if err != nil {
 		return nil, errors.New("target not found")
 	}
 
-	// Evaluate policy
 	dec, err := s.Policy.Decide(context.Background(), policy.Input{
-		UserID: uid, Role: uRole, TargetID: tid, TargetKind: kind,
+		UserID: u.ID, Role: u.Role, TargetID: tid, TargetKind: kind,
 		TargetTier: tier, Action: "ssh",
 	})
 	if err != nil {
@@ -125,22 +199,19 @@ func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, 
 	if !dec.Allow {
 		return nil, fmt.Errorf("denied by policy: %v", dec.Reasons)
 	}
-
-	// Stash routing info in the connection's Permissions
-	perms := &ssh.Permissions{
+	return &ssh.Permissions{
 		Extensions: map[string]string{
-			"user-id":    fmt.Sprintf("%d", uid),
-			"role":       uRole,
-			"target-id":  fmt.Sprintf("%d", tid),
-			"target":     target,
-			"kind":       kind,
-			"host":       host,
-			"port":       fmt.Sprintf("%d", port),
-			"allow-csv":  joinCSV(dec.AllowedCmds),
-			"deny-csv":   joinCSV(dec.DeniedCmds),
+			"user-id":   fmt.Sprintf("%d", u.ID),
+			"role":      u.Role,
+			"target-id": fmt.Sprintf("%d", tid),
+			"target":    target,
+			"kind":      kind,
+			"host":      host,
+			"port":      fmt.Sprintf("%d", port),
+			"allow-csv": joinCSV(dec.AllowedCmds),
+			"deny-csv":  joinCSV(dec.DeniedCmds),
 		},
-	}
-	return perms, nil
+	}, nil
 }
 
 func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig) {

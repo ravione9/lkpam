@@ -132,6 +132,12 @@ func (d *DB) migrate() error {
 			value TEXT NOT NULL DEFAULT '',
 			updated_at INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS saml_sessions (
+			id TEXT PRIMARY KEY,
+			user_id INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_groups_group ON user_groups(group_id)`,
