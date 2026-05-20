@@ -44,9 +44,13 @@ func (d *DB) migrate() error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT UNIQUE NOT NULL,
 			email TEXT,
-			password_hash TEXT NOT NULL,
+			password_hash TEXT NOT NULL DEFAULT '',
 			role TEXT NOT NULL DEFAULT 'user',
 			mfa_secret TEXT,
+			mfa_enabled INTEGER NOT NULL DEFAULT 0,
+			source TEXT NOT NULL DEFAULT 'local',
+			external_dn TEXT,
+			last_login INTEGER,
 			created_at INTEGER NOT NULL,
 			disabled INTEGER NOT NULL DEFAULT 0
 		)`,
@@ -106,13 +110,45 @@ func (d *DB) migrate() error {
 			detail TEXT,
 			severity TEXT NOT NULL DEFAULT 'info'
 		)`,
+		`CREATE TABLE IF NOT EXISTS groups (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT 'user',
+			ldap_dn TEXT,
+			source TEXT NOT NULL DEFAULT 'local',
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS user_groups (
+			user_id INTEGER NOT NULL,
+			group_id INTEGER NOT NULL,
+			added_at INTEGER NOT NULL,
+			PRIMARY KEY (user_id, group_id),
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+			FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, started_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_groups_group ON user_groups(group_id)`,
 	}
 	for _, s := range stmts {
 		if _, err := d.Exec(s); err != nil {
 			return fmt.Errorf("migrate stmt %q: %w", s[:40], err)
 		}
+	}
+	// Best-effort additive migrations for existing databases.
+	for _, alter := range []string{
+		`ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT 'local'`,
+		`ALTER TABLE users ADD COLUMN external_dn TEXT`,
+		`ALTER TABLE users ADD COLUMN last_login INTEGER`,
+	} {
+		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
 	}
 	return nil
 }

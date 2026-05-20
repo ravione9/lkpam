@@ -5,6 +5,7 @@ package policy
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 
@@ -23,64 +24,89 @@ type Decision struct {
 // Engine evaluates policy from the policies table.
 type Engine struct{ DB *db.DB }
 
-// Input is everything the engine needs.
+// Input is everything the engine needs. Roles is the set of effective roles
+// for the user (their own role + roles granted via group memberships). If left
+// empty, the engine falls back to a single-element slice of {Role}.
 type Input struct {
-	UserID     int64
-	Role       string
-	TargetID   int64
-	TargetKind string
-	TargetTier int // 0=critical ... 3=dev
-	Action     string
+	UserID     int64    `json:"user_id"`
+	Role       string   `json:"role"`
+	Roles      []string `json:"roles,omitempty"`
+	TargetID   int64    `json:"target_id"`
+	TargetKind string   `json:"target_kind"`
+	TargetTier int      `json:"target_tier"` // 0=critical ... 3=dev
+	Action     string   `json:"action"`
 }
 
-// Decide evaluates the policy. The algorithm:
-//   1. Find rows matching role + (target_kind OR '*'). Most-specific wins.
-//   2. If no rule applies, deny.
-//   3. Check tier_max >= target tier.
-//   4. Surface allowed/denied command lists for downstream cmd filtering.
-//   5. require_approval flag bubbles up unchanged.
+// Decide evaluates policy. For each effective role we look up the most-specific
+// rule (kind match wins over '*') and pick the most permissive overall:
+//   - allow if any role's rule allows
+//   - require_approval if any matching rule requires it
+//   - union of allowed_commands and denied_commands
+//   - deny wins ties on the per-command filter (see CommandAllowed)
 func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
-	rows, err := e.DB.QueryContext(ctx, `
-		SELECT target_kind, tier_max, require_approval, allowed_commands, denied_commands
-		FROM policies
-		WHERE role = ? AND (target_kind = ? OR target_kind = '*')
-		ORDER BY CASE WHEN target_kind = ? THEN 0 ELSE 1 END
-		LIMIT 1`,
-		in.Role, in.TargetKind, in.TargetKind)
-	if err != nil {
-		return Decision{}, err
+	roles := in.Roles
+	if len(roles) == 0 && in.Role != "" {
+		roles = []string{in.Role}
 	}
-	defer rows.Close()
-	if !rows.Next() {
-		return Decision{Allow: false, Reasons: []string{"no policy for role/kind"}}, nil
-	}
-	var (
-		kind            string
-		tierMax         int
-		requireApproval int
-		allowedCSV      string
-		deniedCSV       string
-	)
-	if err := rows.Scan(&kind, &tierMax, &requireApproval, &allowedCSV, &deniedCSV); err != nil {
-		return Decision{}, err
+	if len(roles) == 0 {
+		return Decision{Reasons: []string{"no role"}}, nil
 	}
 
-	d := Decision{
-		Allow:           true,
-		RequireApproval: requireApproval != 0,
-		AllowedCmds:     splitCSV(allowedCSV),
-		DeniedCmds:      splitCSV(deniedCSV),
+	final := Decision{}
+	allowSeen := false
+	allowedSet := map[string]bool{}
+	deniedSet := map[string]bool{}
+
+	for _, role := range roles {
+		row := e.DB.QueryRowContext(ctx, `
+			SELECT target_kind, tier_max, require_approval, allowed_commands, denied_commands
+			FROM policies
+			WHERE role = ? AND (target_kind = ? OR target_kind = '*')
+			ORDER BY CASE WHEN target_kind = ? THEN 0 ELSE 1 END
+			LIMIT 1`,
+			role, in.TargetKind, in.TargetKind)
+		var (
+			kind            string
+			tierMax         int
+			requireApproval int
+			allowedCSV      string
+			deniedCSV       string
+		)
+		err := row.Scan(&kind, &tierMax, &requireApproval, &allowedCSV, &deniedCSV)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return Decision{}, err
+		}
+		if in.TargetTier < tierMax {
+			continue // this role can't reach this tier
+		}
+		allowSeen = true
+		if requireApproval != 0 {
+			final.RequireApproval = true
+		}
+		for _, c := range splitCSV(allowedCSV) {
+			allowedSet[c] = true
+		}
+		for _, c := range splitCSV(deniedCSV) {
+			deniedSet[c] = true
+		}
 	}
-	if in.TargetTier < tierMax {
-		// Smaller tier number is *more* sensitive; tierMax is max reachable
-		// where 0 is the highest sensitivity. So allow when target_tier >= tierMax.
-		// We keep semantics: deny if user's tier_max excludes target.
-		// Interpretation: tier_max is the most-sensitive tier this role may reach.
-		// in.TargetTier < tier_max means too sensitive.
-		d.Allow = false
-		d.Reasons = append(d.Reasons, "tier exceeds role limit")
+
+	if !allowSeen {
+		final.Allow = false
+		final.Reasons = []string{"no matching policy for any effective role/tier"}
+		return final, nil
 	}
-	return d, nil
+	final.Allow = true
+	for c := range allowedSet {
+		final.AllowedCmds = append(final.AllowedCmds, c)
+	}
+	for c := range deniedSet {
+		final.DeniedCmds = append(final.DeniedCmds, c)
+	}
+	return final, nil
 }
 
 func splitCSV(s string) []string {

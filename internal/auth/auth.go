@@ -5,6 +5,7 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -17,11 +18,14 @@ import (
 
 // User is the canonical user record.
 type User struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Role     string `json:"role"`
-	Disabled bool   `json:"disabled"`
+	ID         int64  `json:"id"`
+	Username   string `json:"username"`
+	Email      string `json:"email"`
+	Role       string `json:"role"`
+	Disabled   bool   `json:"disabled"`
+	Source     string `json:"source"`
+	MFAEnabled bool   `json:"mfa_enabled"`
+	LastLogin  int64  `json:"last_login,omitempty"`
 }
 
 // Service is the auth service core.
@@ -60,26 +64,106 @@ func (s *Service) CreateUser(ctx context.Context, username, email, password, rol
 	return id, nil
 }
 
-// Authenticate verifies username/password and returns the User.
+// Authenticate verifies username/password against the local store and returns
+// the User. LDAP authentication lives in the auth-service main, which calls
+// FindByUsername / RecordLogin and skips this method for ldap-sourced users.
 func (s *Service) Authenticate(ctx context.Context, username, password string) (*User, error) {
-	row := s.DB.QueryRowContext(ctx,
-		`SELECT id, username, email, password_hash, role, disabled
-		 FROM users WHERE username = ?`, username)
-	var u User
-	var pwHash string
-	var disabled int
-	if err := row.Scan(&u.ID, &u.Username, &u.Email, &pwHash, &u.Role, &disabled); err != nil {
-		// don't leak existence — generic error
+	u, pwHash, err := s.loadUser(ctx, username)
+	if err != nil {
 		return nil, errors.New("invalid credentials")
 	}
-	u.Disabled = disabled != 0
 	if u.Disabled {
 		return nil, errors.New("account disabled")
+	}
+	if u.Source != "local" {
+		return nil, errors.New("invalid credentials") // LDAP users use the LDAP flow
 	}
 	if !cryptox.VerifyPassword(password, pwHash) {
 		return nil, errors.New("invalid credentials")
 	}
-	return &u, nil
+	return u, nil
+}
+
+// FindByUsername returns a user record without performing a password check.
+// Used by the LDAP login flow once the LDAP bind has succeeded.
+func (s *Service) FindByUsername(ctx context.Context, username string) (*User, error) {
+	u, _, err := s.loadUser(ctx, username)
+	return u, err
+}
+
+func (s *Service) loadUser(ctx context.Context, username string) (*User, string, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT id, username, COALESCE(email,''), password_hash, role, disabled,
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0)
+		FROM users WHERE username = ?`, username)
+	var u User
+	var pwHash string
+	var disabled, mfa int
+	if err := row.Scan(&u.ID, &u.Username, &u.Email, &pwHash, &u.Role, &disabled,
+		&u.Source, &mfa, &u.LastLogin); err != nil {
+		return nil, "", err
+	}
+	u.Disabled = disabled != 0
+	u.MFAEnabled = mfa != 0
+	return &u, pwHash, nil
+}
+
+// RecordLogin updates the user's last_login timestamp.
+func (s *Service) RecordLogin(ctx context.Context, userID int64) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE users SET last_login=? WHERE id=?`, db.Now(), userID)
+	return err
+}
+
+// UpsertLDAPUser creates or updates a local user record sourced from LDAP.
+// The password hash stays empty — these users can only log in via LDAP bind.
+func (s *Service) UpsertLDAPUser(ctx context.Context, username, email, role, dn string) (*User, error) {
+	if role == "" {
+		role = "user"
+	}
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO users(username, email, password_hash, role, source, external_dn, created_at)
+		VALUES(?,?,?,?,?,?,?)
+		ON CONFLICT(username) DO UPDATE SET
+		  email=excluded.email,
+		  role=excluded.role,
+		  source='ldap',
+		  external_dn=excluded.external_dn`,
+		username, email, "", role, "ldap", dn, db.Now())
+	if err != nil {
+		return nil, fmt.Errorf("auth: upsert ldap user: %w", err)
+	}
+	u, _, err := s.loadUser(ctx, username)
+	return u, err
+}
+
+// GetMFASecret returns the (plaintext) TOTP secret for a user, or "" if not set.
+func (s *Service) GetMFASecret(ctx context.Context, userID int64) (string, error) {
+	var secret sql.NullString
+	err := s.DB.QueryRowContext(ctx, `SELECT mfa_secret FROM users WHERE id=?`, userID).Scan(&secret)
+	if err != nil {
+		return "", err
+	}
+	return secret.String, nil
+}
+
+// SetMFASecret stores a TOTP secret but leaves mfa_enabled = 0 until verified.
+func (s *Service) SetMFASecret(ctx context.Context, userID int64, secret string) error {
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE users SET mfa_secret=?, mfa_enabled=0 WHERE id=?`, secret, userID)
+	return err
+}
+
+// EnableMFA confirms TOTP enrollment.
+func (s *Service) EnableMFA(ctx context.Context, userID int64) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE users SET mfa_enabled=1 WHERE id=?`, userID)
+	return err
+}
+
+// DisableMFA clears the TOTP secret and disables MFA.
+func (s *Service) DisableMFA(ctx context.Context, userID int64) error {
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE users SET mfa_secret=NULL, mfa_enabled=0 WHERE id=?`, userID)
+	return err
 }
 
 // IssueToken signs a JWT for the given user.
@@ -122,7 +206,9 @@ func (s *Service) VerifyToken(raw string) (*Claims, error) {
 // ListUsers returns all users (without password hashes).
 func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, username, email, role, disabled FROM users ORDER BY username`)
+		SELECT id, username, COALESCE(email,''), role, disabled,
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0)
+		FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -130,11 +216,13 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		var disabled int
-		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled); err != nil {
+		var disabled, mfa int
+		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled,
+			&u.Source, &mfa, &u.LastLogin); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
+		u.MFAEnabled = mfa != 0
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -190,12 +278,16 @@ func (s *Service) UpdateUser(ctx context.Context, id int64, in UpdateUserInput) 
 
 func (s *Service) getUserByID(ctx context.Context, id int64) (*User, error) {
 	row := s.DB.QueryRowContext(ctx,
-		`SELECT id, username, email, role, disabled FROM users WHERE id = ?`, id)
+		`SELECT id, username, COALESCE(email,''), role, disabled,
+		        COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0)
+		 FROM users WHERE id = ?`, id)
 	var u User
-	var disabled int
-	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled); err != nil {
+	var disabled, mfa int
+	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled,
+		&u.Source, &mfa, &u.LastLogin); err != nil {
 		return nil, errors.New("user not found")
 	}
 	u.Disabled = disabled != 0
+	u.MFAEnabled = mfa != 0
 	return &u, nil
 }

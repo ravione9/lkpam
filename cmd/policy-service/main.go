@@ -11,6 +11,7 @@ import (
 
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/db"
+	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/httpx"
 	"github.com/example/pam-platform/internal/inventory"
 	"github.com/example/pam-platform/internal/policy"
@@ -28,6 +29,7 @@ func main() {
 
 	eng := &policy.Engine{DB: d}
 	inv := &inventory.Service{DB: d}
+	groupSvc := &groups.Service{DB: d}
 
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
@@ -37,6 +39,12 @@ func main() {
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			httpx.Error(w, http.StatusBadRequest, err)
 			return
+		}
+		// Expand to effective roles via group memberships when only Role is set.
+		if len(in.Roles) == 0 && in.UserID > 0 {
+			if roles, err := groupSvc.EffectiveRoles(r.Context(), in.UserID, in.Role); err == nil {
+				in.Roles = roles
+			}
 		}
 		dec, err := eng.Decide(r.Context(), in)
 		if err != nil {

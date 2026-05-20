@@ -6,283 +6,508 @@
 <title>PAM Platform · Admin Console</title>
 <style>
   :root {
-    --bg: #f7f7f5; --fg: #1f1e1c; --muted: #6b6b6b;
-    --card: #fff; --border: #e3e3df; --accent: #c96442;
-    --ok: #2d6a4f; --err: #b91c1c;
+    --bg: #f4f5f7; --fg: #1a1d23; --muted: #6b7280;
+    --card: #fff; --border: #e2e5ea; --accent: #2563eb;
+    --accent-soft: #eff4ff;
+    --ok: #15803d; --ok-soft: #ecfdf5;
+    --warn: #b45309; --warn-soft: #fef3c7;
+    --err: #b91c1c; --err-soft: #fee2e2;
+    --sidebar: #0f172a; --sidebar-fg: #cbd5e1; --sidebar-active: #1e293b;
   }
   * { box-sizing: border-box; }
-  body { margin:0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); }
-  header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; background: #fff; position: sticky; top: 0; z-index: 10; }
-  header h1 { font-size: 16px; font-weight: 600; margin: 0; }
-  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
-  nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-  nav button { padding: 6px 12px; border: 1px solid var(--border); background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
-  nav button.active { border-color: var(--accent); color: var(--accent); }
+  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; }
+
+  /* Login */
+  #login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
+  #login { background: #fff; border-radius: 12px; padding: 32px; width: 380px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); }
+  #login h2 { margin: 0 0 4px; font-size: 18px; }
+  #login .brand { font-size: 12px; color: var(--muted); margin-bottom: 20px; letter-spacing: 0.04em; text-transform: uppercase; }
+  #login input { width: 100%; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; }
+  #login button { width: 100%; padding: 10px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; }
+  #login button:hover { background: #1d4ed8; }
+  #login .hint { color: var(--muted); font-size: 12px; margin-top: 12px; }
+
+  /* App layout */
+  #app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+  aside { background: var(--sidebar); color: var(--sidebar-fg); padding: 20px 0; }
+  aside .brand { padding: 0 20px 20px; border-bottom: 1px solid #1e293b; }
+  aside .brand h1 { color: #fff; font-size: 15px; margin: 0; }
+  aside .brand .tag { font-size: 11px; color: #64748b; margin-top: 2px; }
+  aside nav { padding: 16px 0; }
+  aside nav .section-title { padding: 8px 20px; color: #64748b; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  aside nav button { width: 100%; padding: 9px 20px; background: transparent; color: var(--sidebar-fg); border: none; text-align: left; cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 10px; }
+  aside nav button:hover { background: var(--sidebar-active); color: #fff; }
+  aside nav button.active { background: var(--sidebar-active); color: #fff; border-left: 3px solid var(--accent); padding-left: 17px; }
+  aside nav button .ico { width: 16px; opacity: 0.7; }
+
+  main { padding: 0; }
+  header.topbar { background: #fff; padding: 14px 32px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  header.topbar h2 { margin: 0; font-size: 16px; font-weight: 600; }
+  header.topbar .right { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--muted); }
+  .content { padding: 24px 32px; max-width: 1280px; margin: 0 auto; }
+
   section.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
-  h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
-  h3 { font-size: 13px; font-weight: 600; margin: 16px 0 8px; color: var(--muted); }
+  section.card.no-pad { padding: 0; }
+  h3 { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+  h4 { font-size: 13px; font-weight: 600; margin: 16px 0 8px; color: var(--muted); }
+  .desc { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; background: #fafbfc; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fafbfc; }
+
   input, select, textarea, button { font: inherit; }
-  input, select, textarea { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
-  input, select { width: 180px; }
-  textarea { width: 100%; min-height: 60px; resize: vertical; }
-  button.primary { background: var(--accent); color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; }
+  input, select, textarea { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  input, select { width: 200px; }
+  textarea { width: 100%; min-height: 70px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  button.primary { background: var(--accent); color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+  button.primary:hover { background: #1d4ed8; }
   button.ghost { background: transparent; border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
   button.danger { color: var(--err); border-color: #fecaca; }
-  button.ghost:hover { border-color: var(--accent); }
+  button.danger:hover { background: var(--err-soft); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+
   .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .stat { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
-  .stat .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-  .stat .value { font-size: 28px; font-weight: 600; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
+  .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .stat .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
+  .stat .delta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .stat.accent { border-color: var(--accent); background: var(--accent-soft); }
   .muted { color: var(--muted); }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: var(--bg); border: 1px solid var(--border); }
-  .pill.warn { color: var(--accent); border-color: var(--accent); }
-  .pill.ok { color: var(--ok); border-color: #b7e4c7; }
-  .pill.err { color: var(--err); border-color: #fecaca; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #f1f5f9; border: 1px solid var(--border); color: #475569; }
+  .pill.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+  .pill.ok { color: var(--ok); border-color: #b7e4c7; background: var(--ok-soft); }
+  .pill.err { color: var(--err); border-color: #fecaca; background: var(--err-soft); }
+  .pill.accent { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
   pre { background: #fafaf8; padding: 12px; border-radius: 6px; border: 1px solid var(--border); overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  code { background: #fafaf8; padding: 2px 5px; border-radius: 3px; font-size: 12px; }
   .form-panel { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 16px; }
   .form-panel.hidden { display: none; }
+  .form-grid { display: grid; grid-template-columns: 180px 1fr; gap: 8px 14px; align-items: center; }
+  .form-grid label { font-size: 12px; color: var(--muted); }
+  .form-grid input, .form-grid select { width: 100%; max-width: 420px; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
-  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--fg); color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 100; }
-  .toast.show { opacity: 1; }
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--fg); color: #fff; padding: 12px 18px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s, transform 0.2s; transform: translateY(10px); pointer-events: none; z-index: 100; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+  .toast.show { opacity: 1; transform: translateY(0); }
   .toast.err { background: var(--err); }
-  code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+  .toast.ok { background: var(--ok); }
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.5); display: none; align-items: center; justify-content: center; z-index: 50; }
+  .modal-backdrop.show { display: flex; }
+  .modal { background: #fff; border-radius: 10px; padding: 24px; max-width: 520px; width: 90%; max-height: 80vh; overflow: auto; }
+  .modal h3 { margin-top: 0; }
+
+  /* Mini sparkline chart */
+  .chart { display: block; width: 100%; height: 80px; }
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
 </style>
 </head>
 <body>
-<header>
-  <h1>PAM Platform · Admin Console</h1>
-  <span class="pill">reference build</span>
-  <div style="flex:1"></div>
-  <span id="me" class="muted">not signed in</span>
-  <button class="ghost" id="signout">Sign out</button>
-</header>
-<main>
-  <div id="login" class="card" style="max-width:420px">
-    <h2>Sign in</h2>
-    <div class="row" style="margin-bottom:8px"><input id="u" placeholder="username" value="admin"/></div>
-    <div class="row" style="margin-bottom:8px"><input id="p" type="password" placeholder="password" value="admin"/></div>
-    <div class="row"><button class="primary" id="loginBtn">Sign in</button></div>
-    <div class="muted" style="margin-top:8px">Default credentials on first run: <b>admin / admin</b>. Change them.</div>
-  </div>
 
-  <div id="app" style="display:none">
+<div id="login-wrap" style="display:none">
+  <div id="login">
+    <h2>PAM Platform</h2>
+    <div class="brand">Privileged Access Management</div>
+    <input id="u" placeholder="username" value="admin"/>
+    <input id="p" type="password" placeholder="password" value="admin"/>
+    <input id="otp" placeholder="MFA code (if enrolled)" style="display:none"/>
+    <button class="primary" id="loginBtn">Sign in</button>
+    <div class="hint">Default credentials on first run: <b>admin / admin</b></div>
+  </div>
+</div>
+
+<div id="app" style="display:none">
+  <aside>
+    <div class="brand">
+      <h1>PAM Platform</h1>
+      <div class="tag">Enterprise PAM</div>
+    </div>
     <nav id="nav">
-      <button data-tab="dash" class="active">Dashboard</button>
-      <button data-tab="targets">Targets</button>
-      <button data-tab="users">Users</button>
-      <button data-tab="secrets">Secrets</button>
-      <button data-tab="policies">Policies</button>
-      <button data-tab="requests">Access requests</button>
-      <button data-tab="sessions">Sessions</button>
-      <button data-tab="audit">Audit log</button>
-      <button data-tab="ca">SSH CA</button>
+      <div class="section-title">Overview</div>
+      <button data-tab="dash" class="active"><span class="ico">▦</span> Dashboard</button>
+      <div class="section-title">Access Control</div>
+      <button data-tab="targets"><span class="ico">▢</span> Targets</button>
+      <button data-tab="users"><span class="ico">○</span> Users</button>
+      <button data-tab="groups"><span class="ico">◇</span> Groups</button>
+      <button data-tab="policies"><span class="ico">△</span> Policies</button>
+      <button data-tab="requests"><span class="ico">✦</span> Access Requests</button>
+      <div class="section-title">Secrets &amp; Sessions</div>
+      <button data-tab="secrets"><span class="ico">⚿</span> Secrets</button>
+      <button data-tab="sessions"><span class="ico">▷</span> Sessions</button>
+      <div class="section-title">Compliance</div>
+      <button data-tab="audit"><span class="ico">≡</span> Audit Log</button>
+      <button data-tab="ca"><span class="ico">★</span> SSH CA</button>
+      <div class="section-title">System</div>
+      <button data-tab="settings"><span class="ico">⚙</span> Settings</button>
     </nav>
+  </aside>
 
-    <section class="card tab" id="tab-dash">
-      <h2>Dashboard</h2>
-      <div class="grid" id="stats">
-        <div class="stat"><div class="label">Targets</div><div class="value" id="stat-targets">—</div></div>
-        <div class="stat"><div class="label">Users</div><div class="value" id="stat-users">—</div></div>
-        <div class="stat"><div class="label">Pending requests</div><div class="value" id="stat-requests">—</div></div>
-        <div class="stat"><div class="label">Recent sessions</div><div class="value" id="stat-sessions">—</div></div>
+  <main>
+    <header class="topbar">
+      <h2 id="pageTitle">Dashboard</h2>
+      <div class="right">
+        <span id="me">—</span>
+        <button class="ghost" id="manageMfaBtn">MFA</button>
+        <button class="ghost" id="signout">Sign out</button>
       </div>
-      <p class="muted">Connect through the SSH proxy using <code>user@target@host</code> syntax:</p>
-      <pre id="sshHint">ssh -p 2222 admin@core-sw-01@localhost</pre>
-    </section>
+    </header>
+    <div class="content">
 
-    <section class="card tab" id="tab-targets" style="display:none">
-      <div class="row" style="justify-content:space-between;margin-bottom:12px">
-        <h2 style="margin:0">Managed targets</h2>
-        <button class="primary" id="targetAddBtn">Add target</button>
-      </div>
-      <table>
-        <thead><tr><th>Name</th><th>Kind</th><th>Host</th><th>Port</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
-        <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
-      </table>
-      <div class="form-panel hidden" id="targetForm">
-        <h3 id="targetFormTitle">Add target</h3>
-        <input type="hidden" id="targetId"/>
-        <div class="row" style="margin-bottom:8px">
-          <input id="targetName" placeholder="name (e.g. core-sw-01)"/>
-          <select id="targetKind">
-            <option value="cisco">cisco</option>
-            <option value="arista">arista</option>
-            <option value="juniper">juniper</option>
-            <option value="linux">linux</option>
-            <option value="palo">palo</option>
-            <option value="forti">forti</option>
-            <option value="windows">windows</option>
-          </select>
-          <input id="targetHost" placeholder="host / IP"/>
-          <input id="targetPort" type="number" placeholder="port" value="22" style="width:90px"/>
-          <select id="targetTier">
-            <option value="0">Tier 0 · critical</option>
-            <option value="1">Tier 1 · production</option>
-            <option value="2" selected>Tier 2 · staging</option>
-            <option value="3">Tier 3 · dev</option>
-          </select>
-          <input id="targetTags" placeholder="tags (optional)"/>
+      <!-- Dashboard -->
+      <section class="card tab" id="tab-dash">
+        <div class="grid" id="stats">
+          <div class="stat accent"><div class="label">Active Targets</div><div class="value" id="stat-targets">—</div><div class="delta">across all tiers</div></div>
+          <div class="stat"><div class="label">Users</div><div class="value" id="stat-users">—</div><div class="delta" id="stat-users-mfa">— with MFA</div></div>
+          <div class="stat"><div class="label">Groups</div><div class="value" id="stat-groups">—</div><div class="delta">role assignments</div></div>
+          <div class="stat"><div class="label">Pending Requests</div><div class="value" id="stat-requests">—</div><div class="delta">awaiting approval</div></div>
+          <div class="stat"><div class="label">Recent Sessions</div><div class="value" id="stat-sessions">—</div><div class="delta">last 7 days</div></div>
+          <div class="stat"><div class="label">LDAP Status</div><div class="value" id="stat-ldap">—</div><div class="delta" id="stat-ldap-detail">—</div></div>
         </div>
-        <div class="row">
-          <button class="primary" id="targetSaveBtn">Save</button>
-          <button class="ghost" id="targetCancelBtn">Cancel</button>
-        </div>
-      </div>
-    </section>
 
-    <section class="card tab" id="tab-users" style="display:none">
-      <div class="row" style="justify-content:space-between;margin-bottom:12px">
-        <h2 style="margin:0">Users</h2>
-        <button class="primary" id="userAddBtn">Add user</button>
-      </div>
-      <table>
-        <thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
-        <tbody id="userRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
-      </table>
-      <div class="form-panel hidden" id="userForm">
-        <h3 id="userFormTitle">Add user</h3>
-        <input type="hidden" id="userId"/>
-        <div class="row" style="margin-bottom:8px">
-          <input id="userName" placeholder="username"/>
-          <input id="userEmail" placeholder="email"/>
-          <select id="userRole">
-            <option value="admin">admin</option>
-            <option value="netops">netops</option>
-            <option value="secops">secops</option>
+        <div class="chart-row">
+          <div class="card" style="margin:0">
+            <h3>Login Activity (24h)</h3>
+            <svg class="chart" id="chartLogins" viewBox="0 0 600 80" preserveAspectRatio="none"></svg>
+            <div class="muted" style="font-size:12px;margin-top:4px"><span id="loginCount24">—</span> events</div>
+          </div>
+          <div class="card" style="margin:0">
+            <h3>Session Tiers (7d)</h3>
+            <svg class="chart" id="chartTiers" viewBox="0 0 600 80" preserveAspectRatio="none"></svg>
+            <div class="muted" style="font-size:12px;margin-top:4px" id="tierBreakdown">—</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin:0">
+          <h3>Quick Start</h3>
+          <p class="muted">Connect through the SSH proxy using <code>user@target@host</code> syntax:</p>
+          <pre id="sshHint">ssh -p 2222 admin@core-sw-01@localhost</pre>
+        </div>
+      </section>
+
+      <!-- Targets -->
+      <section class="card tab" id="tab-targets" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Managed Targets</h3>
+          <button class="primary" id="targetAddBtn">+ Add Target</button>
+        </div>
+        <table>
+          <thead><tr><th>Name</th><th>Kind</th><th>Host</th><th>Port</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
+          <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="targetForm">
+          <h4 id="targetFormTitle">Add target</h4>
+          <input type="hidden" id="targetId"/>
+          <div class="form-grid">
+            <label>Name</label><input id="targetName" placeholder="core-sw-01"/>
+            <label>Kind</label>
+            <select id="targetKind">
+              <option value="cisco">cisco</option><option value="arista">arista</option><option value="juniper">juniper</option>
+              <option value="linux">linux</option><option value="palo">palo</option><option value="forti">forti</option><option value="windows">windows</option>
+            </select>
+            <label>Host / IP</label><input id="targetHost" placeholder="192.168.1.1"/>
+            <label>Port</label><input id="targetPort" type="number" value="22"/>
+            <label>Tier</label>
+            <select id="targetTier">
+              <option value="0">Tier 0 · critical</option><option value="1">Tier 1 · production</option>
+              <option value="2" selected>Tier 2 · staging</option><option value="3">Tier 3 · dev</option>
+            </select>
+            <label>Tags</label><input id="targetTags" placeholder="optional"/>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="targetSaveBtn">Save</button>
+            <button class="ghost" id="targetCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Users -->
+      <section class="card tab" id="tab-users" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Users</h3>
+          <button class="primary" id="userAddBtn">+ Add User</button>
+        </div>
+        <table>
+          <thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Source</th><th>MFA</th><th>Status</th><th>Last Login</th><th></th></tr></thead>
+          <tbody id="userRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="userForm">
+          <h4 id="userFormTitle">Add user</h4>
+          <input type="hidden" id="userId"/>
+          <div class="form-grid">
+            <label>Username</label><input id="userName"/>
+            <label>Email</label><input id="userEmail"/>
+            <label>Role</label>
+            <select id="userRole">
+              <option value="admin">admin</option><option value="netops">netops</option>
+              <option value="secops">secops</option><option value="sysadmin">sysadmin</option>
+              <option value="viewer">viewer</option><option value="user" selected>user</option>
+            </select>
+            <label>Password</label><input id="userPassword" type="password"/>
+            <label>Disabled</label><div><input type="checkbox" id="userDisabled" style="width:auto"/></div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="userSaveBtn">Save</button>
+            <button class="ghost" id="userCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Groups -->
+      <section class="card tab" id="tab-groups" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">User Groups</h3>
+          <button class="primary" id="groupAddBtn">+ Add Group</button>
+        </div>
+        <p class="desc">Groups grant a role to all their members. Map AD/LDAP groups by setting an LDAP DN — users synced from AD will be auto-assigned.</p>
+        <table>
+          <thead><tr><th>Name</th><th>Description</th><th>Role</th><th>Source</th><th>Members</th><th>LDAP DN</th><th></th></tr></thead>
+          <tbody id="groupRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="groupForm">
+          <h4 id="groupFormTitle">Add group</h4>
+          <input type="hidden" id="groupId"/>
+          <div class="form-grid">
+            <label>Name</label><input id="groupName" placeholder="Network Operators"/>
+            <label>Description</label><input id="groupDesc"/>
+            <label>Role granted</label>
+            <select id="groupRole">
+              <option value="admin">admin</option><option value="netops">netops</option>
+              <option value="secops">secops</option><option value="sysadmin">sysadmin</option>
+              <option value="viewer">viewer</option><option value="user" selected>user</option>
+            </select>
+            <label>LDAP DN (optional)</label><input id="groupLdapDN" placeholder="CN=NetOps,OU=Groups,DC=corp,DC=local"/>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="groupSaveBtn">Save</button>
+            <button class="ghost" id="groupCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Secrets -->
+      <section class="card tab" id="tab-secrets" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Vault Secrets</h3>
+          <button class="primary" id="secretAddBtn">+ Store Secret</button>
+        </div>
+        <p class="desc">Plaintext values are encrypted at rest with AES-256-GCM. Only metadata is displayed.</p>
+        <table>
+          <thead><tr><th>Name</th><th>Updated</th><th></th></tr></thead>
+          <tbody id="secretRows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="secretForm">
+          <h4>Store Secret</h4>
+          <input id="secretName" placeholder="name" style="width:300px"/>
+          <textarea id="secretValue" placeholder="plaintext value"></textarea>
+          <div class="row" style="margin-top:8px">
+            <button class="primary" id="secretSaveBtn">Store</button>
+            <button class="ghost" id="secretCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Policies -->
+      <section class="card tab" id="tab-policies" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Access Policies</h3>
+          <button class="primary" id="policyAddBtn">+ Add Policy</button>
+        </div>
+        <p class="desc">Each policy rule binds a <b>role</b> to a target kind, tier ceiling, and command allowlist. A user's effective roles include their own role plus all group-granted roles — the most permissive matching rule wins.</p>
+        <table>
+          <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
+          <tbody id="policyRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="policyForm">
+          <h4 id="policyFormTitle">Add policy</h4>
+          <input type="hidden" id="policyId"/>
+          <div class="form-grid">
+            <label>Role</label><input id="policyRole"/>
+            <label>Target kind</label><input id="policyKind" placeholder="* for any"/>
+            <label>Tier max</label><input id="policyTier" type="number" value="2"/>
+            <label>Require approval</label><div><input type="checkbox" id="policyApproval" style="width:auto"/></div>
+            <label>Allowed commands</label><input id="policyAllow" placeholder="show,configure terminal,interface" style="max-width:600px"/>
+            <label>Denied commands</label><input id="policyDeny" placeholder="reload,erase startup-config" style="max-width:600px"/>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="policySaveBtn">Save</button>
+            <button class="ghost" id="policyCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Access Requests -->
+      <section class="card tab" id="tab-requests" style="display:none">
+        <h3>Pending Access Requests</h3>
+        <table>
+          <thead><tr><th>ID</th><th>User</th><th>Target</th><th>Reason</th><th>TTL</th><th>Created</th><th></th></tr></thead>
+          <tbody id="reqRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel" id="reqForm">
+          <h4>Request JIT Access</h4>
+          <div class="row">
+            <select id="reqTarget"><option value="">Select target…</option></select>
+            <input id="reqReason" placeholder="reason" style="flex:1;min-width:200px"/>
+            <input id="reqTTL" type="number" value="1800" style="width:120px"/>
+            <button class="primary" id="reqSubmitBtn">Submit</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Sessions -->
+      <section class="card tab" id="tab-sessions" style="display:none">
+        <h3>SSH Sessions</h3>
+        <table>
+          <thead><tr><th>Started</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th></tr></thead>
+          <tbody id="sessionRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </section>
+
+      <!-- Audit Log -->
+      <section class="card tab" id="tab-audit" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Audit Log</h3>
+          <div class="row">
+            <input id="auditFilter" placeholder="Filter (actor / kind / target)..." style="width:280px"/>
+            <select id="auditSeverity">
+              <option value="">All severities</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
+            <button class="ghost" id="auditRefresh">Refresh</button>
+            <button class="ghost" id="auditExport">Export CSV</button>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Time</th><th>Actor</th><th>Kind</th><th>Target</th><th>Severity</th></tr></thead>
+          <tbody id="auditRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </section>
+
+      <!-- SSH CA -->
+      <section class="card tab" id="tab-ca" style="display:none">
+        <h3>SSH CA Public Key</h3>
+        <p class="desc">Trust this key on every managed device (<code>@cert-authority</code> in <code>sshd_config</code> or the device equivalent). The CA signs short-lived per-session certificates issued by the vault.</p>
+        <pre id="caPub">…</pre>
+      </section>
+
+      <!-- Settings -->
+      <section class="card tab" id="tab-settings" style="display:none">
+        <h3>System Settings</h3>
+        <p class="desc">Configure Active Directory / LDAP integration and global MFA policy.</p>
+
+        <h4>Active Directory / LDAP</h4>
+        <div class="form-grid">
+          <label>Enabled</label><div><input type="checkbox" id="ldapEnabled" style="width:auto"/></div>
+          <label>Server URL</label><input id="ldapURL" placeholder="ldaps://dc01.corp.local:636"/>
+          <label>Start TLS</label><div><input type="checkbox" id="ldapStartTLS" style="width:auto"/> <span class="muted">(for ldap:// connections)</span></div>
+          <label>Skip TLS verify</label><div><input type="checkbox" id="ldapSkipVerify" style="width:auto"/> <span class="muted">(dev only)</span></div>
+          <label>Bind DN</label><input id="ldapBindDN" placeholder="CN=pam-svc,OU=Service,DC=corp,DC=local"/>
+          <label>Bind password</label><input id="ldapBindPW" type="password" placeholder="(leave blank to keep)"/>
+          <label>Base DN</label><input id="ldapBaseDN" placeholder="DC=corp,DC=local"/>
+          <label>User filter</label><input id="ldapUserFilter" placeholder="(sAMAccountName=%s)"/>
+          <label>Group filter</label><input id="ldapGroupFilter" placeholder="(&amp;(objectClass=group)(member=%s))"/>
+          <label>Username attribute</label><input id="ldapUsernameAttr" placeholder="sAMAccountName"/>
+          <label>Email attribute</label><input id="ldapEmailAttr" placeholder="mail"/>
+          <label>Default role</label>
+          <select id="ldapDefaultRole">
+            <option value="user">user</option><option value="viewer">viewer</option>
+            <option value="netops">netops</option><option value="secops">secops</option>
             <option value="sysadmin">sysadmin</option>
-            <option value="viewer">viewer</option>
-            <option value="user">user</option>
           </select>
-          <input id="userPassword" type="password" placeholder="password"/>
-          <label class="row"><input type="checkbox" id="userDisabled" style="width:auto"/> Disabled</label>
         </div>
-        <div class="row">
-          <button class="primary" id="userSaveBtn">Save</button>
-          <button class="ghost" id="userCancelBtn">Cancel</button>
+        <div class="row" style="margin-top:14px">
+          <button class="primary" id="ldapSaveBtn">Save</button>
+          <button class="ghost" id="ldapTestBtn">Test connection</button>
+          <span id="ldapStatus" class="muted"></span>
         </div>
-      </div>
-    </section>
 
-    <section class="card tab" id="tab-secrets" style="display:none">
-      <div class="row" style="justify-content:space-between;margin-bottom:12px">
-        <h2 style="margin:0">Vault secrets</h2>
-        <button class="primary" id="secretAddBtn">Store secret</button>
-      </div>
-      <p class="muted">Plaintext values are encrypted at rest. Only metadata is shown here.</p>
-      <table>
-        <thead><tr><th>Name</th><th>Updated</th><th></th></tr></thead>
-        <tbody id="secretRows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
-      </table>
-      <div class="form-panel hidden" id="secretForm">
-        <h3>Store secret</h3>
-        <div class="row" style="margin-bottom:8px">
-          <input id="secretName" placeholder="name"/>
+        <h4 style="margin-top:24px">Multi-factor authentication</h4>
+        <div class="form-grid">
+          <label>Policy</label>
+          <select id="mfaPolicy">
+            <option value="off">Off (no MFA)</option>
+            <option value="optional">Optional (per user)</option>
+            <option value="required">Required (all users)</option>
+          </select>
         </div>
-        <textarea id="secretValue" placeholder="plaintext value"></textarea>
-        <div class="row" style="margin-top:8px">
-          <button class="primary" id="secretSaveBtn">Store</button>
-          <button class="ghost" id="secretCancelBtn">Cancel</button>
-        </div>
-      </div>
-    </section>
+        <div class="row" style="margin-top:10px"><button class="primary" id="mfaPolicySaveBtn">Save</button></div>
+      </section>
 
-    <section class="card tab" id="tab-policies" style="display:none">
-      <div class="row" style="justify-content:space-between;margin-bottom:12px">
-        <h2 style="margin:0">Access policies</h2>
-        <button class="primary" id="policyAddBtn">Add policy</button>
-      </div>
-      <table>
-        <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
-        <tbody id="policyRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
-      </table>
-      <div class="form-panel hidden" id="policyForm">
-        <h3 id="policyFormTitle">Add policy</h3>
-        <input type="hidden" id="policyId"/>
-        <div class="row" style="margin-bottom:8px">
-          <input id="policyRole" placeholder="role"/>
-          <input id="policyKind" placeholder="target kind (* for any)"/>
-          <input id="policyTier" type="number" placeholder="tier max" value="2" style="width:100px"/>
-          <label class="row"><input type="checkbox" id="policyApproval" style="width:auto"/> Require approval</label>
-        </div>
-        <div class="row" style="margin-bottom:8px">
-          <input id="policyAllow" placeholder="allowed commands (comma-separated)" style="flex:1;min-width:280px"/>
-        </div>
-        <div class="row" style="margin-bottom:8px">
-          <input id="policyDeny" placeholder="denied commands (comma-separated)" style="flex:1;min-width:280px"/>
-        </div>
-        <div class="row">
-          <button class="primary" id="policySaveBtn">Save</button>
-          <button class="ghost" id="policyCancelBtn">Cancel</button>
-        </div>
-      </div>
-    </section>
+    </div>
+  </main>
+</div>
 
-    <section class="card tab" id="tab-requests" style="display:none">
-      <h2>Pending access requests</h2>
-      <table>
-        <thead><tr><th>ID</th><th>User</th><th>Target</th><th>Reason</th><th>TTL</th><th>Created</th><th></th></tr></thead>
-        <tbody id="reqRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
-      </table>
-      <div class="form-panel" id="reqForm">
-        <h3>Request JIT access</h3>
-        <div class="row" style="margin-bottom:8px">
-          <select id="reqTarget"><option value="">Select target…</option></select>
-          <input id="reqReason" placeholder="reason" style="flex:1;min-width:200px"/>
-          <input id="reqTTL" type="number" placeholder="TTL seconds" value="1800" style="width:120px"/>
-          <button class="primary" id="reqSubmitBtn">Submit request</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card tab" id="tab-sessions" style="display:none">
-      <h2>SSH sessions</h2>
-      <table>
-        <thead><tr><th>Started</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th></tr></thead>
-        <tbody id="sessionRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
-      </table>
-    </section>
-
-    <section class="card tab" id="tab-audit" style="display:none">
-      <h2>Recent audit events</h2>
-      <table>
-        <thead><tr><th>Time</th><th>Actor</th><th>Kind</th><th>Target</th><th>Severity</th></tr></thead>
-        <tbody id="auditRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
-      </table>
-    </section>
-
-    <section class="card tab" id="tab-ca" style="display:none">
-      <h2>SSH CA public key</h2>
-      <p class="muted">Trust this key on every managed device (<code>@cert-authority</code> in <code>sshd_config</code> or device equivalent).</p>
-      <pre id="caPub">…</pre>
-    </section>
+<!-- Group members modal -->
+<div class="modal-backdrop" id="groupMembersModal">
+  <div class="modal">
+    <h3 id="gmTitle">Group members</h3>
+    <table style="margin-bottom:14px">
+      <thead><tr><th>User</th><th>Email</th><th>Added</th><th></th></tr></thead>
+      <tbody id="gmRows"></tbody>
+    </table>
+    <h4>Add member</h4>
+    <div class="row">
+      <select id="gmUserSelect"></select>
+      <button class="primary" id="gmAddBtn">Add</button>
+      <button class="ghost" id="gmCloseBtn" style="margin-left:auto">Close</button>
+    </div>
   </div>
-</main>
+</div>
+
+<!-- MFA enrollment modal -->
+<div class="modal-backdrop" id="mfaModal">
+  <div class="modal">
+    <h3>Set up Multi-Factor Authentication</h3>
+    <p class="muted">Scan or paste this URL into your authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy):</p>
+    <div id="mfaUriBox" style="background:#fafaf8;padding:10px;border:1px solid var(--border);border-radius:6px;font-family:ui-monospace,monospace;font-size:11px;word-break:break-all;margin-bottom:10px">—</div>
+    <p class="muted" style="font-size:12px">Or enter this secret manually:</p>
+    <div id="mfaSecretBox" style="font-family:ui-monospace,monospace;font-size:16px;letter-spacing:0.1em;background:#fafaf8;padding:10px;border:1px solid var(--border);border-radius:6px;text-align:center;margin-bottom:14px">—</div>
+    <div class="form-grid">
+      <label>Enter 6-digit code</label>
+      <input id="mfaCode" placeholder="000000" maxlength="6"/>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="mfaVerifyBtn">Verify &amp; enable</button>
+      <button class="ghost" id="mfaCancelBtn" style="margin-left:auto">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
+
 <script>
 let token = null;
 let currentUser = null;
-let cache = { targets: [], users: [] };
+let pendingMFAUserID = null;
+let cache = { targets: [], users: [], groups: [] };
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
-function toast(msg, isErr) {
+const TAB_TITLES = {
+  dash: "Dashboard", targets: "Targets", users: "Users", groups: "Groups",
+  secrets: "Vault Secrets", policies: "Access Policies", requests: "Access Requests",
+  sessions: "SSH Sessions", audit: "Audit Log", ca: "SSH Certificate Authority",
+  settings: "System Settings",
+};
+
+function toast(msg, kind) {
   const el = $("#toast");
   el.textContent = msg;
-  el.className = "toast show" + (isErr ? " err" : "");
+  el.className = "toast show " + (kind || "");
   setTimeout(() => el.classList.remove("show"), 2800);
 }
 
 async function api(path, opts = {}) {
   opts.headers = opts.headers || {};
   if (token) opts.headers.Authorization = "Bearer " + token;
-  if (opts.body && !(opts.body instanceof FormData)) {
-    opts.headers["Content-Type"] = "application/json";
-  }
+  if (opts.body && !(opts.body instanceof FormData)) opts.headers["Content-Type"] = "application/json";
   const r = await fetch("/api" + path, opts);
+  if (r.status === 202) return { _accepted: await r.json() };
   if (!r.ok) {
     let msg = await r.text();
     try { msg = JSON.parse(msg).error || msg; } catch {}
@@ -293,88 +518,157 @@ async function api(path, opts = {}) {
   return r.text();
 }
 
+function esc(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function tierLabel(t) {
   return ({0:"0 · critical",1:"1 · prod",2:"2 · staging",3:"3 · dev"})[t] ?? t;
 }
 
-function esc(s) {
-  return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
-}
+function fmtTime(unix) { return unix ? new Date(unix*1000).toLocaleString() : "—"; }
 
 function showTab(name) {
   $$(".tab").forEach(el => el.style.display = "none");
   const tab = $("#tab-" + name);
   if (tab) tab.style.display = "block";
-  $$("#nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  $$("aside nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  $("#pageTitle").textContent = TAB_TITLES[name] || name;
   const loaders = {
-    dash: loadDashboard,
-    targets: loadTargets,
-    users: loadUsers,
-    secrets: loadSecrets,
-    policies: loadPolicies,
-    requests: loadRequests,
-    sessions: loadSessions,
-    audit: loadAudit,
-    ca: loadCA,
+    dash: loadDashboard, targets: loadTargets, users: loadUsers, groups: loadGroups,
+    secrets: loadSecrets, policies: loadPolicies, requests: loadRequests,
+    sessions: loadSessions, audit: loadAudit, ca: loadCA, settings: loadSettings,
   };
   if (loaders[name]) loaders[name]();
 }
 
-$("#loginBtn").onclick = async () => {
+// --- Login ---
+async function doLogin() {
   try {
     const data = await api("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ Username: $("#u").value, Password: $("#p").value })
+      body: JSON.stringify({
+        Username: $("#u").value,
+        Password: $("#p").value,
+        OTP: $("#otp").value,
+      })
     });
+    if (data._accepted && data._accepted.mfa_required) {
+      $("#otp").style.display = "block";
+      $("#otp").focus();
+      toast("Enter your MFA code", "ok");
+      return;
+    }
     token = data.token;
     currentUser = data.user;
-    $("#login").style.display = "none";
-    $("#app").style.display = "block";
-    $("#me").textContent = currentUser.username + " · " + currentUser.role;
+    $("#login-wrap").style.display = "none";
+    $("#app").style.display = "grid";
+    $("#me").textContent = currentUser.username + " · " + currentUser.role + (currentUser.mfa_enabled ? " · MFA ✓" : "");
     showTab("dash");
-  } catch (e) { toast(e.message, true); }
-};
+  } catch (e) { toast(e.message, "err"); }
+}
 
+$("#loginBtn").onclick = doLogin;
+$("#p").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+$("#otp").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+$("#u").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 $("#signout").onclick = () => { token = null; location.reload(); };
+$$("aside nav button[data-tab]").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
-$$("#nav button[data-tab]").forEach(b => b.onclick = () => showTab(b.dataset.tab));
-
+// --- Dashboard ---
 async function loadDashboard() {
   try {
-    const [targets, users, requests, sessions] = await Promise.all([
+    const [targets, users, groupsList, requests, sessions, audit] = await Promise.all([
       api("/policy/targets"),
       api("/auth/users"),
+      api("/auth/groups"),
       api("/approval/requests/pending"),
-      api("/audit/sessions?limit=50"),
+      api("/audit/sessions?limit=200"),
+      api("/audit/events?limit=300"),
     ]);
-    cache.targets = targets;
-    cache.users = users;
-    $("#stat-targets").textContent = targets.length;
-    $("#stat-users").textContent = users.length;
-    $("#stat-requests").textContent = requests.length;
-    $("#stat-sessions").textContent = sessions.length;
-    const first = targets[0];
+    cache.targets = targets || [];
+    cache.users = users || [];
+    cache.groups = groupsList || [];
+    $("#stat-targets").textContent = (targets || []).length;
+    $("#stat-users").textContent = (users || []).length;
+    $("#stat-users-mfa").textContent = (users || []).filter(u => u.mfa_enabled).length + " with MFA";
+    $("#stat-groups").textContent = (groupsList || []).length;
+    $("#stat-requests").textContent = (requests || []).length;
+    const weekAgo = Math.floor(Date.now()/1000) - 7*86400;
+    const recentSess = (sessions || []).filter(s => s.started_at >= weekAgo);
+    $("#stat-sessions").textContent = recentSess.length;
+
+    // LDAP status
+    try {
+      const ldap = await api("/auth/settings/ldap");
+      $("#stat-ldap").textContent = ldap.enabled ? "Enabled" : "Disabled";
+      $("#stat-ldap-detail").textContent = ldap.enabled ? (ldap.url || "—") : "click Settings to configure";
+    } catch { $("#stat-ldap").textContent = "—"; }
+
+    const first = (targets || [])[0];
     $("#sshHint").textContent = first
       ? `ssh -p 2222 ${currentUser.username}@${first.name}@localhost`
       : "ssh -p 2222 user@target-name@localhost";
-  } catch (e) { toast(e.message, true); }
+
+    // Login activity chart (24h, hourly buckets)
+    const now = Math.floor(Date.now()/1000);
+    const buckets = new Array(24).fill(0);
+    (audit || []).forEach(e => {
+      if (!e.kind || !e.kind.startsWith("login")) return;
+      const ageH = Math.floor((now - e.ts) / 3600);
+      if (ageH >= 0 && ageH < 24) buckets[23 - ageH]++;
+    });
+    $("#loginCount24").textContent = buckets.reduce((a,b) => a+b, 0);
+    renderSparkline("#chartLogins", buckets, "var(--accent)");
+
+    // Tier breakdown
+    const tierCounts = [0,0,0,0];
+    recentSess.forEach(s => {
+      const t = (cache.targets.find(x => x.id === s.target_id) || {}).tier ?? 2;
+      if (t >= 0 && t <= 3) tierCounts[t]++;
+    });
+    renderBars("#chartTiers", tierCounts, ["#dc2626","#f59e0b","#2563eb","#10b981"]);
+    $("#tierBreakdown").innerHTML = tierCounts.map((c,i) =>
+      `<span class="pill" style="margin-right:6px">T${i}: ${c}</span>`).join("");
+  } catch (e) { toast(e.message, "err"); }
+}
+
+function renderSparkline(sel, vals, color) {
+  const svg = $(sel);
+  if (!vals.length) { svg.innerHTML = ""; return; }
+  const max = Math.max(1, ...vals);
+  const w = 600, h = 80, step = w / (vals.length - 1 || 1);
+  const points = vals.map((v, i) => `${i*step},${h - (v/max)*(h-10) - 4}`).join(" ");
+  const area = `M0,${h} L` + points.split(" ").join(" L") + ` L${w},${h} Z`;
+  svg.innerHTML = `
+    <path d="${area}" fill="${color}" fill-opacity="0.15"/>
+    <polyline points="${points}" stroke="${color}" stroke-width="2" fill="none"/>`;
+}
+
+function renderBars(sel, vals, colors) {
+  const svg = $(sel);
+  const max = Math.max(1, ...vals);
+  const w = 600, h = 80, n = vals.length, bw = w/n - 12;
+  svg.innerHTML = vals.map((v, i) => {
+    const bh = (v/max) * (h - 16);
+    return `
+      <rect x="${i*(w/n) + 6}" y="${h - bh - 4}" width="${bw}" height="${bh}" fill="${colors[i % colors.length]}" rx="3"/>
+      <text x="${i*(w/n) + 6 + bw/2}" y="${h - 2}" text-anchor="middle" font-size="10" fill="#6b7280">T${i} · ${v}</text>`;
+  }).join("");
 }
 
 // --- Targets ---
 async function loadTargets() {
   try {
     const rows = await api("/policy/targets");
-    cache.targets = rows;
-    if (!rows.length) {
-      $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">No targets yet. Add one to get started.</td></tr>`;
+    cache.targets = rows || [];
+    if (!cache.targets.length) {
+      $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">No targets yet.</td></tr>`;
       return;
     }
-    $("#targetRows").innerHTML = rows.map(t => `
+    $("#targetRows").innerHTML = cache.targets.map(t => `
       <tr>
-        <td><b>${esc(t.name)}</b></td>
-        <td>${esc(t.kind)}</td>
-        <td>${esc(t.host)}</td>
-        <td>${t.port}</td>
+        <td><b>${esc(t.name)}</b></td><td>${esc(t.kind)}</td><td>${esc(t.host)}</td><td>${t.port}</td>
         <td><span class="pill">${tierLabel(t.tier)}</span></td>
         <td class="muted">${esc(t.tags)}</td>
         <td class="actions">
@@ -386,227 +680,228 @@ async function loadTargets() {
 }
 
 function resetTargetForm() {
-  $("#targetId").value = "";
-  $("#targetName").value = "";
-  $("#targetKind").value = "cisco";
-  $("#targetHost").value = "";
-  $("#targetPort").value = "22";
-  $("#targetTier").value = "2";
-  $("#targetTags").value = "";
-  $("#targetName").disabled = false;
-  $("#targetFormTitle").textContent = "Add target";
-  $("#targetForm").classList.add("hidden");
+  ["targetId","targetName","targetHost","targetTags"].forEach(id => $("#"+id).value = "");
+  $("#targetKind").value = "cisco"; $("#targetPort").value = "22"; $("#targetTier").value = "2";
+  $("#targetName").disabled = false; $("#targetForm").classList.add("hidden");
 }
-
-$("#targetAddBtn").onclick = () => {
-  resetTargetForm();
-  $("#targetFormTitle").textContent = "Add target";
-  $("#targetForm").classList.remove("hidden");
-};
-
+$("#targetAddBtn").onclick = () => { resetTargetForm(); $("#targetFormTitle").textContent = "Add target"; $("#targetForm").classList.remove("hidden"); };
 $("#targetCancelBtn").onclick = resetTargetForm;
-
-window.editTarget = (id) => {
-  const t = cache.targets.find(x => x.id === id);
-  if (!t) return;
-  $("#targetId").value = t.id;
-  $("#targetName").value = t.name;
-  $("#targetName").disabled = true;
-  $("#targetKind").value = t.kind;
-  $("#targetHost").value = t.host;
-  $("#targetPort").value = t.port;
-  $("#targetTier").value = t.tier;
-  $("#targetTags").value = t.tags || "";
-  $("#targetFormTitle").textContent = "Edit target";
-  $("#targetForm").classList.remove("hidden");
+window.editTarget = id => {
+  const t = cache.targets.find(x => x.id === id); if (!t) return;
+  $("#targetId").value = t.id; $("#targetName").value = t.name; $("#targetName").disabled = true;
+  $("#targetKind").value = t.kind; $("#targetHost").value = t.host; $("#targetPort").value = t.port;
+  $("#targetTier").value = t.tier; $("#targetTags").value = t.tags || "";
+  $("#targetFormTitle").textContent = "Edit target"; $("#targetForm").classList.remove("hidden");
 };
-
 $("#targetSaveBtn").onclick = async () => {
   const body = {
-    name: $("#targetName").value.trim(),
-    kind: $("#targetKind").value,
-    host: $("#targetHost").value.trim(),
-    port: parseInt($("#targetPort").value, 10) || 22,
-    tier: parseInt($("#targetTier").value, 10),
-    tags: $("#targetTags").value.trim(),
+    name: $("#targetName").value.trim(), kind: $("#targetKind").value,
+    host: $("#targetHost").value.trim(), port: parseInt($("#targetPort").value,10)||22,
+    tier: parseInt($("#targetTier").value,10), tags: $("#targetTags").value.trim(),
   };
   try {
     const id = $("#targetId").value;
-    if (id) {
-      body.id = parseInt(id, 10);
-      await api("/policy/targets/" + id, { method: "PUT", body: JSON.stringify(body) });
-      toast("Target updated");
-    } else {
-      await api("/policy/targets", { method: "POST", body: JSON.stringify(body) });
-      toast("Target created");
-    }
-    resetTargetForm();
-    loadTargets();
-  } catch (e) { toast(e.message, true); }
+    if (id) { body.id = +id; await api("/policy/targets/"+id, {method:"PUT", body: JSON.stringify(body)}); }
+    else await api("/policy/targets", {method:"POST", body: JSON.stringify(body)});
+    toast(id ? "Target updated" : "Target created", "ok");
+    resetTargetForm(); loadTargets();
+  } catch (e) { toast(e.message, "err"); }
 };
-
-window.deleteTarget = async (id) => {
+window.deleteTarget = async id => {
   const t = cache.targets.find(x => x.id === id);
   if (!t || !confirm(`Delete target "${t.name}"?`)) return;
-  try {
-    await api("/policy/targets/" + id, { method: "DELETE" });
-    toast("Target deleted");
-    loadTargets();
-  } catch (e) { toast(e.message, true); }
+  try { await api("/policy/targets/"+id, {method:"DELETE"}); toast("Deleted", "ok"); loadTargets(); }
+  catch (e) { toast(e.message, "err"); }
 };
 
 // --- Users ---
 async function loadUsers() {
   try {
     const rows = await api("/auth/users");
-    cache.users = rows;
-    if (!rows.length) {
-      $("#userRows").innerHTML = `<tr><td colspan="5" class="muted">No users.</td></tr>`;
-      return;
-    }
-    $("#userRows").innerHTML = rows.map(u => `
+    cache.users = rows || [];
+    if (!cache.users.length) { $("#userRows").innerHTML = `<tr><td colspan="8" class="muted">No users.</td></tr>`; return; }
+    $("#userRows").innerHTML = cache.users.map(u => `
       <tr>
         <td><b>${esc(u.username)}</b></td>
         <td>${esc(u.email)}</td>
         <td><span class="pill">${esc(u.role)}</span></td>
+        <td><span class="pill ${u.source==='ldap'?'accent':''}">${esc(u.source||'local')}</span></td>
+        <td>${u.mfa_enabled ? '<span class="pill ok">enabled</span>' : '<span class="pill">off</span>'}</td>
         <td>${u.disabled ? '<span class="pill err">disabled</span>' : '<span class="pill ok">active</span>'}</td>
+        <td class="muted">${fmtTime(u.last_login)}</td>
         <td class="actions">
           <button class="ghost" onclick="editUser(${u.id})">Edit</button>
+          ${u.mfa_enabled ? `<button class="ghost danger" onclick="disableUserMFA(${u.id})">Disable MFA</button>` : ''}
         </td>
       </tr>`).join("");
-  } catch (e) { $("#userRows").innerHTML = `<tr><td colspan="5" class="muted">${esc(e.message)}</td></tr>`; }
+  } catch (e) { $("#userRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
 }
-
 function resetUserForm() {
-  $("#userId").value = "";
-  $("#userName").value = "";
-  $("#userName").disabled = false;
-  $("#userEmail").value = "";
-  $("#userRole").value = "user";
-  $("#userPassword").value = "";
-  $("#userPassword").placeholder = "password";
-  $("#userDisabled").checked = false;
-  $("#userFormTitle").textContent = "Add user";
-  $("#userForm").classList.add("hidden");
+  ["userId","userName","userEmail","userPassword"].forEach(id => $("#"+id).value = "");
+  $("#userName").disabled = false; $("#userRole").value = "user"; $("#userDisabled").checked = false;
+  $("#userPassword").placeholder = "password"; $("#userForm").classList.add("hidden");
 }
-
-$("#userAddBtn").onclick = () => {
-  resetUserForm();
-  $("#userPassword").placeholder = "password (required)";
-  $("#userForm").classList.remove("hidden");
-};
-
+$("#userAddBtn").onclick = () => { resetUserForm(); $("#userFormTitle").textContent = "Add user"; $("#userPassword").placeholder = "password (required)"; $("#userForm").classList.remove("hidden"); };
 $("#userCancelBtn").onclick = resetUserForm;
-
-window.editUser = (id) => {
-  const u = cache.users.find(x => x.id === id);
-  if (!u) return;
-  $("#userId").value = u.id;
-  $("#userName").value = u.username;
-  $("#userName").disabled = true;
-  $("#userEmail").value = u.email || "";
-  $("#userRole").value = u.role;
-  $("#userPassword").value = "";
-  $("#userPassword").placeholder = "new password (leave blank to keep)";
-  $("#userDisabled").checked = !!u.disabled;
-  $("#userFormTitle").textContent = "Edit user";
+window.editUser = id => {
+  const u = cache.users.find(x => x.id === id); if (!u) return;
+  $("#userId").value = u.id; $("#userName").value = u.username; $("#userName").disabled = true;
+  $("#userEmail").value = u.email || ""; $("#userRole").value = u.role;
+  $("#userPassword").value = ""; $("#userPassword").placeholder = "new password (blank to keep)";
+  $("#userDisabled").checked = !!u.disabled; $("#userFormTitle").textContent = "Edit user";
   $("#userForm").classList.remove("hidden");
 };
-
 $("#userSaveBtn").onclick = async () => {
   try {
     const id = $("#userId").value;
     if (id) {
-      const body = {
-        email: $("#userEmail").value.trim(),
-        role: $("#userRole").value,
-        disabled: $("#userDisabled").checked,
-      };
-      const pw = $("#userPassword").value;
-      if (pw) body.password = pw;
-      await api("/auth/users/" + id, { method: "PUT", body: JSON.stringify(body) });
-      toast("User updated");
+      const body = { email: $("#userEmail").value.trim(), role: $("#userRole").value, disabled: $("#userDisabled").checked };
+      const pw = $("#userPassword").value; if (pw) body.password = pw;
+      await api("/auth/users/"+id, {method:"PUT", body: JSON.stringify(body)});
     } else {
-      const pw = $("#userPassword").value;
-      if (!pw) throw new Error("password required for new user");
-      await api("/auth/users", {
-        method: "POST",
-        body: JSON.stringify({
-          username: $("#userName").value.trim(),
-          email: $("#userEmail").value.trim(),
-          role: $("#userRole").value,
-          password: pw,
-        })
-      });
-      toast("User created");
+      const pw = $("#userPassword").value; if (!pw) throw new Error("password required");
+      await api("/auth/users", {method:"POST", body: JSON.stringify({
+        username: $("#userName").value.trim(), email: $("#userEmail").value.trim(),
+        role: $("#userRole").value, password: pw,
+      })});
     }
-    resetUserForm();
-    loadUsers();
-  } catch (e) { toast(e.message, true); }
+    toast(id ? "User updated" : "User created", "ok");
+    resetUserForm(); loadUsers();
+  } catch (e) { toast(e.message, "err"); }
 };
+window.disableUserMFA = async id => {
+  const u = cache.users.find(x => x.id === id);
+  if (!confirm(`Disable MFA for ${u.username}?`)) return;
+  try { await api("/auth/users/"+id+"/mfa", {method:"DELETE"}); toast("MFA disabled", "ok"); loadUsers(); }
+  catch (e) { toast(e.message, "err"); }
+};
+
+// --- Groups ---
+async function loadGroups() {
+  try {
+    const rows = await api("/auth/groups");
+    cache.groups = rows || [];
+    if (!cache.groups.length) { $("#groupRows").innerHTML = `<tr><td colspan="7" class="muted">No groups.</td></tr>`; return; }
+    $("#groupRows").innerHTML = cache.groups.map(g => `
+      <tr>
+        <td><b>${esc(g.name)}</b></td>
+        <td class="muted">${esc(g.description)}</td>
+        <td><span class="pill">${esc(g.role)}</span></td>
+        <td><span class="pill ${g.source==='ldap'?'accent':''}">${esc(g.source)}</span></td>
+        <td>${g.members || 0}</td>
+        <td class="muted" style="font-size:11px">${esc(g.ldap_dn) || '—'}</td>
+        <td class="actions">
+          <button class="ghost" onclick="openMembers(${g.id})">Members</button>
+          <button class="ghost" onclick="editGroup(${g.id})">Edit</button>
+          <button class="ghost danger" onclick="deleteGroup(${g.id})">Delete</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) { $("#groupRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+}
+function resetGroupForm() {
+  ["groupId","groupName","groupDesc","groupLdapDN"].forEach(id => $("#"+id).value = "");
+  $("#groupName").disabled = false; $("#groupRole").value = "user"; $("#groupForm").classList.add("hidden");
+}
+$("#groupAddBtn").onclick = () => { resetGroupForm(); $("#groupFormTitle").textContent = "Add group"; $("#groupForm").classList.remove("hidden"); };
+$("#groupCancelBtn").onclick = resetGroupForm;
+window.editGroup = id => {
+  const g = cache.groups.find(x => x.id === id); if (!g) return;
+  $("#groupId").value = g.id; $("#groupName").value = g.name; $("#groupName").disabled = true;
+  $("#groupDesc").value = g.description || ""; $("#groupRole").value = g.role;
+  $("#groupLdapDN").value = g.ldap_dn || "";
+  $("#groupFormTitle").textContent = "Edit group"; $("#groupForm").classList.remove("hidden");
+};
+$("#groupSaveBtn").onclick = async () => {
+  const body = {
+    name: $("#groupName").value.trim(), description: $("#groupDesc").value.trim(),
+    role: $("#groupRole").value, ldap_dn: $("#groupLdapDN").value.trim(),
+  };
+  try {
+    const id = $("#groupId").value;
+    if (id) { body.id = +id; await api("/auth/groups/"+id, {method:"PUT", body: JSON.stringify(body)}); }
+    else await api("/auth/groups", {method:"POST", body: JSON.stringify(body)});
+    toast(id ? "Group updated" : "Group created", "ok");
+    resetGroupForm(); loadGroups();
+  } catch (e) { toast(e.message, "err"); }
+};
+window.deleteGroup = async id => {
+  const g = cache.groups.find(x => x.id === id);
+  if (!g || !confirm(`Delete group "${g.name}"?`)) return;
+  try { await api("/auth/groups/"+id, {method:"DELETE"}); toast("Group deleted", "ok"); loadGroups(); }
+  catch (e) { toast(e.message, "err"); }
+};
+window.openMembers = async id => {
+  const g = cache.groups.find(x => x.id === id); if (!g) return;
+  window._gmGroupID = id;
+  $("#gmTitle").textContent = `${g.name} · members`;
+  await refreshMembers();
+  $("#groupMembersModal").classList.add("show");
+};
+async function refreshMembers() {
+  const id = window._gmGroupID;
+  try {
+    const [members, allUsers] = await Promise.all([api("/auth/groups/"+id+"/members"), api("/auth/users")]);
+    const memberIds = new Set((members||[]).map(m => m.user_id));
+    $("#gmRows").innerHTML = (members||[]).length ? members.map(m => `
+      <tr>
+        <td>${esc(m.username)}</td><td class="muted">${esc(m.email)}</td>
+        <td class="muted">${fmtTime(m.added_at)}</td>
+        <td><button class="ghost danger" onclick="removeMember(${m.user_id})">Remove</button></td>
+      </tr>`).join("") : `<tr><td colspan="4" class="muted">No members.</td></tr>`;
+    $("#gmUserSelect").innerHTML = (allUsers||[])
+      .filter(u => !memberIds.has(u.id))
+      .map(u => `<option value="${u.id}">${esc(u.username)} (${esc(u.role)})</option>`).join("");
+  } catch (e) { toast(e.message, "err"); }
+}
+window.removeMember = async userId => {
+  try { await api(`/auth/groups/${window._gmGroupID}/members/${userId}`, {method:"DELETE"}); refreshMembers(); loadGroups(); }
+  catch (e) { toast(e.message, "err"); }
+};
+$("#gmAddBtn").onclick = async () => {
+  const uid = parseInt($("#gmUserSelect").value, 10); if (!uid) return;
+  try { await api(`/auth/groups/${window._gmGroupID}/members`, {method:"POST", body: JSON.stringify({user_id: uid})}); refreshMembers(); loadGroups(); }
+  catch (e) { toast(e.message, "err"); }
+};
+$("#gmCloseBtn").onclick = () => $("#groupMembersModal").classList.remove("show");
 
 // --- Secrets ---
 async function loadSecrets() {
   try {
     const rows = await api("/vault/secrets");
-    if (!rows.length) {
-      $("#secretRows").innerHTML = `<tr><td colspan="3" class="muted">No secrets stored.</td></tr>`;
-      return;
-    }
+    if (!(rows||[]).length) { $("#secretRows").innerHTML = `<tr><td colspan="3" class="muted">No secrets stored.</td></tr>`; return; }
     $("#secretRows").innerHTML = rows.map(s => `
       <tr>
-        <td><b>${esc(s.name)}</b></td>
-        <td class="muted">${new Date(s.updated_at * 1000).toLocaleString()}</td>
+        <td><b>${esc(s.name)}</b></td><td class="muted">${fmtTime(s.updated_at)}</td>
         <td><button class="ghost danger" onclick="deleteSecret(${JSON.stringify(s.name)})">Delete</button></td>
       </tr>`).join("");
   } catch (e) { $("#secretRows").innerHTML = `<tr><td colspan="3" class="muted">${esc(e.message)}</td></tr>`; }
 }
-
-$("#secretAddBtn").onclick = () => {
-  $("#secretName").value = "";
-  $("#secretValue").value = "";
-  $("#secretForm").classList.remove("hidden");
-};
+$("#secretAddBtn").onclick = () => { $("#secretName").value=""; $("#secretValue").value=""; $("#secretForm").classList.remove("hidden"); };
 $("#secretCancelBtn").onclick = () => $("#secretForm").classList.add("hidden");
-
 $("#secretSaveBtn").onclick = async () => {
   try {
-    await api("/vault/secrets", {
-      method: "POST",
-      body: JSON.stringify({ name: $("#secretName").value.trim(), plaintext: $("#secretValue").value })
-    });
-    toast("Secret stored");
-    $("#secretForm").classList.add("hidden");
-    loadSecrets();
-  } catch (e) { toast(e.message, true); }
+    await api("/vault/secrets", {method:"POST", body: JSON.stringify({name: $("#secretName").value.trim(), plaintext: $("#secretValue").value})});
+    toast("Stored", "ok"); $("#secretForm").classList.add("hidden"); loadSecrets();
+  } catch (e) { toast(e.message, "err"); }
 };
-
-window.deleteSecret = async (name) => {
+window.deleteSecret = async name => {
   if (!confirm(`Delete secret "${name}"?`)) return;
-  try {
-    await api("/vault/secrets/" + encodeURIComponent(name), { method: "DELETE" });
-    toast("Secret deleted");
-    loadSecrets();
-  } catch (e) { toast(e.message, true); }
+  try { await api("/vault/secrets/"+encodeURIComponent(name), {method:"DELETE"}); toast("Deleted", "ok"); loadSecrets(); }
+  catch (e) { toast(e.message, "err"); }
 };
 
 // --- Policies ---
 async function loadPolicies() {
   try {
     const rows = await api("/policy/policies");
-    if (!rows.length) {
-      $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">No policies.</td></tr>`;
-      return;
-    }
+    if (!(rows||[]).length) { $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">No policies.</td></tr>`; return; }
     window._policies = rows;
     $("#policyRows").innerHTML = rows.map(p => `
       <tr>
-        <td><b>${esc(p.role)}</b></td>
-        <td>${esc(p.target_kind)}</td>
-        <td>${p.tier_max}</td>
-        <td>${p.require_approval ? '<span class="pill warn">yes</span>' : 'no'}</td>
-        <td class="muted" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.allowed_commands)}">${esc(p.allowed_commands) || '—'}</td>
-        <td class="muted" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.denied_commands)}">${esc(p.denied_commands) || '—'}</td>
+        <td><b>${esc(p.role)}</b></td><td>${esc(p.target_kind)}</td><td>${p.tier_max}</td>
+        <td>${p.require_approval ? '<span class="pill warn">required</span>' : '<span class="pill">no</span>'}</td>
+        <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.allowed_commands)}">${esc(p.allowed_commands) || '—'}</td>
+        <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.denied_commands)}">${esc(p.denied_commands) || '—'}</td>
         <td class="actions">
           <button class="ghost" onclick="editPolicy(${p.id})">Edit</button>
           <button class="ghost danger" onclick="deletePolicy(${p.id})">Delete</button>
@@ -614,92 +909,53 @@ async function loadPolicies() {
       </tr>`).join("");
   } catch (e) { $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
 }
-
 function resetPolicyForm() {
-  $("#policyId").value = "";
-  $("#policyRole").value = "";
-  $("#policyKind").value = "";
-  $("#policyTier").value = "2";
-  $("#policyApproval").checked = false;
-  $("#policyAllow").value = "";
-  $("#policyDeny").value = "";
-  $("#policyFormTitle").textContent = "Add policy";
-  $("#policyForm").classList.add("hidden");
+  ["policyId","policyRole","policyKind","policyAllow","policyDeny"].forEach(id => $("#"+id).value = "");
+  $("#policyTier").value = "2"; $("#policyApproval").checked = false; $("#policyForm").classList.add("hidden");
 }
-
 $("#policyAddBtn").onclick = () => { resetPolicyForm(); $("#policyForm").classList.remove("hidden"); };
 $("#policyCancelBtn").onclick = resetPolicyForm;
-
-window.editPolicy = (id) => {
-  const p = (window._policies || []).find(x => x.id === id);
-  if (!p) return;
-  $("#policyId").value = p.id;
-  $("#policyRole").value = p.role;
-  $("#policyKind").value = p.target_kind;
-  $("#policyTier").value = p.tier_max;
-  $("#policyApproval").checked = p.require_approval;
-  $("#policyAllow").value = p.allowed_commands || "";
-  $("#policyDeny").value = p.denied_commands || "";
-  $("#policyFormTitle").textContent = "Edit policy";
+window.editPolicy = id => {
+  const p = (window._policies||[]).find(x => x.id === id); if (!p) return;
+  $("#policyId").value = p.id; $("#policyRole").value = p.role; $("#policyKind").value = p.target_kind;
+  $("#policyTier").value = p.tier_max; $("#policyApproval").checked = p.require_approval;
+  $("#policyAllow").value = p.allowed_commands || ""; $("#policyDeny").value = p.denied_commands || "";
   $("#policyForm").classList.remove("hidden");
 };
-
 $("#policySaveBtn").onclick = async () => {
   const body = {
-    role: $("#policyRole").value.trim(),
-    target_kind: $("#policyKind").value.trim(),
-    tier_max: parseInt($("#policyTier").value, 10),
-    require_approval: $("#policyApproval").checked,
-    allowed_commands: $("#policyAllow").value.trim(),
-    denied_commands: $("#policyDeny").value.trim(),
+    role: $("#policyRole").value.trim(), target_kind: $("#policyKind").value.trim(),
+    tier_max: parseInt($("#policyTier").value,10), require_approval: $("#policyApproval").checked,
+    allowed_commands: $("#policyAllow").value.trim(), denied_commands: $("#policyDeny").value.trim(),
   };
   try {
     const id = $("#policyId").value;
-    if (id) {
-      body.id = parseInt(id, 10);
-      await api("/policy/policies/" + id, { method: "PUT", body: JSON.stringify(body) });
-      toast("Policy updated");
-    } else {
-      await api("/policy/policies", { method: "POST", body: JSON.stringify(body) });
-      toast("Policy created");
-    }
-    resetPolicyForm();
-    loadPolicies();
-  } catch (e) { toast(e.message, true); }
+    if (id) { body.id = +id; await api("/policy/policies/"+id, {method:"PUT", body: JSON.stringify(body)}); }
+    else await api("/policy/policies", {method:"POST", body: JSON.stringify(body)});
+    toast("Saved", "ok"); resetPolicyForm(); loadPolicies();
+  } catch (e) { toast(e.message, "err"); }
 };
-
-window.deletePolicy = async (id) => {
+window.deletePolicy = async id => {
   if (!confirm("Delete this policy rule?")) return;
-  try {
-    await api("/policy/policies/" + id, { method: "DELETE" });
-    toast("Policy deleted");
-    loadPolicies();
-  } catch (e) { toast(e.message, true); }
+  try { await api("/policy/policies/"+id, {method:"DELETE"}); toast("Deleted", "ok"); loadPolicies(); }
+  catch (e) { toast(e.message, "err"); }
 };
 
-// --- Access requests ---
+// --- Requests ---
 async function loadRequests() {
   try {
     if (!cache.targets.length) cache.targets = await api("/policy/targets");
-    const sel = $("#reqTarget");
-    const cur = sel.value;
+    const sel = $("#reqTarget"); const cur = sel.value;
     sel.innerHTML = '<option value="">Select target…</option>' +
       cache.targets.map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join("");
     if (cur) sel.value = cur;
-
     const rows = await api("/approval/requests/pending");
-    if (!rows.length) {
-      $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">No pending requests.</td></tr>`;
-      return;
-    }
+    if (!(rows||[]).length) { $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">No pending requests.</td></tr>`; return; }
     $("#reqRows").innerHTML = rows.map(r => `
       <tr>
-        <td>${r.id}</td>
-        <td>${esc(r.username)}</td>
-        <td>${esc(r.target_name)}</td>
-        <td>${esc(r.reason)}</td>
-        <td>${r.ttl_seconds}s</td>
-        <td class="muted">${new Date(r.created_at * 1000).toLocaleString()}</td>
+        <td>${r.id}</td><td>${esc(r.username)}</td><td>${esc(r.target_name)}</td>
+        <td>${esc(r.reason)}</td><td>${r.ttl_seconds}s</td>
+        <td class="muted">${fmtTime(r.created_at)}</td>
         <td class="actions">
           <button class="ghost" onclick="decide(${r.id}, true)">Approve</button>
           <button class="ghost danger" onclick="decide(${r.id}, false)">Deny</button>
@@ -707,35 +963,23 @@ async function loadRequests() {
       </tr>`).join("");
   } catch (e) { $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
 }
-
 window.decide = async (id, approve) => {
   try {
-    await api(`/approval/requests/${id}/decide`, {
-      method: "POST",
-      body: JSON.stringify({ approver_id: currentUser.id, approve })
-    });
-    toast(approve ? "Request approved" : "Request denied");
-    loadRequests();
-  } catch (e) { toast(e.message, true); }
+    await api(`/approval/requests/${id}/decide`, {method:"POST", body: JSON.stringify({approver_id: currentUser.id, approve})});
+    toast(approve ? "Approved" : "Denied", "ok"); loadRequests();
+  } catch (e) { toast(e.message, "err"); }
 };
-
 $("#reqSubmitBtn").onclick = async () => {
-  const targetId = parseInt($("#reqTarget").value, 10);
-  if (!targetId) { toast("Select a target", true); return; }
+  const tid = parseInt($("#reqTarget").value, 10);
+  if (!tid) { toast("Select a target", "err"); return; }
   try {
-    await api("/approval/requests", {
-      method: "POST",
-      body: JSON.stringify({
-        user_id: currentUser.id,
-        target_id: targetId,
-        reason: $("#reqReason").value.trim(),
-        ttl_seconds: parseInt($("#reqTTL").value, 10) || 1800,
-      })
-    });
-    toast("Access request submitted");
-    $("#reqReason").value = "";
-    loadRequests();
-  } catch (e) { toast(e.message, true); }
+    await api("/approval/requests", {method:"POST", body: JSON.stringify({
+      user_id: currentUser.id, target_id: tid,
+      reason: $("#reqReason").value.trim(),
+      ttl_seconds: parseInt($("#reqTTL").value,10)||1800,
+    })});
+    toast("Request submitted", "ok"); $("#reqReason").value = ""; loadRequests();
+  } catch (e) { toast(e.message, "err"); }
 };
 
 // --- Sessions ---
@@ -743,53 +987,151 @@ async function loadSessions() {
   try {
     if (!cache.targets.length) cache.targets = await api("/policy/targets");
     if (!cache.users.length) cache.users = await api("/auth/users");
-    const userMap = Object.fromEntries(cache.users.map(u => [u.id, u.username]));
-    const targetMap = Object.fromEntries(cache.targets.map(t => [t.id, t.name]));
-    const rows = await api("/audit/sessions?limit=100");
-    if (!rows.length) {
-      $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">No sessions recorded yet.</td></tr>`;
-      return;
-    }
+    const um = Object.fromEntries(cache.users.map(u => [u.id, u.username]));
+    const tm = Object.fromEntries(cache.targets.map(t => [t.id, t.name]));
+    const rows = await api("/audit/sessions?limit=200");
+    if (!(rows||[]).length) { $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">No sessions yet.</td></tr>`; return; }
     $("#sessionRows").innerHTML = rows.map(s => `
       <tr>
-        <td>${new Date(s.started_at * 1000).toLocaleString()}</td>
-        <td>${esc(userMap[s.user_id] || s.user_id)}</td>
-        <td>${esc(targetMap[s.target_id] || s.target_id)}</td>
+        <td>${fmtTime(s.started_at)}</td>
+        <td>${esc(um[s.user_id] || s.user_id)}</td>
+        <td>${esc(tm[s.target_id] || s.target_id)}</td>
         <td class="muted">${esc(s.client_ip) || '—'}</td>
-        <td>${s.ended_at
-          ? `<span class="pill">${esc(s.ended_reason || 'ended')}</span>`
-          : '<span class="pill ok">active</span>'}</td>
+        <td>${s.ended_at ? `<span class="pill">${esc(s.ended_reason || 'ended')}</span>` : '<span class="pill ok">active</span>'}</td>
         <td class="muted" style="font-size:11px">${esc(s.recording_path) || '—'}</td>
       </tr>`).join("");
   } catch (e) { $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">${esc(e.message)}</td></tr>`; }
 }
 
 // --- Audit ---
+let auditCache = [];
 async function loadAudit() {
   try {
-    const rows = await api("/audit/events?limit=100");
-    if (!rows.length) {
-      $("#auditRows").innerHTML = `<tr><td colspan="5" class="muted">No audit events.</td></tr>`;
-      return;
-    }
-    $("#auditRows").innerHTML = rows.map(r => `
-      <tr>
-        <td>${new Date(r.ts * 1000).toLocaleString()}</td>
-        <td>${esc(r.actor)}</td>
-        <td>${esc(r.kind)}</td>
-        <td>${esc(r.target)}</td>
-        <td><span class="pill ${r.severity === 'warn' ? 'warn' : ''}">${esc(r.severity)}</span></td>
-      </tr>`).join("");
+    const rows = await api("/audit/events?limit=500");
+    auditCache = rows || [];
+    renderAudit();
   } catch (e) { $("#auditRows").innerHTML = `<tr><td colspan="5" class="muted">${esc(e.message)}</td></tr>`; }
 }
+function renderAudit() {
+  const filt = $("#auditFilter").value.toLowerCase();
+  const sev = $("#auditSeverity").value;
+  const filtered = auditCache.filter(r => {
+    if (sev && r.severity !== sev) return false;
+    if (filt && !`${r.actor} ${r.kind} ${r.target}`.toLowerCase().includes(filt)) return false;
+    return true;
+  });
+  if (!filtered.length) { $("#auditRows").innerHTML = `<tr><td colspan="5" class="muted">No events.</td></tr>`; return; }
+  $("#auditRows").innerHTML = filtered.map(r => `
+    <tr>
+      <td>${fmtTime(r.ts)}</td><td>${esc(r.actor)}</td><td>${esc(r.kind)}</td>
+      <td>${esc(r.target)}</td>
+      <td><span class="pill ${r.severity==='warn'?'warn':r.severity==='error'?'err':'ok'}">${esc(r.severity)}</span></td>
+    </tr>`).join("");
+}
+$("#auditFilter").addEventListener("input", renderAudit);
+$("#auditSeverity").addEventListener("change", renderAudit);
+$("#auditRefresh").onclick = loadAudit;
+$("#auditExport").onclick = () => {
+  const rows = [["timestamp","actor","kind","target","severity"]];
+  auditCache.forEach(r => rows.push([new Date(r.ts*1000).toISOString(), r.actor, r.kind, r.target, r.severity]));
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], {type: "text/csv"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = `pam-audit-${Date.now()}.csv`; a.click();
+};
 
+// --- CA ---
 async function loadCA() {
   try {
-    const r = await fetch("/api/vault/ca/pub", { headers: { Authorization: "Bearer " + token }});
+    const r = await fetch("/api/vault/ca/pub", {headers: {Authorization: "Bearer " + token}});
     if (!r.ok) throw new Error(await r.text());
     $("#caPub").textContent = await r.text();
   } catch (e) { $("#caPub").textContent = e.message; }
 }
+
+// --- Settings ---
+async function loadSettings() {
+  try {
+    const cfg = await api("/auth/settings/ldap");
+    $("#ldapEnabled").checked = !!cfg.enabled;
+    $("#ldapURL").value = cfg.url || "";
+    $("#ldapStartTLS").checked = !!cfg.start_tls;
+    $("#ldapSkipVerify").checked = !!cfg.skip_tls_verify;
+    $("#ldapBindDN").value = cfg.bind_dn || "";
+    $("#ldapBindPW").value = ""; $("#ldapBindPW").placeholder = cfg.bind_password_set ? "(saved — leave blank to keep)" : "bind password";
+    $("#ldapBaseDN").value = cfg.base_dn || "";
+    $("#ldapUserFilter").value = cfg.user_filter || "(sAMAccountName=%s)";
+    $("#ldapGroupFilter").value = cfg.group_filter || "(&(objectClass=group)(member=%s))";
+    $("#ldapUsernameAttr").value = cfg.username_attr || "sAMAccountName";
+    $("#ldapEmailAttr").value = cfg.email_attr || "mail";
+    $("#ldapDefaultRole").value = cfg.default_role || "user";
+    $("#ldapStatus").textContent = "";
+
+    const all = await api("/auth/settings");
+    $("#mfaPolicy").value = all.mfa_policy || "off";
+  } catch (e) { toast(e.message, "err"); }
+}
+$("#ldapSaveBtn").onclick = async () => {
+  const body = {
+    enabled: $("#ldapEnabled").checked,
+    url: $("#ldapURL").value.trim(),
+    start_tls: $("#ldapStartTLS").checked,
+    skip_tls_verify: $("#ldapSkipVerify").checked,
+    bind_dn: $("#ldapBindDN").value.trim(),
+    base_dn: $("#ldapBaseDN").value.trim(),
+    user_filter: $("#ldapUserFilter").value.trim(),
+    group_filter: $("#ldapGroupFilter").value.trim(),
+    username_attr: $("#ldapUsernameAttr").value.trim(),
+    email_attr: $("#ldapEmailAttr").value.trim(),
+    default_role: $("#ldapDefaultRole").value,
+  };
+  const pw = $("#ldapBindPW").value;
+  if (pw) body.bind_password = pw;
+  try { await api("/auth/settings/ldap", {method:"PUT", body: JSON.stringify(body)}); toast("LDAP settings saved", "ok"); loadSettings(); }
+  catch (e) { toast(e.message, "err"); }
+};
+$("#ldapTestBtn").onclick = async () => {
+  $("#ldapStatus").textContent = "Testing…";
+  try {
+    const r = await api("/auth/settings/ldap/test", {method:"POST"});
+    $("#ldapStatus").innerHTML = r.ok ? '<span class="pill ok">Connection OK</span>' : `<span class="pill err">${esc(r.error)}</span>`;
+  } catch (e) { $("#ldapStatus").innerHTML = `<span class="pill err">${esc(e.message)}</span>`; }
+};
+$("#mfaPolicySaveBtn").onclick = async () => {
+  try { await api("/auth/settings/mfa_policy", {method:"PUT", body: JSON.stringify({value: $("#mfaPolicy").value})}); toast("MFA policy saved", "ok"); }
+  catch (e) { toast(e.message, "err"); }
+};
+
+// --- MFA enrollment ---
+$("#manageMfaBtn").onclick = async () => {
+  if (!currentUser) return;
+  if (currentUser.mfa_enabled) {
+    if (!confirm("MFA is currently enabled for your account. Disable it?")) return;
+    try { await api("/auth/users/"+currentUser.id+"/mfa", {method:"DELETE"}); toast("MFA disabled", "ok"); currentUser.mfa_enabled = false; $("#me").textContent = currentUser.username + " · " + currentUser.role; }
+    catch (e) { toast(e.message, "err"); }
+    return;
+  }
+  try {
+    const r = await api("/auth/users/"+currentUser.id+"/mfa/enroll", {method:"POST"});
+    $("#mfaUriBox").textContent = r.otpauth_uri;
+    $("#mfaSecretBox").textContent = (r.secret.match(/.{1,4}/g) || []).join(" ");
+    $("#mfaCode").value = "";
+    $("#mfaModal").classList.add("show");
+  } catch (e) { toast(e.message, "err"); }
+};
+$("#mfaVerifyBtn").onclick = async () => {
+  try {
+    await api("/auth/users/"+currentUser.id+"/mfa/verify", {method:"POST", body: JSON.stringify({code: $("#mfaCode").value.trim()})});
+    toast("MFA enabled", "ok");
+    currentUser.mfa_enabled = true;
+    $("#me").textContent = currentUser.username + " · " + currentUser.role + " · MFA ✓";
+    $("#mfaModal").classList.remove("show");
+  } catch (e) { toast(e.message, "err"); }
+};
+$("#mfaCancelBtn").onclick = () => $("#mfaModal").classList.remove("show");
+
+// Boot
+$("#login-wrap").style.display = "flex";
 </script>
 </body>
 </html>
