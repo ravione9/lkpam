@@ -32,16 +32,20 @@ func main() {
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
 
-	mux.Handle("POST /api/auth/login", proxyPath(authURL, "/login"))
-	mux.Handle("POST /api/auth/verify", proxyPath(authURL, "/verify"))
+	mux.Handle("POST /api/auth/login", forwardTo(authURL, "/login"))
+	mux.Handle("POST /api/auth/verify", forwardTo(authURL, "/verify"))
 	mux.Handle("/api/auth/", protected(http.StripPrefix("/api/auth", reverse(authURL)), authURL))
 	mux.Handle("/api/vault/", http.StripPrefix("/api/vault", protected(reverse(vaultURL), authURL)))
 	mux.Handle("/api/policy/", http.StripPrefix("/api/policy", protected(reverse(policyURL), authURL)))
 	mux.Handle("/api/approval/", http.StripPrefix("/api/approval", protected(reverse(approvalURL), authURL)))
 	mux.Handle("/api/audit/", http.StripPrefix("/api/audit", protected(reverse(auditURL), authURL)))
 
-	// Static UI
+	// Static UI (never swallow unknown /api/* routes)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		if path == "" {
 			path = "index.html"
@@ -109,14 +113,13 @@ func mustURL(s string) *url.URL {
 	return u
 }
 
-// proxyPath forwards a request to target+path without stripping the gateway prefix.
-func proxyPath(target *url.URL, path string) http.Handler {
+// forwardTo proxies a request to target host, rewriting the path to dstPath.
+// target must be a base URL (e.g. http://auth:8081) without a path component.
+func forwardTo(target *url.URL, dstPath string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u := *target
-		u.Path = path
 		r2 := r.Clone(r.Context())
-		r2.URL = &u
-		r2.Host = u.Host
-		reverse(&u).ServeHTTP(w, r2)
+		r2.URL.Path = dstPath
+		r2.URL.RawPath = dstPath
+		reverse(target).ServeHTTP(w, r2)
 	})
 }
