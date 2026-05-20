@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PAM Platform · Admin Console</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --fg: #1f1e1c; --muted: #6b6b6b;
+    --card: #fff; --border: #e3e3df; --accent: #c96442;
+    --ok: #2d6a4f; --err: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; background: #fff; position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 16px; font-weight: 600; margin: 0; }
+  main { padding: 24px; max-width: 1200px; margin: 0 auto; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  nav button { padding: 6px 12px; border: 1px solid var(--border); background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  nav button.active { border-color: var(--accent); color: var(--accent); }
+  section.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+  h3 { font-size: 13px; font-weight: 600; margin: 16px 0 8px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  input, select, textarea, button { font: inherit; }
+  input, select, textarea { padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
+  input, select { width: 180px; }
+  textarea { width: 100%; min-height: 60px; resize: vertical; }
+  button.primary { background: var(--accent); color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; }
+  button.ghost { background: transparent; border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  button.danger { color: var(--err); border-color: #fecaca; }
+  button.ghost:hover { border-color: var(--accent); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .stat .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat .value { font-size: 28px; font-weight: 600; margin-top: 4px; }
+  .muted { color: var(--muted); }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: var(--bg); border: 1px solid var(--border); }
+  .pill.warn { color: var(--accent); border-color: var(--accent); }
+  .pill.ok { color: var(--ok); border-color: #b7e4c7; }
+  .pill.err { color: var(--err); border-color: #fecaca; }
+  pre { background: #fafaf8; padding: 12px; border-radius: 6px; border: 1px solid var(--border); overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+  .form-panel { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 16px; }
+  .form-panel.hidden { display: none; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--fg); color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 100; }
+  .toast.show { opacity: 1; }
+  .toast.err { background: var(--err); }
+  code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PAM Platform · Admin Console</h1>
+  <span class="pill">reference build</span>
+  <div style="flex:1"></div>
+  <span id="me" class="muted">not signed in</span>
+  <button class="ghost" id="signout">Sign out</button>
+</header>
+<main>
+  <div id="login" class="card" style="max-width:420px">
+    <h2>Sign in</h2>
+    <div class="row" style="margin-bottom:8px"><input id="u" placeholder="username" value="admin"/></div>
+    <div class="row" style="margin-bottom:8px"><input id="p" type="password" placeholder="password" value="admin"/></div>
+    <div class="row"><button class="primary" id="loginBtn">Sign in</button></div>
+    <div class="muted" style="margin-top:8px">Default credentials on first run: <b>admin / admin</b>. Change them.</div>
+  </div>
+
+  <div id="app" style="display:none">
+    <nav id="nav">
+      <button data-tab="dash" class="active">Dashboard</button>
+      <button data-tab="targets">Targets</button>
+      <button data-tab="users">Users</button>
+      <button data-tab="secrets">Secrets</button>
+      <button data-tab="policies">Policies</button>
+      <button data-tab="requests">Access requests</button>
+      <button data-tab="sessions">Sessions</button>
+      <button data-tab="audit">Audit log</button>
+      <button data-tab="ca">SSH CA</button>
+    </nav>
+
+    <section class="card tab" id="tab-dash">
+      <h2>Dashboard</h2>
+      <div class="grid" id="stats">
+        <div class="stat"><div class="label">Targets</div><div class="value" id="stat-targets">—</div></div>
+        <div class="stat"><div class="label">Users</div><div class="value" id="stat-users">—</div></div>
+        <div class="stat"><div class="label">Pending requests</div><div class="value" id="stat-requests">—</div></div>
+        <div class="stat"><div class="label">Recent sessions</div><div class="value" id="stat-sessions">—</div></div>
+      </div>
+      <p class="muted">Connect through the SSH proxy using <code>user@target@host</code> syntax:</p>
+      <pre id="sshHint">ssh -p 2222 admin@core-sw-01@localhost</pre>
+    </section>
+
+    <section class="card tab" id="tab-targets" style="display:none">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">Managed targets</h2>
+        <button class="primary" id="targetAddBtn">Add target</button>
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Kind</th><th>Host</th><th>Port</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
+        <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+      </table>
+      <div class="form-panel hidden" id="targetForm">
+        <h3 id="targetFormTitle">Add target</h3>
+        <input type="hidden" id="targetId"/>
+        <div class="row" style="margin-bottom:8px">
+          <input id="targetName" placeholder="name (e.g. core-sw-01)"/>
+          <select id="targetKind">
+            <option value="cisco">cisco</option>
+            <option value="arista">arista</option>
+            <option value="juniper">juniper</option>
+            <option value="linux">linux</option>
+            <option value="palo">palo</option>
+            <option value="forti">forti</option>
+            <option value="windows">windows</option>
+          </select>
+          <input id="targetHost" placeholder="host / IP"/>
+          <input id="targetPort" type="number" placeholder="port" value="22" style="width:90px"/>
+          <select id="targetTier">
+            <option value="0">Tier 0 · critical</option>
+            <option value="1">Tier 1 · production</option>
+            <option value="2" selected>Tier 2 · staging</option>
+            <option value="3">Tier 3 · dev</option>
+          </select>
+          <input id="targetTags" placeholder="tags (optional)"/>
+        </div>
+        <div class="row">
+          <button class="primary" id="targetSaveBtn">Save</button>
+          <button class="ghost" id="targetCancelBtn">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card tab" id="tab-users" style="display:none">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">Users</h2>
+        <button class="primary" id="userAddBtn">Add user</button>
+      </div>
+      <table>
+        <thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+        <tbody id="userRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+      </table>
+      <div class="form-panel hidden" id="userForm">
+        <h3 id="userFormTitle">Add user</h3>
+        <input type="hidden" id="userId"/>
+        <div class="row" style="margin-bottom:8px">
+          <input id="userName" placeholder="username"/>
+          <input id="userEmail" placeholder="email"/>
+          <select id="userRole">
+            <option value="admin">admin</option>
+            <option value="netops">netops</option>
+            <option value="secops">secops</option>
+            <option value="sysadmin">sysadmin</option>
+            <option value="viewer">viewer</option>
+            <option value="user">user</option>
+          </select>
+          <input id="userPassword" type="password" placeholder="password"/>
+          <label class="row"><input type="checkbox" id="userDisabled" style="width:auto"/> Disabled</label>
+        </div>
+        <div class="row">
+          <button class="primary" id="userSaveBtn">Save</button>
+          <button class="ghost" id="userCancelBtn">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card tab" id="tab-secrets" style="display:none">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">Vault secrets</h2>
+        <button class="primary" id="secretAddBtn">Store secret</button>
+      </div>
+      <p class="muted">Plaintext values are encrypted at rest. Only metadata is shown here.</p>
+      <table>
+        <thead><tr><th>Name</th><th>Updated</th><th></th></tr></thead>
+        <tbody id="secretRows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+      </table>
+      <div class="form-panel hidden" id="secretForm">
+        <h3>Store secret</h3>
+        <div class="row" style="margin-bottom:8px">
+          <input id="secretName" placeholder="name"/>
+        </div>
+        <textarea id="secretValue" placeholder="plaintext value"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="primary" id="secretSaveBtn">Store</button>
+          <button class="ghost" id="secretCancelBtn">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card tab" id="tab-policies" style="display:none">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0">Access policies</h2>
+        <button class="primary" id="policyAddBtn">Add policy</button>
+      </div>
+      <table>
+        <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
+        <tbody id="policyRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+      </table>
+      <div class="form-panel hidden" id="policyForm">
+        <h3 id="policyFormTitle">Add policy</h3>
+        <input type="hidden" id="policyId"/>
+        <div class="row" style="margin-bottom:8px">
+          <input id="policyRole" placeholder="role"/>
+          <input id="policyKind" placeholder="target kind (* for any)"/>
+          <input id="policyTier" type="number" placeholder="tier max" value="2" style="width:100px"/>
+          <label class="row"><input type="checkbox" id="policyApproval" style="width:auto"/> Require approval</label>
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <input id="policyAllow" placeholder="allowed commands (comma-separated)" style="flex:1;min-width:280px"/>
+        </div>
+        <div class="row" style="margin-bottom:8px">
+          <input id="policyDeny" placeholder="denied commands (comma-separated)" style="flex:1;min-width:280px"/>
+        </div>
+        <div class="row">
+          <button class="primary" id="policySaveBtn">Save</button>
+          <button class="ghost" id="policyCancelBtn">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card tab" id="tab-requests" style="display:none">
+      <h2>Pending access requests</h2>
+      <table>
+        <thead><tr><th>ID</th><th>User</th><th>Target</th><th>Reason</th><th>TTL</th><th>Created</th><th></th></tr></thead>
+        <tbody id="reqRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+      </table>
+      <div class="form-panel" id="reqForm">
+        <h3>Request JIT access</h3>
+        <div class="row" style="margin-bottom:8px">
+          <select id="reqTarget"><option value="">Select target…</option></select>
+          <input id="reqReason" placeholder="reason" style="flex:1;min-width:200px"/>
+          <input id="reqTTL" type="number" placeholder="TTL seconds" value="1800" style="width:120px"/>
+          <button class="primary" id="reqSubmitBtn">Submit request</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card tab" id="tab-sessions" style="display:none">
+      <h2>SSH sessions</h2>
+      <table>
+        <thead><tr><th>Started</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th></tr></thead>
+        <tbody id="sessionRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="card tab" id="tab-audit" style="display:none">
+      <h2>Recent audit events</h2>
+      <table>
+        <thead><tr><th>Time</th><th>Actor</th><th>Kind</th><th>Target</th><th>Severity</th></tr></thead>
+        <tbody id="auditRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section class="card tab" id="tab-ca" style="display:none">
+      <h2>SSH CA public key</h2>
+      <p class="muted">Trust this key on every managed device (<code>@cert-authority</code> in <code>sshd_config</code> or device equivalent).</p>
+      <pre id="caPub">…</pre>
+    </section>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+let token = null;
+let currentUser = null;
+let cache = { targets: [], users: [] };
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+function toast(msg, isErr) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.className = "toast show" + (isErr ? " err" : "");
+  setTimeout(() => el.classList.remove("show"), 2800);
+}
+
+async function api(path, opts = {}) {
+  opts.headers = opts.headers || {};
+  if (token) opts.headers.Authorization = "Bearer " + token;
+  if (opts.body && !(opts.body instanceof FormData)) {
+    opts.headers["Content-Type"] = "application/json";
+  }
+  const r = await fetch("/api" + path, opts);
+  if (!r.ok) {
+    let msg = await r.text();
+    try { msg = JSON.parse(msg).error || msg; } catch {}
+    throw new Error(msg);
+  }
+  const ct = r.headers.get("content-type") || "";
+  if (ct.includes("application/json")) return r.json();
+  return r.text();
+}
+
+function tierLabel(t) {
+  return ({0:"0 · critical",1:"1 · prod",2:"2 · staging",3:"3 · dev"})[t] ?? t;
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
+}
+
+function showTab(name) {
+  $$(".tab").forEach(el => el.style.display = "none");
+  const tab = $("#tab-" + name);
+  if (tab) tab.style.display = "block";
+  $$("#nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  const loaders = {
+    dash: loadDashboard,
+    targets: loadTargets,
+    users: loadUsers,
+    secrets: loadSecrets,
+    policies: loadPolicies,
+    requests: loadRequests,
+    sessions: loadSessions,
+    audit: loadAudit,
+    ca: loadCA,
+  };
+  if (loaders[name]) loaders[name]();
+}
+
+$("#loginBtn").onclick = async () => {
+  try {
+    const data = await api("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ Username: $("#u").value, Password: $("#p").value })
+    });
+    token = data.token;
+    currentUser = data.user;
+    $("#login").style.display = "none";
+    $("#app").style.display = "block";
+    $("#me").textContent = currentUser.username + " · " + currentUser.role;
+    showTab("dash");
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#signout").onclick = () => { token = null; location.reload(); };
+
+$$("#nav button[data-tab]").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+async function loadDashboard() {
+  try {
+    const [targets, users, requests, sessions] = await Promise.all([
+      api("/policy/targets"),
+      api("/auth/users"),
+      api("/approval/requests/pending"),
+      api("/audit/sessions?limit=50"),
+    ]);
+    cache.targets = targets;
+    cache.users = users;
+    $("#stat-targets").textContent = targets.length;
+    $("#stat-users").textContent = users.length;
+    $("#stat-requests").textContent = requests.length;
+    $("#stat-sessions").textContent = sessions.length;
+    const first = targets[0];
+    $("#sshHint").textContent = first
+      ? `ssh -p 2222 ${currentUser.username}@${first.name}@localhost`
+      : "ssh -p 2222 user@target-name@localhost";
+  } catch (e) { toast(e.message, true); }
+}
+
+// --- Targets ---
+async function loadTargets() {
+  try {
+    const rows = await api("/policy/targets");
+    cache.targets = rows;
+    if (!rows.length) {
+      $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">No targets yet. Add one to get started.</td></tr>`;
+      return;
+    }
+    $("#targetRows").innerHTML = rows.map(t => `
+      <tr>
+        <td><b>${esc(t.name)}</b></td>
+        <td>${esc(t.kind)}</td>
+        <td>${esc(t.host)}</td>
+        <td>${t.port}</td>
+        <td><span class="pill">${tierLabel(t.tier)}</span></td>
+        <td class="muted">${esc(t.tags)}</td>
+        <td class="actions">
+          <button class="ghost" onclick="editTarget(${t.id})">Edit</button>
+          <button class="ghost danger" onclick="deleteTarget(${t.id})">Delete</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) { $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+function resetTargetForm() {
+  $("#targetId").value = "";
+  $("#targetName").value = "";
+  $("#targetKind").value = "cisco";
+  $("#targetHost").value = "";
+  $("#targetPort").value = "22";
+  $("#targetTier").value = "2";
+  $("#targetTags").value = "";
+  $("#targetName").disabled = false;
+  $("#targetFormTitle").textContent = "Add target";
+  $("#targetForm").classList.add("hidden");
+}
+
+$("#targetAddBtn").onclick = () => {
+  resetTargetForm();
+  $("#targetFormTitle").textContent = "Add target";
+  $("#targetForm").classList.remove("hidden");
+};
+
+$("#targetCancelBtn").onclick = resetTargetForm;
+
+window.editTarget = (id) => {
+  const t = cache.targets.find(x => x.id === id);
+  if (!t) return;
+  $("#targetId").value = t.id;
+  $("#targetName").value = t.name;
+  $("#targetName").disabled = true;
+  $("#targetKind").value = t.kind;
+  $("#targetHost").value = t.host;
+  $("#targetPort").value = t.port;
+  $("#targetTier").value = t.tier;
+  $("#targetTags").value = t.tags || "";
+  $("#targetFormTitle").textContent = "Edit target";
+  $("#targetForm").classList.remove("hidden");
+};
+
+$("#targetSaveBtn").onclick = async () => {
+  const body = {
+    name: $("#targetName").value.trim(),
+    kind: $("#targetKind").value,
+    host: $("#targetHost").value.trim(),
+    port: parseInt($("#targetPort").value, 10) || 22,
+    tier: parseInt($("#targetTier").value, 10),
+    tags: $("#targetTags").value.trim(),
+  };
+  try {
+    const id = $("#targetId").value;
+    if (id) {
+      body.id = parseInt(id, 10);
+      await api("/policy/targets/" + id, { method: "PUT", body: JSON.stringify(body) });
+      toast("Target updated");
+    } else {
+      await api("/policy/targets", { method: "POST", body: JSON.stringify(body) });
+      toast("Target created");
+    }
+    resetTargetForm();
+    loadTargets();
+  } catch (e) { toast(e.message, true); }
+};
+
+window.deleteTarget = async (id) => {
+  const t = cache.targets.find(x => x.id === id);
+  if (!t || !confirm(`Delete target "${t.name}"?`)) return;
+  try {
+    await api("/policy/targets/" + id, { method: "DELETE" });
+    toast("Target deleted");
+    loadTargets();
+  } catch (e) { toast(e.message, true); }
+};
+
+// --- Users ---
+async function loadUsers() {
+  try {
+    const rows = await api("/auth/users");
+    cache.users = rows;
+    if (!rows.length) {
+      $("#userRows").innerHTML = `<tr><td colspan="5" class="muted">No users.</td></tr>`;
+      return;
+    }
+    $("#userRows").innerHTML = rows.map(u => `
+      <tr>
+        <td><b>${esc(u.username)}</b></td>
+        <td>${esc(u.email)}</td>
+        <td><span class="pill">${esc(u.role)}</span></td>
+        <td>${u.disabled ? '<span class="pill err">disabled</span>' : '<span class="pill ok">active</span>'}</td>
+        <td class="actions">
+          <button class="ghost" onclick="editUser(${u.id})">Edit</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) { $("#userRows").innerHTML = `<tr><td colspan="5" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+function resetUserForm() {
+  $("#userId").value = "";
+  $("#userName").value = "";
+  $("#userName").disabled = false;
+  $("#userEmail").value = "";
+  $("#userRole").value = "user";
+  $("#userPassword").value = "";
+  $("#userPassword").placeholder = "password";
+  $("#userDisabled").checked = false;
+  $("#userFormTitle").textContent = "Add user";
+  $("#userForm").classList.add("hidden");
+}
+
+$("#userAddBtn").onclick = () => {
+  resetUserForm();
+  $("#userPassword").placeholder = "password (required)";
+  $("#userForm").classList.remove("hidden");
+};
+
+$("#userCancelBtn").onclick = resetUserForm;
+
+window.editUser = (id) => {
+  const u = cache.users.find(x => x.id === id);
+  if (!u) return;
+  $("#userId").value = u.id;
+  $("#userName").value = u.username;
+  $("#userName").disabled = true;
+  $("#userEmail").value = u.email || "";
+  $("#userRole").value = u.role;
+  $("#userPassword").value = "";
+  $("#userPassword").placeholder = "new password (leave blank to keep)";
+  $("#userDisabled").checked = !!u.disabled;
+  $("#userFormTitle").textContent = "Edit user";
+  $("#userForm").classList.remove("hidden");
+};
+
+$("#userSaveBtn").onclick = async () => {
+  try {
+    const id = $("#userId").value;
+    if (id) {
+      const body = {
+        email: $("#userEmail").value.trim(),
+        role: $("#userRole").value,
+        disabled: $("#userDisabled").checked,
+      };
+      const pw = $("#userPassword").value;
+      if (pw) body.password = pw;
+      await api("/auth/users/" + id, { method: "PUT", body: JSON.stringify(body) });
+      toast("User updated");
+    } else {
+      const pw = $("#userPassword").value;
+      if (!pw) throw new Error("password required for new user");
+      await api("/auth/users", {
+        method: "POST",
+        body: JSON.stringify({
+          username: $("#userName").value.trim(),
+          email: $("#userEmail").value.trim(),
+          role: $("#userRole").value,
+          password: pw,
+        })
+      });
+      toast("User created");
+    }
+    resetUserForm();
+    loadUsers();
+  } catch (e) { toast(e.message, true); }
+};
+
+// --- Secrets ---
+async function loadSecrets() {
+  try {
+    const rows = await api("/vault/secrets");
+    if (!rows.length) {
+      $("#secretRows").innerHTML = `<tr><td colspan="3" class="muted">No secrets stored.</td></tr>`;
+      return;
+    }
+    $("#secretRows").innerHTML = rows.map(s => `
+      <tr>
+        <td><b>${esc(s.name)}</b></td>
+        <td class="muted">${new Date(s.updated_at * 1000).toLocaleString()}</td>
+        <td><button class="ghost danger" onclick="deleteSecret(${JSON.stringify(s.name)})">Delete</button></td>
+      </tr>`).join("");
+  } catch (e) { $("#secretRows").innerHTML = `<tr><td colspan="3" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+$("#secretAddBtn").onclick = () => {
+  $("#secretName").value = "";
+  $("#secretValue").value = "";
+  $("#secretForm").classList.remove("hidden");
+};
+$("#secretCancelBtn").onclick = () => $("#secretForm").classList.add("hidden");
+
+$("#secretSaveBtn").onclick = async () => {
+  try {
+    await api("/vault/secrets", {
+      method: "POST",
+      body: JSON.stringify({ name: $("#secretName").value.trim(), plaintext: $("#secretValue").value })
+    });
+    toast("Secret stored");
+    $("#secretForm").classList.add("hidden");
+    loadSecrets();
+  } catch (e) { toast(e.message, true); }
+};
+
+window.deleteSecret = async (name) => {
+  if (!confirm(`Delete secret "${name}"?`)) return;
+  try {
+    await api("/vault/secrets/" + encodeURIComponent(name), { method: "DELETE" });
+    toast("Secret deleted");
+    loadSecrets();
+  } catch (e) { toast(e.message, true); }
+};
+
+// --- Policies ---
+async function loadPolicies() {
+  try {
+    const rows = await api("/policy/policies");
+    if (!rows.length) {
+      $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">No policies.</td></tr>`;
+      return;
+    }
+    window._policies = rows;
+    $("#policyRows").innerHTML = rows.map(p => `
+      <tr>
+        <td><b>${esc(p.role)}</b></td>
+        <td>${esc(p.target_kind)}</td>
+        <td>${p.tier_max}</td>
+        <td>${p.require_approval ? '<span class="pill warn">yes</span>' : 'no'}</td>
+        <td class="muted" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.allowed_commands)}">${esc(p.allowed_commands) || '—'}</td>
+        <td class="muted" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.denied_commands)}">${esc(p.denied_commands) || '—'}</td>
+        <td class="actions">
+          <button class="ghost" onclick="editPolicy(${p.id})">Edit</button>
+          <button class="ghost danger" onclick="deletePolicy(${p.id})">Delete</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) { $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+function resetPolicyForm() {
+  $("#policyId").value = "";
+  $("#policyRole").value = "";
+  $("#policyKind").value = "";
+  $("#policyTier").value = "2";
+  $("#policyApproval").checked = false;
+  $("#policyAllow").value = "";
+  $("#policyDeny").value = "";
+  $("#policyFormTitle").textContent = "Add policy";
+  $("#policyForm").classList.add("hidden");
+}
+
+$("#policyAddBtn").onclick = () => { resetPolicyForm(); $("#policyForm").classList.remove("hidden"); };
+$("#policyCancelBtn").onclick = resetPolicyForm;
+
+window.editPolicy = (id) => {
+  const p = (window._policies || []).find(x => x.id === id);
+  if (!p) return;
+  $("#policyId").value = p.id;
+  $("#policyRole").value = p.role;
+  $("#policyKind").value = p.target_kind;
+  $("#policyTier").value = p.tier_max;
+  $("#policyApproval").checked = p.require_approval;
+  $("#policyAllow").value = p.allowed_commands || "";
+  $("#policyDeny").value = p.denied_commands || "";
+  $("#policyFormTitle").textContent = "Edit policy";
+  $("#policyForm").classList.remove("hidden");
+};
+
+$("#policySaveBtn").onclick = async () => {
+  const body = {
+    role: $("#policyRole").value.trim(),
+    target_kind: $("#policyKind").value.trim(),
+    tier_max: parseInt($("#policyTier").value, 10),
+    require_approval: $("#policyApproval").checked,
+    allowed_commands: $("#policyAllow").value.trim(),
+    denied_commands: $("#policyDeny").value.trim(),
+  };
+  try {
+    const id = $("#policyId").value;
+    if (id) {
+      body.id = parseInt(id, 10);
+      await api("/policy/policies/" + id, { method: "PUT", body: JSON.stringify(body) });
+      toast("Policy updated");
+    } else {
+      await api("/policy/policies", { method: "POST", body: JSON.stringify(body) });
+      toast("Policy created");
+    }
+    resetPolicyForm();
+    loadPolicies();
+  } catch (e) { toast(e.message, true); }
+};
+
+window.deletePolicy = async (id) => {
+  if (!confirm("Delete this policy rule?")) return;
+  try {
+    await api("/policy/policies/" + id, { method: "DELETE" });
+    toast("Policy deleted");
+    loadPolicies();
+  } catch (e) { toast(e.message, true); }
+};
+
+// --- Access requests ---
+async function loadRequests() {
+  try {
+    if (!cache.targets.length) cache.targets = await api("/policy/targets");
+    const sel = $("#reqTarget");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Select target…</option>' +
+      cache.targets.map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join("");
+    if (cur) sel.value = cur;
+
+    const rows = await api("/approval/requests/pending");
+    if (!rows.length) {
+      $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">No pending requests.</td></tr>`;
+      return;
+    }
+    $("#reqRows").innerHTML = rows.map(r => `
+      <tr>
+        <td>${r.id}</td>
+        <td>${esc(r.username)}</td>
+        <td>${esc(r.target_name)}</td>
+        <td>${esc(r.reason)}</td>
+        <td>${r.ttl_seconds}s</td>
+        <td class="muted">${new Date(r.created_at * 1000).toLocaleString()}</td>
+        <td class="actions">
+          <button class="ghost" onclick="decide(${r.id}, true)">Approve</button>
+          <button class="ghost danger" onclick="decide(${r.id}, false)">Deny</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) { $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+window.decide = async (id, approve) => {
+  try {
+    await api(`/approval/requests/${id}/decide`, {
+      method: "POST",
+      body: JSON.stringify({ approver_id: currentUser.id, approve })
+    });
+    toast(approve ? "Request approved" : "Request denied");
+    loadRequests();
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#reqSubmitBtn").onclick = async () => {
+  const targetId = parseInt($("#reqTarget").value, 10);
+  if (!targetId) { toast("Select a target", true); return; }
+  try {
+    await api("/approval/requests", {
+      method: "POST",
+      body: JSON.stringify({
+        user_id: currentUser.id,
+        target_id: targetId,
+        reason: $("#reqReason").value.trim(),
+        ttl_seconds: parseInt($("#reqTTL").value, 10) || 1800,
+      })
+    });
+    toast("Access request submitted");
+    $("#reqReason").value = "";
+    loadRequests();
+  } catch (e) { toast(e.message, true); }
+};
+
+// --- Sessions ---
+async function loadSessions() {
+  try {
+    if (!cache.targets.length) cache.targets = await api("/policy/targets");
+    if (!cache.users.length) cache.users = await api("/auth/users");
+    const userMap = Object.fromEntries(cache.users.map(u => [u.id, u.username]));
+    const targetMap = Object.fromEntries(cache.targets.map(t => [t.id, t.name]));
+    const rows = await api("/audit/sessions?limit=100");
+    if (!rows.length) {
+      $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">No sessions recorded yet.</td></tr>`;
+      return;
+    }
+    $("#sessionRows").innerHTML = rows.map(s => `
+      <tr>
+        <td>${new Date(s.started_at * 1000).toLocaleString()}</td>
+        <td>${esc(userMap[s.user_id] || s.user_id)}</td>
+        <td>${esc(targetMap[s.target_id] || s.target_id)}</td>
+        <td class="muted">${esc(s.client_ip) || '—'}</td>
+        <td>${s.ended_at
+          ? `<span class="pill">${esc(s.ended_reason || 'ended')}</span>`
+          : '<span class="pill ok">active</span>'}</td>
+        <td class="muted" style="font-size:11px">${esc(s.recording_path) || '—'}</td>
+      </tr>`).join("");
+  } catch (e) { $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+// --- Audit ---
+async function loadAudit() {
+  try {
+    const rows = await api("/audit/events?limit=100");
+    if (!rows.length) {
+      $("#auditRows").innerHTML = `<tr><td colspan="5" class="muted">No audit events.</td></tr>`;
+      return;
+    }
+    $("#auditRows").innerHTML = rows.map(r => `
+      <tr>
+        <td>${new Date(r.ts * 1000).toLocaleString()}</td>
+        <td>${esc(r.actor)}</td>
+        <td>${esc(r.kind)}</td>
+        <td>${esc(r.target)}</td>
+        <td><span class="pill ${r.severity === 'warn' ? 'warn' : ''}">${esc(r.severity)}</span></td>
+      </tr>`).join("");
+  } catch (e) { $("#auditRows").innerHTML = `<tr><td colspan="5" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+async function loadCA() {
+  try {
+    const r = await fetch("/api/vault/ca/pub", { headers: { Authorization: "Bearer " + token }});
+    if (!r.ok) throw new Error(await r.text());
+    $("#caPub").textContent = await r.text();
+  } catch (e) { $("#caPub").textContent = e.message; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+bin/
+*.exe
+*.test
+*.out
+*.log
+data/
+recordings/
+.env
+.idea/
+.vscode/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+go.sum

@@ -1,0 +1,70 @@
+version: "3.9"
+
+# Reference local-dev compose. All services share the SQLite file under
+# ./data. For Postgres, change PAM_DB and add a postgres service.
+
+x-common: &common
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile
+  environment:
+    PAM_DB: "file:/data/pam.db?cache=shared&_pragma=foreign_keys(1)"
+    PAM_JWT_SECRET: "${PAM_JWT_SECRET:-dev-change-me}"
+    PAM_MASTER_KEY: "${PAM_MASTER_KEY:-}"
+  volumes:
+    - pam-data:/data
+    - pam-rec:/recordings
+
+services:
+  auth:
+    <<: *common
+    entrypoint: ["/app/auth-service"]
+    ports: ["8081:8081"]
+
+  vault:
+    <<: *common
+    entrypoint: ["/app/vault-service"]
+    depends_on: [auth]
+    ports: ["8082:8082"]
+
+  policy:
+    <<: *common
+    entrypoint: ["/app/policy-service"]
+    depends_on: [auth]
+    ports: ["8083:8083"]
+
+  approval:
+    <<: *common
+    entrypoint: ["/app/approval-service"]
+    depends_on: [auth]
+    ports: ["8084:8084"]
+
+  audit:
+    <<: *common
+    entrypoint: ["/app/audit-service"]
+    depends_on: [auth]
+    ports: ["8085:8085"]
+
+  ssh-proxy:
+    <<: *common
+    entrypoint: ["/app/ssh-proxy"]
+    depends_on: [vault, policy]
+    ports: ["2222:2222"]
+    environment:
+      PAM_REC_DIR: "/recordings"
+
+  gateway:
+    <<: *common
+    entrypoint: ["/app/api-gateway"]
+    depends_on: [auth, vault, policy, approval, audit]
+    ports: ["8080:8080"]
+    environment:
+      PAM_AUTH_URL: "http://auth:8081"
+      PAM_VAULT_URL: "http://vault:8082"
+      PAM_POLICY_URL: "http://policy:8083"
+      PAM_APPROVAL_URL: "http://approval:8084"
+      PAM_AUDIT_URL: "http://audit:8085"
+
+volumes:
+  pam-data:
+  pam-rec:
