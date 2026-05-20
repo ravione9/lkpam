@@ -46,6 +46,13 @@ type recorder struct {
 
 func (r *recorder) WriteHeader(c int) { r.status = c; r.ResponseWriter.WriteHeader(c) }
 
+// RegisterHealth adds GET /health for container orchestration probes.
+func RegisterHealth(mux *http.ServeMux) {
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+}
+
 // BearerToken extracts the JWT from the Authorization header.
 func BearerToken(r *http.Request) (string, error) {
 	h := r.Header.Get("Authorization")

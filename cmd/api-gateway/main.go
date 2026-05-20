@@ -30,9 +30,10 @@ func main() {
 	auditURL := mustURL(config.Get("PAM_AUDIT_URL", "http://localhost:8085"))
 
 	mux := http.NewServeMux()
+	httpx.RegisterHealth(mux)
 
-	mux.HandleFunc("POST /api/auth/login", proxyPath(authURL, "/login"))
-	mux.HandleFunc("POST /api/auth/verify", proxyPath(authURL, "/verify"))
+	mux.Handle("POST /api/auth/login", proxyPath(authURL, "/login"))
+	mux.Handle("POST /api/auth/verify", proxyPath(authURL, "/verify"))
 	mux.Handle("/api/auth/", protected(http.StripPrefix("/api/auth", reverse(authURL)), authURL))
 	mux.Handle("/api/vault/", http.StripPrefix("/api/vault", protected(reverse(vaultURL), authURL)))
 	mux.Handle("/api/policy/", http.StripPrefix("/api/policy", protected(reverse(policyURL), authURL)))

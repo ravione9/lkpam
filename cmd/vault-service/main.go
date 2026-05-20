@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/example/pam-platform/internal/config"
@@ -30,6 +29,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	httpx.RegisterHealth(mux)
 
 	mux.HandleFunc("GET /ca/pub", func(w http.ResponseWriter, r *http.Request) {
 		k, err := v.PublicCAKey(r.Context())

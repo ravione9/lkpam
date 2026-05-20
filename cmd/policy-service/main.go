@@ -30,6 +30,7 @@ func main() {
 	inv := &inventory.Service{DB: d}
 
 	mux := http.NewServeMux()
+	httpx.RegisterHealth(mux)
 
 	mux.HandleFunc("POST /decide", func(w http.ResponseWriter, r *http.Request) {
 		var in policy.Input

@@ -58,12 +58,16 @@ make run-gateway
 # Then open http://localhost:8080  (default credentials: admin / admin)
 ```
 
-Or with Docker:
+Or with Docker (recommended):
 
 ```bash
-cd deploy/docker
-docker compose up --build
+cp deploy/docker/.env.example deploy/docker/.env   # edit secrets
+make docker-up                                      # build + start
+# Admin UI: http://localhost:8080  (admin / admin)
+# SSH:      ssh -p 2222 user@target-name@localhost
 ```
+
+See [deploy/docker/README.md](deploy/docker/README.md) for full Docker deployment docs.
 
 ## Trying it out
 

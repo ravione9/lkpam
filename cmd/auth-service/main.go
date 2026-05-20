@@ -39,6 +39,7 @@ func main() {
 	bootstrap(svc)
 
 	mux := http.NewServeMux()
+	httpx.RegisterHealth(mux)
 
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Username, Password, OTP string }

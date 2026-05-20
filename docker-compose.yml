@@ -1,0 +1,4 @@
+# Convenience wrapper — runs the stack from repo root:
+#   docker compose up --build -d
+include:
+  - path: deploy/docker/docker-compose.yml

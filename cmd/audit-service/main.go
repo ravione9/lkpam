@@ -53,6 +53,7 @@ func main() {
 	defer sink.Close()
 
 	mux := http.NewServeMux()
+	httpx.RegisterHealth(mux)
 
 	mux.HandleFunc("POST /events", func(w http.ResponseWriter, r *http.Request) {
 		var ev events.Event

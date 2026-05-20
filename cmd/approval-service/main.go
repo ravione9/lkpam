@@ -25,6 +25,7 @@ func main() {
 	svc := &approval.Service{DB: d}
 
 	mux := http.NewServeMux()
+	httpx.RegisterHealth(mux)
 
 	mux.HandleFunc("POST /requests", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

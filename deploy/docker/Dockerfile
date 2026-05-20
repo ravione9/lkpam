@@ -1,19 +1,37 @@
-# Multi-stage build: compile once, copy each binary into a minimal runtime image.
+# Multi-stage build: compile all services, run on minimal Alpine.
 FROM golang:1.22-alpine AS build
+
+RUN apk add --no-cache git ca-certificates
+
 WORKDIR /src
 COPY go.mod ./
-RUN go mod download || true
+RUN go mod download
 COPY . .
 RUN go mod tidy
+
+ARG SERVICES="auth-service vault-service policy-service approval-service audit-service ssh-proxy api-gateway tacacs-service pam-cli"
 RUN mkdir -p /out && \
-    for svc in auth-service vault-service policy-service approval-service audit-service ssh-proxy api-gateway pam-cli; do \
+    for svc in $SERVICES; do \
         echo "building $svc"; \
-        CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/$svc ./cmd/$svc; \
+        CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/$svc ./cmd/$svc || exit 1; \
     done
 
-FROM gcr.io/distroless/static:nonroot
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates wget su-exec tzdata \
+    && addgroup -S pam \
+    && adduser -S pam -G pam
+
 WORKDIR /app
 COPY --from=build /out/ /app/
-EXPOSE 8080 8081 8082 8083 8084 8085 2222
-USER nonroot:nonroot
-ENTRYPOINT ["/app/api-gateway"]
+COPY deploy/docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh \
+    && mkdir -p /data /recordings \
+    && chown -R pam:pam /data /recordings
+
+VOLUME ["/data", "/recordings"]
+
+EXPOSE 8080 8081 8082 8083 8084 8085 2222 49
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/app/api-gateway"]
