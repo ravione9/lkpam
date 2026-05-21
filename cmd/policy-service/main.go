@@ -29,6 +29,7 @@ func main() {
 
 	seedPolicies(d)
 	ensureUserPolicies(d)
+	migrateAdminTierMax(d)
 
 	eng := &policy.Engine{DB: d}
 	inv := &inventory.Service{DB: d}
@@ -203,11 +204,12 @@ func seedPolicies(d *db.DB) {
 		return
 	}
 	rows := []struct {
-		role, kind   string
-		tier, appr   int
-		allow, deny  string
+		role, kind  string
+		tier, appr  int
+		allow, deny string
 	}{
-		{"admin", "*", 0, 0, "", "rm -rf /,format,erase startup-config,write erase"},
+		// admin: full reach (T0-T3), direct launch, no per-cmd allow list (deny still applies).
+		{"admin", "*", 3, 0, "", "rm -rf /,format,erase startup-config,write erase"},
 		{"netops", "cisco", 1, 1, "show,configure terminal,interface,ip,ping", "reload,erase,write erase,format,delete"},
 		{"netops", "arista", 1, 1, "show,configure,interface,ip,ping", "reload,erase,write erase,format,delete"},
 		{"netops", "juniper", 1, 1, "show,set,configure,ping", "request system reboot,request system zeroize"},
@@ -231,7 +233,25 @@ func seedPolicies(d *db.DB) {
 	log.Printf("seeded %d default policies", len(rows))
 }
 
-// ensureUserPolicies backfills JIT policies for the default "user" role on existing DBs.
+// migrateAdminTierMax repairs the seeded admin/* policy on existing DBs. The
+// original seed used tier_max=0 paired with a reversed tier check (target_tier
+// < tier_max). The tier check has since been corrected to a ceiling (deny when
+// target_tier > tier_max), which makes tier_max=0 mean "T0 only" and breaks
+// admin access to T1-T3 machines. Widen the policy to T3 so the historical
+// "admin can reach everything" intent is preserved.
+func migrateAdminTierMax(d *db.DB) {
+	res, err := d.Exec(`
+		UPDATE policies
+		SET tier_max = 3
+		WHERE role = 'admin' AND target_kind = '*' AND tier_max < 3`)
+	if err != nil {
+		log.Printf("migrate admin tier_max: %v", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("migrated admin/* policy tier_max to 3 (was using legacy semantics)")
+	}
+}
 func ensureUserPolicies(d *db.DB) {
 	var n int
 	_ = d.QueryRow(`SELECT COUNT(*) FROM policies WHERE role = 'user'`).Scan(&n)
