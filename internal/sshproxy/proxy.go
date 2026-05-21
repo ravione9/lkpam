@@ -105,7 +105,12 @@ func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, 
 		}
 		return nil, err
 	}
-	return s.authorizeAndStash(authedUser, target)
+	perms, err := s.authorizeAndStash(authedUser, target)
+	if err != nil {
+		return nil, err
+	}
+	s.stashPassthrough(perms, string(pw))
+	return perms, nil
 }
 
 // keyboardInteractiveAuth is the SSH fallback that lets us prompt for an MFA
@@ -133,7 +138,26 @@ func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInte
 	if err != nil {
 		return nil, err
 	}
-	return s.authorizeAndStash(authedUser, target)
+	perms, err := s.authorizeAndStash(authedUser, target)
+	if err != nil {
+		return nil, err
+	}
+	s.stashPassthrough(perms, pw)
+	return perms, nil
+}
+
+// stashPassthrough remembers the password the user just typed so it can be
+// re-used downstream when no privileged account is linked to the target. This
+// matches the CyberArk PSM "transparent SSO" behaviour where the same AD
+// credential authenticates the user to both PAM and the device.
+func (s *Server) stashPassthrough(perms *ssh.Permissions, password string) {
+	if perms == nil || password == "" {
+		return
+	}
+	if perms.Extensions == nil {
+		perms.Extensions = map[string]string{}
+	}
+	perms.Extensions["pt-password"] = password
 }
 
 // errMFANeeded is returned by authenticate when the user has TOTP enrolled and
@@ -321,43 +345,49 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		sessionID = fmt.Sprintf("%d-%s", time.Now().UnixNano(), targetName)
 	}
 
-	s.Bus.Publish(events.Event{
-		Source: "ssh-proxy", Kind: "session.open", Severity: "info",
-		Actor: user, Target: targetName,
-		Detail: map[string]string{"session_id": sessionID, "client": nc.RemoteAddr().String()},
-	})
 	defer s.Bus.Publish(events.Event{
 		Source: "ssh-proxy", Kind: "session.close", Severity: "info",
 		Actor: user, Target: targetName,
 		Detail: map[string]string{"session_id": sessionID},
 	})
 
-	// Build downstream auth. Preferred: use the privileged account linked
-	// to the target (CyberArk PSM model — admin stores device credentials
-	// in a safe, PAM injects them transparently). Fallback: ephemeral SSH
-	// cert as user "pam-user" (requires the target to trust the PAM CA).
+	// Build downstream auth in order of preference:
+	//   1. Privileged account linked to the target (CyberArk PSM model —
+	//      admin stores device credentials in a safe, PAM injects them).
+	//   2. Passthrough: re-use the password the user just typed at the
+	//      proxy prompt. Works seamlessly when the device shares the same
+	//      AD/LDAP backend as PAM ("transparent SSO").
+	//   3. Ephemeral SSH cert as user "pam-user" — only works when the
+	//      target trusts the PAM CA via TrustedUserCAKeys / sshd_config.
 	targetID := mustAtoi(sconn.Permissions.Extensions["target-id"])
-	downUser, downPassword, hasPrivAccount := s.lookupPrivilegedAccount(targetID)
+	downUser, downPassword, authMode := "", "", ""
+	if u, pw, ok := s.lookupPrivilegedAccount(targetID); ok {
+		downUser, downPassword, authMode = u, pw, "priv-account"
+	} else if pw := sconn.Permissions.Extensions["pt-password"]; pw != "" {
+		downUser, downPassword, authMode = user, pw, "passthrough"
+	}
 
 	var authMethods []ssh.AuthMethod
-	if hasPrivAccount && downPassword != "" {
+	if downPassword != "" {
+		pw := downPassword
 		authMethods = append(authMethods,
-			ssh.Password(downPassword),
+			ssh.Password(pw),
 			ssh.KeyboardInteractive(func(_, _ string, qs []string, _ []bool) ([]string, error) {
 				out := make([]string, len(qs))
 				for i := range qs {
-					out[i] = downPassword
+					out[i] = pw
 				}
 				return out, nil
 			}),
 		)
 	} else {
 		downUser = "pam-user"
+		authMode = "ssh-cert"
 		principals := []string{sconn.Permissions.Extensions["role"], "pam-user"}
 		upPriv, upCertAuth, certErr := s.Vault.IssueSSHCert(principals, 30*time.Minute)
 		if certErr != nil {
 			log.Printf("issue cert: %v", certErr)
-			s.sendShellError(chans, "PAM: no privileged account linked to this target.\r\nAdmin must add one in Privileged Accounts (Safes tab).\r\n")
+			s.sendShellError(chans, "PAM: no privileged account linked to this target.\r\nAdd one in Privileged Accounts (Safes tab) with the device username + password.\r\n")
 			return
 		}
 		upSigner, certErr := buildCertSigner(upPriv, upCertAuth)
@@ -368,7 +398,19 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		authMethods = []ssh.AuthMethod{ssh.PublicKeys(upSigner)}
 	}
 
+	s.Bus.Publish(events.Event{
+		Source: "ssh-proxy", Kind: "session.open", Severity: "info",
+		Actor: user, Target: targetName,
+		Detail: map[string]string{
+			"session_id": sessionID,
+			"client":     nc.RemoteAddr().String(),
+			"auth_mode":  authMode,
+			"as_user":    downUser,
+		},
+	})
+
 	target := fmt.Sprintf("%s:%s", host, port)
+	log.Printf("ssh-proxy: dialing target %s as %q (mode=%s)", target, downUser, authMode)
 	upClient, err := ssh.Dial("tcp", target, &ssh.ClientConfig{
 		User:            downUser,
 		Auth:            authMethods,
@@ -376,11 +418,14 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		Timeout:         10 * time.Second,
 	})
 	if err != nil {
-		log.Printf("dial target %s as %q: %v", target, downUser, err)
-		if hasPrivAccount {
-			s.sendShellError(chans, fmt.Sprintf("PAM: failed to authenticate to %s as %s.\r\nCheck the privileged account password in Safes -> Privileged Accounts.\r\n%v\r\n", host, downUser, err))
-		} else {
-			s.sendShellError(chans, fmt.Sprintf("PAM: failed to connect to %s.\r\nAdd a privileged account for this target in the Privileged Accounts tab so PAM can log in for you.\r\n", host))
+		log.Printf("dial target %s as %q (mode=%s): %v", target, downUser, authMode, err)
+		switch authMode {
+		case "priv-account":
+			s.sendShellError(chans, fmt.Sprintf("PAM: could not log in to %s as %s.\r\nCheck the privileged account password in Privileged Accounts.\r\nUnderlying error: %v\r\n", host, downUser, err))
+		case "passthrough":
+			s.sendShellError(chans, fmt.Sprintf("PAM: could not log in to %s as %s using your portal credentials.\r\nAdd a privileged account for this target (Privileged Accounts tab) with the actual device username + password.\r\nUnderlying error: %v\r\n", host, downUser, err))
+		default:
+			s.sendShellError(chans, fmt.Sprintf("PAM: could not connect to %s.\r\nAdd a privileged account for this target in the Privileged Accounts tab so PAM can log in for you.\r\nUnderlying error: %v\r\n", host, err))
 		}
 		return
 	}
