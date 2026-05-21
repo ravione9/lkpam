@@ -18,7 +18,7 @@ From the **repository root** (`pam-platform/`):
 cp deploy/docker/.env.example deploy/docker/.env
 
 # 2. Build and start all services
-docker compose -f deploy/docker/docker-compose.yml up --build -d
+docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml up --build -d
 
 # 3. Open the admin console
 #    http://localhost:8080
@@ -123,6 +123,36 @@ docker compose -f deploy/docker/docker-compose.yml down -v
 ```
 
 ## Troubleshooting
+
+**`The "mL8Q" variable is not set` (or similar)**
+
+One of your secrets in `deploy/docker/.env` contains a **`$` character**. Docker Compose treats `$name` as a variable reference and breaks the value.
+
+Fix either:
+
+1. **Escape each `$` as `$$`** in `.env` (e.g. secret `ab$cd` → write `ab$$cd`), or  
+2. **Regenerate secrets without `$`** (recommended for TACACS/JWT):
+   ```bash
+   openssl rand -hex 32    # for PAM_JWT_SECRET / PAM_TACACS_SECRET
+   ```
+
+Then restart:
+
+```bash
+docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml up -d --build tacacs
+```
+
+**TACACS container missing (`ps tacacs` shows empty)**
+
+Pull latest code (TACACS is included by default), then rebuild:
+
+```bash
+git pull origin main
+docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml up -d --build tacacs
+docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml logs tacacs --tail 20
+```
+
+Expect: `tacacs+ listening on :1049`
 
 **Services not starting**
 
