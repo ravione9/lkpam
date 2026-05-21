@@ -172,6 +172,26 @@ func (s *Service) ListMembers(ctx context.Context, groupID int64) ([]Member, err
 	return out, rows.Err()
 }
 
+// UserGroupIDs returns just the group IDs a user belongs to. Used by the
+// approval matrix to check approver membership.
+func (s *Service) UserGroupIDs(ctx context.Context, userID int64) ([]int64, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT group_id FROM user_groups WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // UserGroups returns the groups a user belongs to.
 func (s *Service) UserGroups(ctx context.Context, userID int64) ([]Group, error) {
 	rows, err := s.DB.QueryContext(ctx, `

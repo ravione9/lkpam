@@ -1,4 +1,5 @@
-// approval-service handles JIT access request creation and approval.
+// approval-service handles JIT access request creation, the approval matrix,
+// and multi-approver decision recording.
 package main
 
 import (
@@ -12,6 +13,7 @@ import (
 	"github.com/example/pam-platform/internal/approval"
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/db"
+	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/httpx"
 )
 
@@ -36,7 +38,13 @@ func main() {
 	}
 	defer d.Close()
 
-	svc := &approval.Service{DB: d}
+	matrix := &approval.MatrixService{DB: d}
+	groupSvc := &groups.Service{DB: d}
+	svc := &approval.Service{
+		DB:           d,
+		Matrix:       matrix,
+		GroupMembers: groupSvc,
+	}
 
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
@@ -56,7 +64,8 @@ func main() {
 			httpx.Error(w, http.StatusBadRequest, err)
 			return
 		}
-		id, err := svc.Create(r.Context(), uid, req.TargetID, req.Reason, time.Duration(req.TTLSeconds)*time.Second)
+		id, err := svc.Create(r.Context(), uid, req.TargetID, req.Reason,
+			time.Duration(req.TTLSeconds)*time.Second)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
@@ -70,25 +79,46 @@ func main() {
 			httpx.Error(w, http.StatusUnauthorized, errors.New("missing caller identity"))
 			return
 		}
-		idStr := r.PathValue("id")
-		id, _ := strconv.ParseInt(idStr, 10, 64)
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		var req struct {
-			Approve bool `json:"approve"`
+			Approve bool   `json:"approve"`
+			Comment string `json:"comment"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpx.Error(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := svc.Decide(r.Context(), id, approverID, approverRole, req.Approve); err != nil {
+		res, err := svc.Decide(r.Context(), id, approverID, approverRole, req.Approve, req.Comment)
+		if err != nil {
 			switch {
-			case errors.Is(err, approval.ErrSelfApproval), errors.Is(err, approval.ErrNotApprover):
+			case errors.Is(err, approval.ErrSelfApproval),
+				errors.Is(err, approval.ErrNotApprover):
 				httpx.Error(w, http.StatusForbidden, err)
+			case errors.Is(err, approval.ErrAlreadyDecided),
+				errors.Is(err, approval.ErrRequestClosed):
+				httpx.Error(w, http.StatusConflict, err)
 			default:
 				httpx.Error(w, http.StatusBadRequest, err)
 			}
 			return
 		}
-		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		httpx.JSON(w, http.StatusOK, res)
+	})
+
+	mux.HandleFunc("GET /requests/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		req, err := svc.Get(r.Context(), id)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, err)
+			return
+		}
+		decisions, _ := svc.ListDecisions(r.Context(), id)
+		need, _ := svc.RequiredApprovals(r.Context(), id)
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"request":   req,
+			"decisions": decisions,
+			"approvals_need": need,
+		})
 	})
 
 	mux.HandleFunc("GET /requests/pending", func(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +162,69 @@ func main() {
 			return
 		}
 		httpx.JSON(w, http.StatusOK, map[string]bool{"approved": ok})
+	})
+
+	// --- Approval Matrix ---
+	mux.HandleFunc("GET /matrix", func(w http.ResponseWriter, r *http.Request) {
+		rules, err := matrix.List(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, rules)
+	})
+
+	mux.HandleFunc("POST /matrix", func(w http.ResponseWriter, r *http.Request) {
+		_, role, ok := callerIdentity(r)
+		if !ok || role != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
+			return
+		}
+		var rule approval.MatrixRule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		id, err := matrix.Create(r.Context(), rule)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusCreated, map[string]int64{"id": id})
+	})
+
+	mux.HandleFunc("PUT /matrix/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_, role, ok := callerIdentity(r)
+		if !ok || role != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
+			return
+		}
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		var rule approval.MatrixRule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		rule.ID = id
+		if err := matrix.Update(r.Context(), rule); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("DELETE /matrix/{id}", func(w http.ResponseWriter, r *http.Request) {
+		_, role, ok := callerIdentity(r)
+		if !ok || role != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
+			return
+		}
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := matrix.Delete(r.Context(), id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	})
 
 	addr := config.Get("PAM_APPROVAL_ADDR", ":8084")

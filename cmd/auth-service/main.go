@@ -23,6 +23,7 @@ import (
 	"github.com/example/pam-platform/internal/httpx"
 	ldappkg "github.com/example/pam-platform/internal/ldap"
 	"github.com/example/pam-platform/internal/mfa"
+	"github.com/example/pam-platform/internal/roles"
 	samlpkg "github.com/example/pam-platform/internal/saml"
 	"github.com/example/pam-platform/internal/settings"
 	"github.com/example/pam-platform/internal/vault"
@@ -58,10 +59,11 @@ func main() {
 		JWTAudience: "pam-services",
 	}
 	groupSvc := &groups.Service{DB: d}
+	roleSvc := &roles.Service{DB: d}
 	settingsStore := &settings.Store{DB: d}
 	bus := events.New()
 
-	bootstrap(svc, groupSvc)
+	bootstrap(svc, groupSvc, roleSvc)
 
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
@@ -209,6 +211,53 @@ func main() {
 		}
 		httpx.JSON(w, http.StatusOK, out)
 	})
+	// --- Roles ---
+	mux.HandleFunc("GET /roles", func(w http.ResponseWriter, r *http.Request) {
+		out, err := roleSvc.List(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("POST /roles", func(w http.ResponseWriter, r *http.Request) {
+		var in roles.Role
+		if err := httpx.ReadJSON(r, &in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		id, err := roleSvc.Create(r.Context(), in)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "role.create", Severity: "info", Actor: in.Name})
+		httpx.JSON(w, http.StatusCreated, map[string]int64{"id": id})
+	})
+	mux.HandleFunc("PUT /roles/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		var in struct {
+			Description string `json:"description"`
+		}
+		if err := httpx.ReadJSON(r, &in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := roleSvc.Update(r.Context(), id, in.Description); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("DELETE /roles/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := roleSvc.Delete(r.Context(), id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	})
+
 	mux.HandleFunc("GET /users/{id}/effective-roles", func(w http.ResponseWriter, r *http.Request) {
 		uid, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		var role string
@@ -671,9 +720,15 @@ func samlACSHandler(
 <p>Signing in… if you are not redirected, <a href="/#sso=%s">click here</a>.</p>`, tok, tok)
 }
 
-func bootstrap(svc *auth.Service, groupSvc *groups.Service) {
+func bootstrap(svc *auth.Service, groupSvc *groups.Service, roleSvc *roles.Service) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	// Seed built-in roles before anything else references them.
+	if err := roleSvc.SeedBuiltins(ctx); err != nil {
+		log.Printf("bootstrap roles: %v", err)
+	}
+
 	var n int
 	_ = svc.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
 	if n == 0 {

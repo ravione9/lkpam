@@ -1,4 +1,8 @@
-// Package approval implements the JIT access request workflow.
+// Package approval implements the JIT access request workflow with a
+// multi-approver "approval matrix" — admins define rules (target kind + tier
+// range -> approver groups + required approval count) and each Decide call
+// either records an approval/denial or finalizes the request once thresholds
+// are met.
 package approval
 
 import (
@@ -23,7 +27,24 @@ type Request struct {
 }
 
 // Service is the approval workflow facade.
-type Service struct{ DB *db.DB }
+//
+// Matrix and GroupMembers are optional collaborators — when set, Decide
+// enforces the approval matrix (rule lookup, approver-group membership check,
+// multi-approver thresholds). When nil, Decide falls back to "any admin who is
+// not the requester can decide" so the platform still works during initial
+// setup.
+type Service struct {
+	DB           *db.DB
+	Matrix       *MatrixService
+	GroupMembers GroupMembershipLookup
+}
+
+// GroupMembershipLookup is satisfied by groups.Service. It is declared as an
+// interface here so internal/approval does not import internal/groups and
+// avoid a possible circular dependency in the future.
+type GroupMembershipLookup interface {
+	UserGroupIDs(ctx context.Context, userID int64) ([]int64, error)
+}
 
 // Create files a new access request.
 func (s *Service) Create(ctx context.Context, userID, targetID int64, reason string, ttl time.Duration) (int64, error) {
@@ -44,8 +65,15 @@ func (s *Service) Create(ctx context.Context, userID, targetID int64, reason str
 // ErrSelfApproval is returned when a requester tries to approve their own request.
 var ErrSelfApproval = errors.New("cannot approve your own request")
 
-// ErrNotApprover is returned when the caller lacks approval authority.
-var ErrNotApprover = errors.New("admin role required to approve requests")
+// ErrNotApprover is returned when the caller is not in the approver group(s)
+// for the matched matrix rule.
+var ErrNotApprover = errors.New("you are not an approver for this request")
+
+// ErrAlreadyDecided is returned when an approver tries to decide twice.
+var ErrAlreadyDecided = errors.New("you have already voted on this request")
+
+// ErrRequestClosed is returned when the request is not pending.
+var ErrRequestClosed = errors.New("request is not pending")
 
 // Get loads a single access request by ID.
 func (s *Service) Get(ctx context.Context, id int64) (*Request, error) {
@@ -59,39 +87,227 @@ func (s *Service) Get(ctx context.Context, id int64) (*Request, error) {
 	return &r, nil
 }
 
-// Decide marks a request approved or denied. approverRole must be "admin" and
-// approverID must differ from the requester's user ID.
-func (s *Service) Decide(ctx context.Context, id, approverID int64, approverRole string, approve bool) error {
-	if approverRole != "admin" {
-		return ErrNotApprover
-	}
+// DecisionRecord is a single vote captured against a request.
+type DecisionRecord struct {
+	RequestID  int64  `json:"request_id"`
+	ApproverID int64  `json:"approver_id"`
+	Approver   string `json:"approver,omitempty"`
+	Approve    bool   `json:"approve"`
+	Comment    string `json:"comment,omitempty"`
+	DecidedAt  int64  `json:"decided_at"`
+}
+
+// DecideResult tells the caller what happened.
+type DecideResult struct {
+	Status         string `json:"status"`          // pending | approved | denied
+	ApprovalsHave  int    `json:"approvals_have"`
+	ApprovalsNeed  int    `json:"approvals_need"`
+}
+
+// Decide records one approver's vote against a request. Behavior:
+//   - Caller must not be the requester (ErrSelfApproval).
+//   - When a Matrix is configured and a rule matches, the caller must be a
+//     member of one of the approver groups (ErrNotApprover); otherwise the
+//     caller must hold the "admin" role.
+//   - One denial finalizes the request as denied. Approvals accumulate until
+//     `required_approvals` is met, at which point the request flips to
+//     approved.
+//   - Re-voting by the same approver is rejected (ErrAlreadyDecided).
+func (s *Service) Decide(
+	ctx context.Context,
+	id, approverID int64,
+	approverRole string,
+	approve bool,
+	comment string,
+) (*DecideResult, error) {
 	req, err := s.Get(ctx, id)
 	if err != nil {
-		return err
-	}
-	if req.UserID == approverID {
-		return ErrSelfApproval
+		return nil, err
 	}
 	if req.Status != "pending" {
-		return errors.New("request not found or already decided")
+		return nil, ErrRequestClosed
 	}
-	status := "denied"
-	if approve {
-		status = "approved"
+	if req.UserID == approverID {
+		return nil, ErrSelfApproval
 	}
-	res, err := s.DB.ExecContext(ctx, `
+
+	// Lookup matrix rule for the target.
+	required := 1
+	var approverGroupIDs []int64
+	if s.Matrix != nil {
+		targetKind, tier, err := s.targetMeta(ctx, req.TargetID)
+		if err != nil {
+			return nil, err
+		}
+		rule, err := s.Matrix.FindRule(ctx, targetKind, tier)
+		if err != nil {
+			return nil, err
+		}
+		if rule != nil {
+			required = rule.RequiredApprovals
+			approverGroupIDs = rule.ApproverGroupIDs
+		}
+	}
+
+	// Authorize the approver.
+	if len(approverGroupIDs) > 0 && s.GroupMembers != nil {
+		userGroups, err := s.GroupMembers.UserGroupIDs(ctx, approverID)
+		if err != nil {
+			return nil, err
+		}
+		if !anyIntersection(approverGroupIDs, userGroups) {
+			return nil, ErrNotApprover
+		}
+	} else if approverRole != "admin" {
+		return nil, ErrNotApprover
+	}
+
+	// Record vote; UNIQUE(request_id, approver_id) blocks duplicates.
+	_, err = s.DB.ExecContext(ctx, `
+		INSERT INTO approval_decisions(request_id, approver_id, approve, comment, decided_at)
+		VALUES(?,?,?,?,?)`,
+		id, approverID, boolToInt(approve), comment, db.Now())
+	if err != nil {
+		return nil, ErrAlreadyDecided
+	}
+
+	// Tally and finalize.
+	approvals, denials, err := s.tally(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	result := &DecideResult{
+		Status:        "pending",
+		ApprovalsHave: approvals,
+		ApprovalsNeed: required,
+	}
+	switch {
+	case denials > 0:
+		if err := s.finalize(ctx, id, "denied", approverID); err != nil {
+			return nil, err
+		}
+		result.Status = "denied"
+	case approvals >= required:
+		if err := s.finalize(ctx, id, "approved", approverID); err != nil {
+			return nil, err
+		}
+		result.Status = "approved"
+	}
+	return result, nil
+}
+
+func (s *Service) targetMeta(ctx context.Context, targetID int64) (string, int, error) {
+	var kind string
+	var tier int
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT kind, tier FROM targets WHERE id = ?`, targetID).Scan(&kind, &tier)
+	if err != nil {
+		return "", 0, errors.New("target not found")
+	}
+	return kind, tier, nil
+}
+
+func (s *Service) tally(ctx context.Context, id int64) (int, int, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT approve, COUNT(*) FROM approval_decisions WHERE request_id = ? GROUP BY approve`, id)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	var approvals, denials int
+	for rows.Next() {
+		var ap, count int
+		if err := rows.Scan(&ap, &count); err != nil {
+			return 0, 0, err
+		}
+		if ap == 1 {
+			approvals = count
+		} else {
+			denials = count
+		}
+	}
+	return approvals, denials, rows.Err()
+}
+
+func (s *Service) finalize(ctx context.Context, id int64, status string, approverID int64) error {
+	_, err := s.DB.ExecContext(ctx, `
 		UPDATE access_requests
 		SET status = ?, approver_id = ?, decided_at = ?
 		WHERE id = ? AND status = 'pending'`,
 		status, approverID, db.Now(), id)
+	return err
+}
+
+// ListDecisions returns the recorded votes for a request, enriched with the
+// approver username.
+func (s *Service) ListDecisions(ctx context.Context, requestID int64) ([]DecisionRecord, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT d.request_id, d.approver_id, COALESCE(u.username,''),
+		       d.approve, d.comment, d.decided_at
+		FROM approval_decisions d
+		LEFT JOIN users u ON u.id = d.approver_id
+		WHERE d.request_id = ?
+		ORDER BY d.decided_at`, requestID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return errors.New("request not found or already decided")
+	defer rows.Close()
+	var out []DecisionRecord
+	for rows.Next() {
+		var d DecisionRecord
+		var ap int
+		if err := rows.Scan(&d.RequestID, &d.ApproverID, &d.Approver,
+			&ap, &d.Comment, &d.DecidedAt); err != nil {
+			return nil, err
+		}
+		d.Approve = ap != 0
+		out = append(out, d)
 	}
-	return nil
+	return out, rows.Err()
+}
+
+// RequiredApprovals returns the matched matrix rule's threshold for a request.
+// Falls back to 1 when no matrix or no matching rule.
+func (s *Service) RequiredApprovals(ctx context.Context, requestID int64) (int, error) {
+	if s.Matrix == nil {
+		return 1, nil
+	}
+	req, err := s.Get(ctx, requestID)
+	if err != nil {
+		return 0, err
+	}
+	kind, tier, err := s.targetMeta(ctx, req.TargetID)
+	if err != nil {
+		return 0, err
+	}
+	rule, err := s.Matrix.FindRule(ctx, kind, tier)
+	if err != nil {
+		return 0, err
+	}
+	if rule == nil {
+		return 1, nil
+	}
+	return rule.RequiredApprovals, nil
+}
+
+func anyIntersection(a, b []int64) bool {
+	set := make(map[int64]struct{}, len(a))
+	for _, x := range a {
+		set[x] = struct{}{}
+	}
+	for _, y := range b {
+		if _, ok := set[y]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // IsApproved returns true if there is a non-expired approved request for the
@@ -132,47 +348,43 @@ func (s *Service) ListPending(ctx context.Context) ([]Request, error) {
 // RequestView enriches a request with human-readable names for the UI.
 type RequestView struct {
 	Request
-	Username   string `json:"username"`
-	TargetName string `json:"target_name"`
+	Username       string           `json:"username"`
+	TargetName     string           `json:"target_name"`
+	TargetKind     string           `json:"target_kind,omitempty"`
+	TargetTier     int              `json:"target_tier,omitempty"`
+	ApprovalsHave  int              `json:"approvals_have"`
+	ApprovalsNeed  int              `json:"approvals_need"`
+	Decisions      []DecisionRecord `json:"decisions,omitempty"`
 }
 
-// ListPendingEnriched lists open requests with joined user/target names.
+// ListPendingEnriched lists open requests with joined user/target names plus
+// approval progress for the UI.
 func (s *Service) ListPendingEnriched(ctx context.Context) ([]RequestView, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	return s.queryEnriched(ctx, `
 		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds,
-		       u.username, t.name
+		       u.username, t.name, t.kind, t.tier
 		FROM access_requests ar
 		JOIN users u ON u.id = ar.user_id
 		JOIN targets t ON t.id = ar.target_id
 		WHERE ar.status = 'pending'
 		ORDER BY ar.created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []RequestView
-	for rows.Next() {
-		var v RequestView
-		if err := rows.Scan(&v.ID, &v.UserID, &v.TargetID, &v.Reason, &v.Status, &v.CreatedAt, &v.TTLSeconds,
-			&v.Username, &v.TargetName); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
 }
 
 // ListMineEnriched returns all requests filed by a user (any status).
 func (s *Service) ListMineEnriched(ctx context.Context, userID int64) ([]RequestView, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	return s.queryEnriched(ctx, `
 		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds,
-		       u.username, t.name
+		       u.username, t.name, t.kind, t.tier
 		FROM access_requests ar
 		JOIN users u ON u.id = ar.user_id
 		JOIN targets t ON t.id = ar.target_id
 		WHERE ar.user_id = ?
 		ORDER BY ar.created_at DESC
 		LIMIT 50`, userID)
+}
+
+func (s *Service) queryEnriched(ctx context.Context, q string, args ...any) ([]RequestView, error) {
+	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -180,11 +392,32 @@ func (s *Service) ListMineEnriched(ctx context.Context, userID int64) ([]Request
 	var out []RequestView
 	for rows.Next() {
 		var v RequestView
-		if err := rows.Scan(&v.ID, &v.UserID, &v.TargetID, &v.Reason, &v.Status, &v.CreatedAt, &v.TTLSeconds,
-			&v.Username, &v.TargetName); err != nil {
+		if err := rows.Scan(&v.ID, &v.UserID, &v.TargetID, &v.Reason, &v.Status,
+			&v.CreatedAt, &v.TTLSeconds,
+			&v.Username, &v.TargetName, &v.TargetKind, &v.TargetTier); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Enrich with approval progress and decisions.
+	for i := range out {
+		if need, err := s.RequiredApprovals(ctx, out[i].ID); err == nil {
+			out[i].ApprovalsNeed = need
+		} else {
+			out[i].ApprovalsNeed = 1
+		}
+		decs, err := s.ListDecisions(ctx, out[i].ID)
+		if err == nil {
+			out[i].Decisions = decs
+			for _, d := range decs {
+				if d.Approve {
+					out[i].ApprovalsHave++
+				}
+			}
+		}
+	}
+	return out, nil
 }

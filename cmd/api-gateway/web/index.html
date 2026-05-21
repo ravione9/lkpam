@@ -141,7 +141,9 @@
       <button data-tab="access" data-user><span class="ico">◈</span> My Access</button>
       <button data-tab="users" data-admin><span class="ico">○</span> Users</button>
       <button data-tab="groups" data-admin><span class="ico">◇</span> Groups</button>
+      <button data-tab="roles" data-admin><span class="ico">⬡</span> Roles</button>
       <button data-tab="policies" data-admin><span class="ico">△</span> Policies</button>
+      <button data-tab="matrix" data-admin><span class="ico">⧉</span> Approval Matrix</button>
       <button data-tab="requests"><span class="ico">✦</span> Access Requests</button>
       <div class="section-title" data-admin>Secrets &amp; Sessions</div>
       <button data-tab="secrets" data-admin><span class="ico">⚿</span> Secrets</button>
@@ -305,11 +307,7 @@
             <label>Username</label><input id="userName"/>
             <label>Email</label><input id="userEmail"/>
             <label>Role</label>
-            <select id="userRole">
-              <option value="admin">admin</option><option value="netops">netops</option>
-              <option value="secops">secops</option><option value="sysadmin">sysadmin</option>
-              <option value="viewer">viewer</option><option value="user" selected>user</option>
-            </select>
+            <select id="userRole"></select>
             <label>Password</label><input id="userPassword" type="password"/>
             <label>Disabled</label><div><input type="checkbox" id="userDisabled" style="width:auto"/></div>
             <label>Groups</label>
@@ -340,11 +338,7 @@
             <label>Name</label><input id="groupName" placeholder="Network Operators"/>
             <label>Description</label><input id="groupDesc"/>
             <label>Role granted</label>
-            <select id="groupRole">
-              <option value="admin">admin</option><option value="netops">netops</option>
-              <option value="secops">secops</option><option value="sysadmin">sysadmin</option>
-              <option value="viewer">viewer</option><option value="user" selected>user</option>
-            </select>
+            <select id="groupRole"></select>
             <label>LDAP DN (optional)</label><input id="groupLdapDN" placeholder="CN=NetOps,OU=Groups,DC=corp,DC=local"/>
           </div>
           <div class="row" style="margin-top:12px">
@@ -376,13 +370,39 @@
         </div>
       </section>
 
+      <!-- Roles -->
+      <section class="card tab" id="tab-roles" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Roles</h3>
+          <button class="primary" id="roleAddBtn">+ Add Role</button>
+        </div>
+        <p class="desc">Roles are the building block of authorization. Built-in roles are always available; create custom roles (e.g. <code>db-admin</code>, <code>noc-l1</code>) to model your org. Roles in use by users, groups, or policies cannot be deleted.</p>
+        <table>
+          <thead><tr><th>Name</th><th>Description</th><th>Type</th><th>Users</th><th>Groups</th><th>Policies</th><th></th></tr></thead>
+          <tbody id="roleRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="roleForm">
+          <h4 id="roleFormTitle">Add role</h4>
+          <input type="hidden" id="roleId"/>
+          <div class="form-grid">
+            <label>Name</label><input id="roleName" placeholder="db-admin"/>
+            <label>Description</label><input id="roleDesc" placeholder="Database administrators"/>
+          </div>
+          <p class="muted" style="font-size:12px">Lowercase letters, digits, dashes, underscores. Built-in roles cannot be modified.</p>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="roleSaveBtn">Save</button>
+            <button class="ghost" id="roleCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
       <!-- Policies -->
       <section class="card tab" id="tab-policies" style="display:none">
         <div class="row" style="justify-content:space-between;margin-bottom:12px">
           <h3 style="margin:0">Access Policies</h3>
           <button class="primary" id="policyAddBtn">+ Add Policy</button>
         </div>
-        <p class="desc">Each policy rule binds a <b>role</b> to a target kind, tier ceiling, and command allowlist. Assign roles to users (Users tab) or groups (Groups tab), then create matching policy rules here.</p>
+        <p class="desc">Each policy rule binds a <b>role</b> to a target kind, tier ceiling, and command allowlist. Assign roles to users (Users tab) or groups (Groups tab), then create matching policy rules here. The most permissive matching rule wins for a user's effective roles.</p>
         <table>
           <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
           <tbody id="policyRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
@@ -392,27 +412,65 @@
           <input type="hidden" id="policyId"/>
           <div class="form-grid">
             <label>Role</label>
-            <select id="policyRole">
-              <option value="admin">admin</option><option value="netops">netops</option>
-              <option value="secops">secops</option><option value="sysadmin">sysadmin</option>
-              <option value="viewer">viewer</option><option value="user">user</option>
-            </select>
+            <select id="policyRole"></select>
             <label>Target kind</label>
-            <select id="policyKind">
-              <option value="*">* (any)</option>
-              <option value="cisco">cisco</option><option value="arista">arista</option>
-              <option value="juniper">juniper</option><option value="linux">linux</option>
-              <option value="palo">palo</option><option value="forti">forti</option>
-              <option value="windows">windows</option>
+            <select id="policyKind"></select>
+            <label>Tier max <span class="muted">(0 critical → 3 dev)</span></label>
+            <select id="policyTier">
+              <option value="0">0 — critical</option>
+              <option value="1">1 — production</option>
+              <option value="2" selected>2 — staging</option>
+              <option value="3">3 — dev</option>
             </select>
-            <label>Tier max</label><input id="policyTier" type="number" value="2"/>
-            <label>Require approval</label><div><input type="checkbox" id="policyApproval" style="width:auto"/></div>
+            <label>Require approval</label><div><input type="checkbox" id="policyApproval" style="width:auto"/> <span class="muted">If checked, access needs an approved request matching the approval matrix.</span></div>
             <label>Allowed commands</label><input id="policyAllow" placeholder="show,configure terminal,interface" style="max-width:600px"/>
             <label>Denied commands</label><input id="policyDeny" placeholder="reload,erase startup-config" style="max-width:600px"/>
           </div>
           <div class="row" style="margin-top:12px">
             <button class="primary" id="policySaveBtn">Save</button>
             <button class="ghost" id="policyCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Approval Matrix -->
+      <section class="card tab" id="tab-matrix" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Approval Matrix</h3>
+          <button class="primary" id="matrixAddBtn">+ Add Rule</button>
+        </div>
+        <p class="desc">Define <b>who can approve</b> access requests and how many approvers are required, by target kind and tier. The most-specific enabled rule (lowest priority number) wins. If no rule matches, any admin may approve.</p>
+        <table>
+          <thead><tr><th>Priority</th><th>Name</th><th>Target kind</th><th>Tier range</th><th>Required</th><th>Approver groups</th><th>Enabled</th><th></th></tr></thead>
+          <tbody id="matrixRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="matrixForm">
+          <h4 id="matrixFormTitle">Add approval rule</h4>
+          <input type="hidden" id="matrixId"/>
+          <div class="form-grid">
+            <label>Rule name</label><input id="matrixName" placeholder="Tier-0 critical (2 sec approvers)"/>
+            <label>Target kind</label><select id="matrixKind"></select>
+            <label>Tier range</label>
+            <div class="row">
+              <select id="matrixTierMin">
+                <option value="0">0 — critical</option><option value="1">1 — production</option>
+                <option value="2">2 — staging</option><option value="3">3 — dev</option>
+              </select>
+              <span class="muted">to</span>
+              <select id="matrixTierMax">
+                <option value="0">0 — critical</option><option value="1">1 — production</option>
+                <option value="2">2 — staging</option><option value="3" selected>3 — dev</option>
+              </select>
+            </div>
+            <label>Required approvals</label><input id="matrixRequired" type="number" min="1" value="1" style="width:120px"/>
+            <label>Approver groups</label>
+            <div id="matrixGroupChecks" class="muted" style="font-size:13px">Loading groups…</div>
+            <label>Priority <span class="muted">(lower wins)</span></label><input id="matrixPriority" type="number" value="100" style="width:120px"/>
+            <label>Enabled</label><div><input type="checkbox" id="matrixEnabled" checked style="width:auto"/></div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="matrixSaveBtn">Save</button>
+            <button class="ghost" id="matrixCancelBtn">Cancel</button>
           </div>
         </div>
       </section>
@@ -432,16 +490,16 @@
 
         <h3 style="margin-top:20px">My Requests</h3>
         <table>
-          <thead><tr><th>ID</th><th>Machine</th><th>Reason</th><th>Status</th><th>TTL</th><th>Created</th></tr></thead>
-          <tbody id="myReqRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+          <thead><tr><th>ID</th><th>Machine</th><th>Reason</th><th>Status</th><th>Approvals</th><th>TTL</th><th>Created</th></tr></thead>
+          <tbody id="myReqRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
 
         <div id="adminReqSection" data-admin>
           <h3 style="margin-top:24px">Awaiting Your Approval</h3>
-          <p class="desc">As admin, approve or deny requests from other users. You cannot approve your own requests.</p>
+          <p class="desc">Approve or deny requests from other users. The approval matrix determines who can approve and how many approvals are required.</p>
           <table>
-            <thead><tr><th>ID</th><th>User</th><th>Machine</th><th>Reason</th><th>TTL</th><th>Created</th><th></th></tr></thead>
-            <tbody id="reqRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+            <thead><tr><th>ID</th><th>User</th><th>Machine</th><th>Tier</th><th>Reason</th><th>Approvals</th><th>Created</th><th></th></tr></thead>
+            <tbody id="reqRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -596,13 +654,42 @@
 let token = null;
 let currentUser = null;
 let pendingMFAUserID = null;
-let cache = { targets: [], users: [], groups: [] };
+let cache = { targets: [], users: [], groups: [], roles: [], matrix: [] };
+const TARGET_KINDS = ["cisco","arista","juniper","linux","palo","forti","windows"];
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
 function isAdmin() { return currentUser && currentUser.role === "admin"; }
 
-const KNOWN_ROLES = ["admin","netops","secops","sysadmin","viewer","user"];
+const BUILTIN_ROLES = ["admin","netops","secops","sysadmin","viewer","user"];
+
+// Fetch and cache the roles catalog. Used to populate every role dropdown.
+async function ensureRoles() {
+  if (cache.roles.length) return cache.roles;
+  try { cache.roles = await api("/auth/roles"); }
+  catch { cache.roles = BUILTIN_ROLES.map(n => ({ name: n, description: "", builtin: true })); }
+  return cache.roles;
+}
+
+// fillRoleSelect populates a <select> with the role catalog, optionally
+// selecting a current value.
+function fillRoleSelect(el, currentValue, opts) {
+  opts = opts || {};
+  const placeholder = opts.placeholder;
+  const roles = cache.roles.length ? cache.roles : BUILTIN_ROLES.map(n => ({ name: n }));
+  el.innerHTML =
+    (placeholder ? `<option value="">${esc(placeholder)}</option>` : "") +
+    roles.map(r => `<option value="${esc(r.name)}">${esc(r.name)}${r.builtin ? '' : ' (custom)'}</option>`).join("");
+  if (currentValue) el.value = currentValue;
+  else if (!placeholder && roles.length) el.value = "user";
+}
+
+function fillTargetKindSelect(el, current, includeAny) {
+  el.innerHTML =
+    (includeAny ? `<option value="*">* (any)</option>` : "") +
+    TARGET_KINDS.map(k => `<option value="${k}">${k}</option>`).join("");
+  if (current) el.value = current;
+}
 
 // applyRoleUI hides admin-only nav, buttons, and form panels for non-admins.
 function applyRoleUI() {
@@ -624,10 +711,13 @@ function applyRoleUI() {
 
 const TAB_TITLES = {
   dash: "Dashboard", targets: "Machines", access: "My Access", users: "Users", groups: "Groups",
-  secrets: "Vault Secrets", policies: "Access Policies", requests: "Access Requests",
+  roles: "Roles", secrets: "Vault Secrets", policies: "Access Policies",
+  matrix: "Approval Matrix", requests: "Access Requests",
   sessions: "SSH Sessions", audit: "Audit Log", ca: "SSH Certificate Authority",
   settings: "System Settings",
 };
+
+const ADMIN_TABS_SET = ["users","groups","roles","policies","matrix","secrets","audit","ca","settings"];
 
 function toast(msg, kind) {
   const el = $("#toast");
@@ -662,7 +752,7 @@ function tierLabel(t) {
 
 function fmtTime(unix) { return unix ? new Date(unix*1000).toLocaleString() : "—"; }
 
-const ADMIN_TABS = new Set(["users","groups","policies","secrets","audit","ca","settings"]);
+const ADMIN_TABS = new Set(ADMIN_TABS_SET);
 
 function showTab(name) {
   // Non-admins are silently redirected to the dashboard if they try to open
@@ -674,8 +764,10 @@ function showTab(name) {
   $$("aside nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   $("#pageTitle").textContent = TAB_TITLES[name] || name;
   const loaders = {
-    dash: loadDashboard, targets: loadTargets, access: loadAccessProfile, users: loadUsers, groups: loadGroups,
-    secrets: loadSecrets, policies: loadPolicies, requests: loadRequests,
+    dash: loadDashboard, targets: loadTargets, access: loadAccessProfile,
+    users: loadUsers, groups: loadGroups, roles: loadRoles,
+    secrets: loadSecrets, policies: loadPolicies, matrix: loadMatrix,
+    requests: loadRequests,
     sessions: loadSessions, audit: loadAudit, ca: loadCA, settings: loadSettings,
   };
   if (loaders[name]) loaders[name]();
@@ -704,6 +796,7 @@ async function doLogin() {
     $("#app").style.display = "grid";
     $("#me").textContent = currentUser.username + " · " + currentUser.role + (currentUser.mfa_enabled ? " · MFA ✓" : "");
     applyRoleUI();
+    ensureRoles();
     showTab("dash");
   } catch (e) { toast(e.message, "err"); }
 }
@@ -806,6 +899,172 @@ function renderBars(sel, vals, colors) {
       <text x="${i*(w/n) + 6 + bw/2}" y="${h - 2}" text-anchor="middle" font-size="10" fill="#6b7280">T${i} · ${v}</text>`;
   }).join("");
 }
+
+// --- Roles ---
+async function loadRoles() {
+  try {
+    const rows = await api("/auth/roles");
+    cache.roles = rows || [];
+    if (!cache.roles.length) {
+      $("#roleRows").innerHTML = `<tr><td colspan="7" class="muted">No roles found.</td></tr>`;
+      return;
+    }
+    $("#roleRows").innerHTML = cache.roles.map(r => `
+      <tr>
+        <td><b>${esc(r.name)}</b></td>
+        <td class="muted">${esc(r.description)}</td>
+        <td>${r.builtin ? '<span class="pill">built-in</span>' : '<span class="pill accent">custom</span>'}</td>
+        <td>${r.users||0}</td><td>${r.groups||0}</td><td>${r.policies||0}</td>
+        <td class="actions">
+          ${r.builtin ? '<span class="muted">locked</span>' :
+            `<button class="ghost" onclick="editRole(${r.id})">Edit</button>
+             <button class="ghost danger" onclick="deleteRole(${r.id})">Delete</button>`}
+        </td>
+      </tr>`).join("");
+  } catch (e) { $("#roleRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+}
+function resetRoleForm() {
+  $("#roleId").value = ""; $("#roleName").value = ""; $("#roleDesc").value = "";
+  $("#roleName").disabled = false; $("#roleForm").classList.add("hidden");
+}
+$("#roleAddBtn").onclick = () => { resetRoleForm(); $("#roleFormTitle").textContent = "Add role"; $("#roleForm").classList.remove("hidden"); };
+$("#roleCancelBtn").onclick = resetRoleForm;
+window.editRole = id => {
+  const r = cache.roles.find(x => x.id === id); if (!r) return;
+  $("#roleId").value = r.id; $("#roleName").value = r.name; $("#roleName").disabled = true;
+  $("#roleDesc").value = r.description || "";
+  $("#roleFormTitle").textContent = "Edit role"; $("#roleForm").classList.remove("hidden");
+};
+$("#roleSaveBtn").onclick = async () => {
+  try {
+    const id = $("#roleId").value;
+    if (id) {
+      await api("/auth/roles/"+id, {method:"PUT", body: JSON.stringify({ description: $("#roleDesc").value.trim() })});
+    } else {
+      await api("/auth/roles", {method:"POST", body: JSON.stringify({
+        name: $("#roleName").value.trim().toLowerCase(),
+        description: $("#roleDesc").value.trim(),
+      })});
+    }
+    toast(id ? "Role updated" : "Role created", "ok");
+    cache.roles = []; await ensureRoles();
+    resetRoleForm(); loadRoles();
+  } catch (e) { toast(e.message, "err"); }
+};
+window.deleteRole = async id => {
+  const r = cache.roles.find(x => x.id === id);
+  if (!r || !confirm(`Delete role "${r.name}"?`)) return;
+  try { await api("/auth/roles/"+id, {method:"DELETE"}); toast("Role deleted", "ok"); cache.roles = []; await ensureRoles(); loadRoles(); }
+  catch (e) { toast(e.message, "err"); }
+};
+
+// --- Approval Matrix ---
+async function loadMatrix() {
+  try {
+    const [rules, groupList] = await Promise.all([api("/approval/matrix"), api("/auth/groups")]);
+    cache.matrix = rules || [];
+    cache.groups = groupList || cache.groups;
+    const groupNames = Object.fromEntries((cache.groups||[]).map(g => [g.id, g.name]));
+    if (!cache.matrix.length) {
+      $("#matrixRows").innerHTML = `<tr><td colspan="8" class="muted">No rules. Click + Add Rule to create one. Without rules, any admin can approve any request.</td></tr>`;
+      return;
+    }
+    $("#matrixRows").innerHTML = cache.matrix.map(r => {
+      const groups = (r.approver_group_ids||[]).map(id => groupNames[id] || `#${id}`);
+      return `<tr>
+        <td>${r.priority}</td>
+        <td><b>${esc(r.name)}</b></td>
+        <td>${esc(r.target_kind)}</td>
+        <td>${r.tier_min}—${r.tier_max}</td>
+        <td><span class="pill ${r.required_approvals>1?'warn':''}">${r.required_approvals}</span></td>
+        <td>${groups.length ? groups.map(n => `<span class="pill accent" style="margin-right:4px">${esc(n)}</span>`).join("") : '<span class="muted">any admin</span>'}</td>
+        <td>${r.enabled ? '<span class="pill ok">on</span>' : '<span class="pill">off</span>'}</td>
+        <td class="actions">
+          <button class="ghost" onclick="editMatrix(${r.id})">Edit</button>
+          <button class="ghost danger" onclick="deleteMatrix(${r.id})">Delete</button>
+        </td>
+      </tr>`;
+    }).join("");
+  } catch (e) { $("#matrixRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+function renderMatrixGroupChecks(checkedIds) {
+  const ids = new Set(checkedIds || []);
+  if (!(cache.groups||[]).length) {
+    $("#matrixGroupChecks").innerHTML = '<span class="muted">No groups defined. Create groups first.</span>';
+    return;
+  }
+  $("#matrixGroupChecks").innerHTML = cache.groups.map(g => `
+    <label style="display:inline-block;margin:2px 12px 2px 0">
+      <input type="checkbox" data-gid="${g.id}" ${ids.has(g.id)?'checked':''} style="width:auto"/>
+      ${esc(g.name)} <span class="muted">→ ${esc(g.role)}</span>
+    </label>`).join("");
+}
+
+function resetMatrixForm() {
+  $("#matrixId").value = ""; $("#matrixName").value = "";
+  fillTargetKindSelect($("#matrixKind"), "*", true);
+  $("#matrixTierMin").value = "0"; $("#matrixTierMax").value = "3";
+  $("#matrixRequired").value = "1"; $("#matrixPriority").value = "100";
+  $("#matrixEnabled").checked = true;
+  renderMatrixGroupChecks([]);
+  $("#matrixForm").classList.add("hidden");
+}
+
+$("#matrixAddBtn").onclick = async () => {
+  if (!cache.groups.length) {
+    try { cache.groups = await api("/auth/groups"); } catch {}
+  }
+  resetMatrixForm();
+  $("#matrixFormTitle").textContent = "Add approval rule";
+  $("#matrixForm").classList.remove("hidden");
+};
+$("#matrixCancelBtn").onclick = resetMatrixForm;
+
+window.editMatrix = async id => {
+  const r = cache.matrix.find(x => x.id === id); if (!r) return;
+  if (!cache.groups.length) { try { cache.groups = await api("/auth/groups"); } catch {} }
+  $("#matrixId").value = r.id; $("#matrixName").value = r.name;
+  fillTargetKindSelect($("#matrixKind"), r.target_kind, true);
+  $("#matrixTierMin").value = r.tier_min; $("#matrixTierMax").value = r.tier_max;
+  $("#matrixRequired").value = r.required_approvals;
+  $("#matrixPriority").value = r.priority;
+  $("#matrixEnabled").checked = !!r.enabled;
+  renderMatrixGroupChecks(r.approver_group_ids || []);
+  $("#matrixFormTitle").textContent = "Edit approval rule";
+  $("#matrixForm").classList.remove("hidden");
+};
+
+$("#matrixSaveBtn").onclick = async () => {
+  const checked = [...$("#matrixGroupChecks").querySelectorAll("input[data-gid]")]
+    .filter(b => b.checked).map(b => parseInt(b.dataset.gid, 10));
+  const min = parseInt($("#matrixTierMin").value, 10), max = parseInt($("#matrixTierMax").value, 10);
+  if (min > max) { toast("Tier range invalid (min > max)", "err"); return; }
+  const body = {
+    name: $("#matrixName").value.trim(),
+    target_kind: $("#matrixKind").value,
+    tier_min: min, tier_max: max,
+    required_approvals: parseInt($("#matrixRequired").value, 10) || 1,
+    approver_group_ids: checked,
+    priority: parseInt($("#matrixPriority").value, 10) || 100,
+    enabled: $("#matrixEnabled").checked,
+  };
+  if (!body.name) { toast("Rule name required", "err"); return; }
+  try {
+    const id = $("#matrixId").value;
+    if (id) await api("/approval/matrix/"+id, {method:"PUT", body: JSON.stringify(body)});
+    else    await api("/approval/matrix", {method:"POST", body: JSON.stringify(body)});
+    toast(id ? "Rule updated" : "Rule created", "ok");
+    resetMatrixForm(); loadMatrix();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+window.deleteMatrix = async id => {
+  const r = cache.matrix.find(x => x.id === id);
+  if (!r || !confirm(`Delete rule "${r.name}"?`)) return;
+  try { await api("/approval/matrix/"+id, {method:"DELETE"}); toast("Rule deleted", "ok"); loadMatrix(); }
+  catch (e) { toast(e.message, "err"); }
+};
 
 // --- Access profile (roles → policies) ---
 async function fetchAccessProfileData() {
@@ -977,12 +1236,19 @@ async function renderUserGroupChecks(userId, memberGroupIds) {
       ${esc(g.name)} <span class="muted">→ ${esc(g.role)}</span>
     </label>`).join("");
 }
-$("#userAddBtn").onclick = () => { resetUserForm(); $("#userFormTitle").textContent = "Add user"; $("#userPassword").placeholder = "password (required)"; renderUserGroupChecks(null, []); $("#userForm").classList.remove("hidden"); };
+$("#userAddBtn").onclick = async () => {
+  await ensureRoles(); fillRoleSelect($("#userRole"), "user");
+  resetUserForm(); $("#userFormTitle").textContent = "Add user";
+  $("#userPassword").placeholder = "password (required)";
+  renderUserGroupChecks(null, []);
+  $("#userForm").classList.remove("hidden");
+};
 $("#userCancelBtn").onclick = resetUserForm;
 window.editUser = async id => {
   const u = cache.users.find(x => x.id === id); if (!u) return;
+  await ensureRoles(); fillRoleSelect($("#userRole"), u.role);
   $("#userId").value = u.id; $("#userName").value = u.username; $("#userName").disabled = true;
-  $("#userEmail").value = u.email || ""; $("#userRole").value = u.role;
+  $("#userEmail").value = u.email || "";
   $("#userPassword").value = ""; $("#userPassword").placeholder = "new password (blank to keep)";
   $("#userDisabled").checked = !!u.disabled; $("#userFormTitle").textContent = "Edit user";
   try {
@@ -1059,12 +1325,17 @@ function resetGroupForm() {
   ["groupId","groupName","groupDesc","groupLdapDN"].forEach(id => $("#"+id).value = "");
   $("#groupName").disabled = false; $("#groupRole").value = "user"; $("#groupForm").classList.add("hidden");
 }
-$("#groupAddBtn").onclick = () => { resetGroupForm(); $("#groupFormTitle").textContent = "Add group"; $("#groupForm").classList.remove("hidden"); };
+$("#groupAddBtn").onclick = async () => {
+  await ensureRoles(); fillRoleSelect($("#groupRole"), "user");
+  resetGroupForm(); $("#groupFormTitle").textContent = "Add group";
+  $("#groupForm").classList.remove("hidden");
+};
 $("#groupCancelBtn").onclick = resetGroupForm;
-window.editGroup = id => {
+window.editGroup = async id => {
   const g = cache.groups.find(x => x.id === id); if (!g) return;
+  await ensureRoles(); fillRoleSelect($("#groupRole"), g.role);
   $("#groupId").value = g.id; $("#groupName").value = g.name; $("#groupName").disabled = true;
-  $("#groupDesc").value = g.description || ""; $("#groupRole").value = g.role;
+  $("#groupDesc").value = g.description || "";
   $("#groupLdapDN").value = g.ldap_dn || "";
   $("#groupFormTitle").textContent = "Edit group"; $("#groupForm").classList.remove("hidden");
 };
@@ -1169,16 +1440,25 @@ async function loadPolicies() {
 }
 function resetPolicyForm() {
   $("#policyId").value = "";
-  $("#policyRole").value = "netops"; $("#policyKind").value = "linux";
+  fillRoleSelect($("#policyRole"), "netops");
+  fillTargetKindSelect($("#policyKind"), "linux", true);
   $("#policyTier").value = "2"; $("#policyApproval").checked = false;
   ["policyAllow","policyDeny"].forEach(id => $("#"+id).value = "");
   $("#policyForm").classList.add("hidden");
 }
-$("#policyAddBtn").onclick = () => { resetPolicyForm(); $("#policyForm").classList.remove("hidden"); };
+$("#policyAddBtn").onclick = async () => {
+  await ensureRoles();
+  resetPolicyForm();
+  $("#policyFormTitle").textContent = "Add policy";
+  $("#policyForm").classList.remove("hidden");
+};
 $("#policyCancelBtn").onclick = resetPolicyForm;
-window.editPolicy = id => {
+window.editPolicy = async id => {
   const p = (window._policies||[]).find(x => x.id === id); if (!p) return;
-  $("#policyId").value = p.id; $("#policyRole").value = p.role; $("#policyKind").value = p.target_kind;
+  await ensureRoles();
+  fillRoleSelect($("#policyRole"), p.role);
+  fillTargetKindSelect($("#policyKind"), p.target_kind, true);
+  $("#policyId").value = p.id;
   $("#policyTier").value = p.tier_max; $("#policyApproval").checked = p.require_approval;
   $("#policyAllow").value = p.allowed_commands || ""; $("#policyDeny").value = p.denied_commands || "";
   $("#policyFormTitle").textContent = "Edit policy";
@@ -1210,6 +1490,13 @@ function reqStatusPill(status) {
   return `<span class="pill ${cls}">${esc(status)}</span>`;
 }
 
+function approvalProgressCell(r) {
+  if (r.status !== "pending") return "—";
+  const have = r.approvals_have || 0, need = r.approvals_need || 1;
+  const cls = have >= need ? "ok" : (have > 0 ? "warn" : "");
+  return `<span class="pill ${cls}">${have}/${need}</span>`;
+}
+
 async function loadRequests() {
   try {
     if (!cache.targets.length) cache.targets = await api("/policy/targets");
@@ -1220,12 +1507,14 @@ async function loadRequests() {
 
     const mine = await api("/approval/requests/mine");
     if (!(mine||[]).length) {
-      $("#myReqRows").innerHTML = `<tr><td colspan="6" class="muted">No requests yet.</td></tr>`;
+      $("#myReqRows").innerHTML = `<tr><td colspan="7" class="muted">No requests yet.</td></tr>`;
     } else {
       $("#myReqRows").innerHTML = mine.map(r => `
         <tr>
           <td>${r.id}</td><td>${esc(r.target_name)}</td><td>${esc(r.reason)}</td>
-          <td>${reqStatusPill(r.status)}</td><td>${r.ttl_seconds}s</td>
+          <td>${reqStatusPill(r.status)}</td>
+          <td>${approvalProgressCell(r)}</td>
+          <td>${r.ttl_seconds}s</td>
           <td class="muted">${fmtTime(r.created_at)}</td>
         </tr>`).join("");
     }
@@ -1234,28 +1523,36 @@ async function loadRequests() {
     const rows = await api("/approval/requests/pending");
     const others = (rows||[]).filter(r => r.user_id !== currentUser.id);
     if (!others.length) {
-      $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">No requests awaiting your approval.</td></tr>`;
+      $("#reqRows").innerHTML = `<tr><td colspan="8" class="muted">No requests awaiting your approval.</td></tr>`;
       return;
     }
-    $("#reqRows").innerHTML = others.map(r => `
-      <tr>
-        <td>${r.id}</td><td>${esc(r.username)}</td><td>${esc(r.target_name)}</td>
-        <td>${esc(r.reason)}</td><td>${r.ttl_seconds}s</td>
+    $("#reqRows").innerHTML = others.map(r => {
+      const myVote = (r.decisions||[]).find(d => d.approver_id === currentUser.id);
+      const buttons = myVote
+        ? `<span class="pill ${myVote.approve?'ok':'err'}">you voted ${myVote.approve?'approve':'deny'}</span>`
+        : `<button class="ghost" onclick="decide(${r.id}, true)">Approve</button>
+           <button class="ghost danger" onclick="decide(${r.id}, false)">Deny</button>`;
+      return `<tr>
+        <td>${r.id}</td><td>${esc(r.username)}</td>
+        <td>${esc(r.target_name)} <span class="muted">(${esc(r.target_kind)})</span></td>
+        <td><span class="pill">T${r.target_tier}</span></td>
+        <td>${esc(r.reason)}</td>
+        <td>${approvalProgressCell(r)}</td>
         <td class="muted">${fmtTime(r.created_at)}</td>
-        <td class="actions">
-          <button class="ghost" onclick="decide(${r.id}, true)">Approve</button>
-          <button class="ghost danger" onclick="decide(${r.id}, false)">Deny</button>
-        </td>
-      </tr>`).join("");
+        <td class="actions">${buttons}</td>
+      </tr>`;
+    }).join("");
   } catch (e) {
-    $("#myReqRows").innerHTML = `<tr><td colspan="6" class="muted">${esc(e.message)}</td></tr>`;
-    if (isAdmin()) $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`;
+    $("#myReqRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`;
+    if (isAdmin()) $("#reqRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`;
   }
 }
 window.decide = async (id, approve) => {
+  const comment = approve ? "" : (prompt("Reason for denial (optional):") || "");
   try {
-    await api(`/approval/requests/${id}/decide`, {method:"POST", body: JSON.stringify({approve})});
-    toast(approve ? "Approved" : "Denied", "ok"); loadRequests();
+    const res = await api(`/approval/requests/${id}/decide`, {method:"POST", body: JSON.stringify({approve, comment})});
+    const msg = res && res.status ? `Vote recorded — request ${res.status} (${res.approvals_have||0}/${res.approvals_need||1})` : "Vote recorded";
+    toast(msg, "ok"); loadRequests();
   } catch (e) { toast(e.message, "err"); }
 };
 $("#reqSubmitBtn").onclick = async () => {

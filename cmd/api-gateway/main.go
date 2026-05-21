@@ -57,11 +57,16 @@ var adminWriteMatchers = []struct {
 	{"DELETE", "/api/auth/groups/"},
 	{"POST", "/api/auth/groups/"}, // member add
 	{"DELETE", "/api/auth/groups/"},
+	{"POST", "/api/auth/roles"},
+	{"PUT", "/api/auth/roles/"},
+	{"DELETE", "/api/auth/roles/"},
 	{"PUT", "/api/auth/settings/"},
 	{"POST", "/api/auth/settings/"},
 	{"POST", "/api/vault/secrets"},
 	{"DELETE", "/api/vault/secrets/"},
-	{"POST", "/api/approval/requests/"}, // decide
+	{"POST", "/api/approval/matrix"},
+	{"PUT", "/api/approval/matrix/"},
+	{"DELETE", "/api/approval/matrix/"},
 }
 
 func main() {

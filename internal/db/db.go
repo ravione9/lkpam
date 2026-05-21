@@ -138,9 +138,39 @@ func (d *DB) migrate() error {
 			created_at INTEGER NOT NULL,
 			expires_at INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS roles (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			builtin INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS approval_matrix (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			target_kind TEXT NOT NULL DEFAULT '*',     -- '*' or kind
+			tier_min INTEGER NOT NULL DEFAULT 0,        -- inclusive
+			tier_max INTEGER NOT NULL DEFAULT 3,        -- inclusive
+			required_approvals INTEGER NOT NULL DEFAULT 1,
+			approver_group_ids TEXT NOT NULL DEFAULT '', -- CSV of group ids
+			priority INTEGER NOT NULL DEFAULT 100,      -- lower wins (most-specific)
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS approval_decisions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			request_id INTEGER NOT NULL REFERENCES access_requests(id) ON DELETE CASCADE,
+			approver_id INTEGER NOT NULL REFERENCES users(id),
+			approve INTEGER NOT NULL,
+			comment TEXT NOT NULL DEFAULT '',
+			decided_at INTEGER NOT NULL,
+			UNIQUE(request_id, approver_id)
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_groups_group ON user_groups(group_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_approval_decisions_req ON approval_decisions(request_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_approval_matrix_target ON approval_matrix(target_kind, tier_min, tier_max)`,
 	}
 	for _, s := range stmts {
 		if _, err := d.Exec(s); err != nil {
