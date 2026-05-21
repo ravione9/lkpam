@@ -151,6 +151,8 @@
       <div class="section-title">Compliance</div>
       <button data-tab="audit" data-admin><span class="ico">≡</span> Audit Log</button>
       <button data-tab="ca" data-admin><span class="ico">★</span> SSH CA</button>
+      <div class="section-title">Onboarding</div>
+      <button data-tab="onboard"><span class="ico">⚒</span> Device Setup</button>
       <div class="section-title" data-admin>System</div>
       <button data-tab="settings" data-admin><span class="ico">⚙</span> Settings</button>
     </nav>
@@ -542,6 +544,32 @@
         <pre id="caPub">…</pre>
       </section>
 
+      <!-- Device Setup -->
+      <section class="card tab" id="tab-onboard" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <h3 style="margin:0">Device Integration Guide</h3>
+          <div class="muted" style="font-size:12px">Pick a device kind to see step-by-step configuration</div>
+        </div>
+        <p class="desc">These snippets are tailored to <b>this</b> PAM deployment — the proxy hostname and SSH CA public key are auto-filled. Configure the target device first, then add it under <b>Machines</b> with the matching <i>kind</i>.</p>
+
+        <div class="form-grid" style="margin-bottom:14px">
+          <label>PAM proxy host</label>
+          <div class="row" style="gap:6px">
+            <input id="onboardHost" placeholder="pam.corp.local"/>
+            <button class="ghost" id="onboardHostReset" title="Reset to detected host">↻</button>
+          </div>
+          <label>SSH proxy port</label><input id="onboardSshPort" type="number" value="2222" style="width:120px"/>
+          <label>TACACS+ port</label><input id="onboardTacPort" type="number" value="49" style="width:120px"/>
+          <label>TACACS+ shared secret</label><input id="onboardSecret" placeholder="set on PAM tacacs-service, e.g. ChangeMe!"/>
+        </div>
+
+        <div class="row" style="gap:6px;flex-wrap:wrap" id="onboardKindBar"></div>
+
+        <div id="onboardContent" style="margin-top:18px">
+          <p class="muted">Select a device kind above to view its integration guide.</p>
+        </div>
+      </section>
+
       <!-- Settings -->
       <section class="card tab" id="tab-settings" style="display:none">
         <h3>System Settings</h3>
@@ -714,6 +742,7 @@ const TAB_TITLES = {
   roles: "Roles", secrets: "Vault Secrets", policies: "Access Policies",
   matrix: "Approval Matrix", requests: "Access Requests",
   sessions: "SSH Sessions", audit: "Audit Log", ca: "SSH Certificate Authority",
+  onboard: "Device Setup",
   settings: "System Settings",
 };
 
@@ -768,7 +797,9 @@ function showTab(name) {
     users: loadUsers, groups: loadGroups, roles: loadRoles,
     secrets: loadSecrets, policies: loadPolicies, matrix: loadMatrix,
     requests: loadRequests,
-    sessions: loadSessions, audit: loadAudit, ca: loadCA, settings: loadSettings,
+    sessions: loadSessions, audit: loadAudit, ca: loadCA,
+    onboard: loadOnboard,
+    settings: loadSettings,
   };
   if (loaders[name]) loaders[name]();
 }
@@ -1637,6 +1668,403 @@ async function loadCA() {
     $("#caPub").textContent = await r.text();
   } catch (e) { $("#caPub").textContent = e.message; }
 }
+
+// --- Device Setup (integration guides) ---
+//
+// DEVICE_GUIDES is the catalog of supported target kinds and the steps to
+// integrate each one with this PAM deployment. Each step has a title and a
+// `code` block — the renderer copies the code to the clipboard on click and
+// substitutes {{HOST}}, {{SSH_PORT}}, {{TAC_PORT}}, {{SECRET}}, {{CA_PUB}}
+// with values from the form/server before display.
+const DEVICE_GUIDES = {
+  cisco: {
+    label: "Cisco IOS / IOS-XE",
+    intro: "Use TACACS+ for AAA (authentication, authorization, command accounting). Cisco devices send every login + command through PAM, which logs them in the audit trail.",
+    prereqs: [
+      "IOS 15.x / IOS-XE 16.x or later",
+      "Reachable network path from device to <code>{{HOST}}</code> on port <code>{{TAC_PORT}}</code>",
+      "A privileged config session on the device",
+    ],
+    steps: [
+      { title: "1. Configure TACACS+ server",
+        code:
+`! In configure terminal
+tacacs server PAM-TAC
+ address ipv4 {{HOST}}
+ key 0 {{SECRET}}
+ port {{TAC_PORT}}
+ timeout 5
+ single-connection
+!
+aaa group server tacacs+ PAM
+ server name PAM-TAC` },
+      { title: "2. Enable AAA model and bind to VTY",
+        code:
+`aaa new-model
+aaa authentication login PAM-AUTH group PAM local
+aaa authentication enable default group PAM enable
+aaa authorization exec PAM-EXEC group PAM local if-authenticated
+aaa authorization commands 15 PAM-CMD group PAM local if-authenticated
+aaa accounting exec PAM-ACCT start-stop group PAM
+aaa accounting commands 15 PAM-CMD start-stop group PAM
+!
+line vty 0 15
+ login authentication PAM-AUTH
+ authorization exec PAM-EXEC
+ authorization commands 15 PAM-CMD
+ accounting exec PAM-ACCT
+ accounting commands 15 PAM-CMD
+ transport input ssh
+!
+ip ssh version 2
+ip ssh server algorithm authentication publickey password keyboard-interactive` },
+      { title: "3. Verify",
+        code:
+`! On the device
+test aaa group PAM <pam-username> <pam-password> new-code
+show tacacs
+show aaa servers` },
+      { title: "4. Register in PAM",
+        code:
+`# Then in the PAM console:
+#   Machines -> + Add Machine
+#   Kind = cisco
+#   Host = <switch management IP>
+#   Port = 22, Tier = 1 (production)` },
+    ],
+  },
+
+  arista: {
+    label: "Arista EOS",
+    intro: "Arista EOS supports the same TACACS+ AAA model as Cisco. The PAM proxy authenticates users and logs commands.",
+    prereqs: [
+      "EOS 4.20 or later",
+      "Reachable path to <code>{{HOST}}</code>:<code>{{TAC_PORT}}</code>",
+    ],
+    steps: [
+      { title: "1. Configure TACACS+ server",
+        code:
+`! configure terminal
+tacacs-server host {{HOST}} port {{TAC_PORT}} key 0 {{SECRET}}
+tacacs-server timeout 5
+!
+aaa group server tacacs+ PAM
+   server {{HOST}}` },
+      { title: "2. Bind AAA",
+        code:
+`aaa authentication login default group PAM local
+aaa authentication enable default group PAM enable
+aaa authorization exec default group PAM local
+aaa authorization commands all default group PAM local
+aaa accounting commands all default start-stop group PAM
+!
+management ssh
+   authentication mode keyboard-interactive` },
+      { title: "3. Verify",
+        code:
+`show tacacs
+show aaa session` },
+    ],
+  },
+
+  juniper: {
+    label: "Juniper Junos",
+    intro: "Junos integrates with TACACS+ via <code>tacplus-server</code>. Map remote users to a Junos login class with the permissions you want.",
+    prereqs: [
+      "Junos 18.x or later",
+      "Configure access from device management interface to <code>{{HOST}}</code>:<code>{{TAC_PORT}}</code>",
+    ],
+    steps: [
+      { title: "1. Configure TACACS+",
+        code:
+`# Junos 'set' commands
+set system tacplus-server {{HOST}} secret "{{SECRET}}"
+set system tacplus-server {{HOST}} port {{TAC_PORT}}
+set system tacplus-server {{HOST}} timeout 5
+set system tacplus-server {{HOST}} single-connection
+set system authentication-order [ tacplus password ]` },
+      { title: "2. Map remote user + login class",
+        code:
+`set system login class pam-admin permissions all
+set system login user remote class pam-admin
+set system accounting events login
+set system accounting events change-log
+set system accounting events interactive-commands
+set system accounting destination tacplus
+commit` },
+      { title: "3. Verify",
+        code:
+`show system login
+show system users
+# From an admin shell on the device:
+request system audit-snapshot` },
+    ],
+  },
+
+  linux: {
+    label: "Linux (OpenSSH + PAM CA)",
+    intro: "Linux hosts trust the PAM SSH CA so users connect through the SSH proxy with short-lived certificates — no permanent keys or passwords stored on the box. Optional TACACS+ via <code>libpam-tacplus</code>.",
+    prereqs: [
+      "OpenSSH 7.2+ (modern distros)",
+      "Root or sudo to edit <code>/etc/ssh/sshd_config</code>",
+    ],
+    steps: [
+      { title: "1. Install the PAM SSH CA pubkey",
+        code:
+`# Save this to /etc/ssh/pam_ca.pub
+{{CA_PUB}}` },
+      { title: "2. Update sshd_config",
+        code:
+`# /etc/ssh/sshd_config -- add these lines
+TrustedUserCAKeys /etc/ssh/pam_ca.pub
+AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u
+PubkeyAuthentication yes
+ChallengeResponseAuthentication no
+PasswordAuthentication no` },
+      { title: "3. Define allowed principals per local user",
+        code:
+`# For each local account a user should land on, list the PAM
+# roles allowed to log in as that account.
+sudo mkdir -p /etc/ssh/auth_principals
+echo "admin
+netops
+sysadmin" | sudo tee /etc/ssh/auth_principals/root
+echo "sysadmin" | sudo tee /etc/ssh/auth_principals/ubuntu` },
+      { title: "4. Reload sshd",
+        code:
+`sudo sshd -t && sudo systemctl restart sshd` },
+      { title: "5. (Optional) TACACS+ AAA via libpam-tacplus",
+        code:
+`# Debian/Ubuntu
+sudo apt-get install -y libpam-tacplus libnss-tacplus
+
+# /etc/tacplus_servers
+server={{HOST}}
+secret={{SECRET}}
+
+# /etc/pam.d/sshd -- prepend
+auth    sufficient pam_tacplus.so service=ssh
+account sufficient pam_tacplus.so service=ssh
+session sufficient pam_tacplus.so service=ssh` },
+      { title: "6. Verify from your workstation",
+        code:
+`ssh -p {{SSH_PORT}} -o PreferredAuthentications=keyboard-interactive,password \\
+    <pam-user>@<machine-name>@{{HOST}}` },
+    ],
+  },
+
+  palo: {
+    label: "Palo Alto PAN-OS",
+    intro: "PAN-OS uses TACACS+ server profiles + an authentication profile bound to device administration.",
+    prereqs: [
+      "PAN-OS 9.x or later",
+      "Management network access to <code>{{HOST}}</code>:<code>{{TAC_PORT}}</code>",
+    ],
+    steps: [
+      { title: "1. Create TACACS+ server profile",
+        code:
+`# Operational/configure mode
+set shared server-profile tacplus PAM-TAC server PAM host {{HOST}}
+set shared server-profile tacplus PAM-TAC server PAM port {{TAC_PORT}}
+set shared server-profile tacplus PAM-TAC server PAM secret "{{SECRET}}"
+set shared server-profile tacplus PAM-TAC server PAM use-single-connection yes
+set shared server-profile tacplus PAM-TAC timeout 5
+set shared server-profile tacplus PAM-TAC protocol PAP` },
+      { title: "2. Bind authentication profile",
+        code:
+`set shared authentication-profile PAM-AUTH method tacplus server-profile PAM-TAC
+set deviceconfig system authentication-profile PAM-AUTH
+commit description "PAM TACACS+ integration"` },
+      { title: "3. Test",
+        code:
+`# From PAN-OS CLI
+test authentication authentication-profile PAM-AUTH username <user> password <pw>` },
+    ],
+  },
+
+  forti: {
+    label: "Fortinet FortiGate",
+    intro: "FortiOS authenticates admins against the PAM TACACS+ server and maps remote group members to an admin profile.",
+    prereqs: [
+      "FortiOS 6.4 or later",
+      "Mgmt path to <code>{{HOST}}</code>:<code>{{TAC_PORT}}</code>",
+    ],
+    steps: [
+      { title: "1. Define TACACS+ server",
+        code:
+`config user tacacs+
+    edit "PAM-TAC"
+        set server "{{HOST}}"
+        set key {{SECRET}}
+        set port {{TAC_PORT}}
+        set authen-type pap
+    next
+end` },
+      { title: "2. Create remote user group",
+        code:
+`config user group
+    edit "PAM-Admins"
+        set group-type firewall
+        set member "PAM-TAC"
+    next
+end` },
+      { title: "3. Map to admin profile",
+        code:
+`config system admin
+    edit "remote"
+        set remote-auth enable
+        set accprofile "super_admin"
+        set vdom "root"
+        set wildcard enable
+        set remote-group "PAM-Admins"
+    next
+end` },
+      { title: "4. Test",
+        code:
+`# From the FortiGate CLI
+diagnose test authserver tacacs+ PAM-TAC <user> <password>` },
+    ],
+  },
+
+  windows: {
+    label: "Windows Server (OpenSSH)",
+    intro: "Windows targets run the built-in OpenSSH Server and trust the PAM SSH CA the same way Linux does. RDP can be tunnelled over the same SSH session.",
+    prereqs: [
+      "Windows Server 2019 or later (or Windows 10/11)",
+      "Local Administrator to enable OpenSSH",
+    ],
+    steps: [
+      { title: "1. Install OpenSSH Server",
+        code:
+`# Run elevated PowerShell on the target
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd
+Set-Service -Name sshd -StartupType Automatic
+New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH SSH Server' \`
+  -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22` },
+      { title: "2. Install the PAM SSH CA pubkey",
+        code:
+`# Save this content as C:\\ProgramData\\ssh\\pam_ca.pub
+{{CA_PUB}}` },
+      { title: "3. Update sshd_config",
+        code:
+`# Append to C:\\ProgramData\\ssh\\sshd_config
+TrustedUserCAKeys C:/ProgramData/ssh/pam_ca.pub
+AuthorizedPrincipalsFile C:/ProgramData/ssh/auth_principals/%u
+PubkeyAuthentication yes
+PasswordAuthentication no
+
+# Then in PowerShell:
+Restart-Service sshd` },
+      { title: "4. Allow principals per Windows account",
+        code:
+`# Example: allow PAM 'admin' and 'sysadmin' roles to log in as Administrator
+New-Item -Type Directory -Force C:\\ProgramData\\ssh\\auth_principals | Out-Null
+"admin
+sysadmin" | Out-File -Encoding ASCII -FilePath C:\\ProgramData\\ssh\\auth_principals\\Administrator` },
+    ],
+  },
+};
+
+let _onboardCurrent = "cisco";
+
+function detectedProxyHost() {
+  try { return location.hostname || "pam.example.local"; } catch { return "pam.example.local"; }
+}
+
+function onboardSubstitute(text) {
+  const host = ($("#onboardHost").value || detectedProxyHost()).trim();
+  const sp   = $("#onboardSshPort").value || "2222";
+  const tp   = $("#onboardTacPort").value || "49";
+  const sec  = ($("#onboardSecret").value || "<set-shared-secret>").trim() || "<set-shared-secret>";
+  const ca   = (window._caPub || "<paste from SSH CA tab>").trim();
+  return text
+    .replace(/\{\{HOST\}\}/g, host)
+    .replace(/\{\{SSH_PORT\}\}/g, sp)
+    .replace(/\{\{TAC_PORT\}\}/g, tp)
+    .replace(/\{\{SECRET\}\}/g, sec)
+    .replace(/\{\{CA_PUB\}\}/g, ca);
+}
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(
+      () => toast("Copied to clipboard", "ok"),
+      () => toast("Copy failed", "err"));
+    return;
+  }
+  // Fallback for older browsers / non-HTTPS contexts
+  const ta = document.createElement("textarea");
+  ta.value = text; document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); toast("Copied to clipboard", "ok"); }
+  catch { toast("Copy failed", "err"); }
+  ta.remove();
+}
+
+function renderOnboardKindBar() {
+  $("#onboardKindBar").innerHTML = Object.keys(DEVICE_GUIDES).map(k => `
+    <button class="ghost ${k===_onboardCurrent?'primary':''}" data-kind="${k}" onclick="selectOnboard('${k}')">
+      ${esc(DEVICE_GUIDES[k].label)}
+    </button>`).join("");
+}
+
+window.selectOnboard = kind => {
+  if (!DEVICE_GUIDES[kind]) return;
+  _onboardCurrent = kind;
+  renderOnboardKindBar();
+  renderOnboardGuide();
+};
+
+function renderOnboardGuide() {
+  const g = DEVICE_GUIDES[_onboardCurrent];
+  if (!g) { $("#onboardContent").innerHTML = ""; return; }
+  const prereqs = (g.prereqs||[]).map(p => `<li>${onboardSubstitute(p)}</li>`).join("");
+  const steps = (g.steps||[]).map((s, i) => {
+    const code = onboardSubstitute(s.code);
+    const codeAttr = code.replace(/&/g,"&amp;").replace(/'/g,"&#39;").replace(/"/g,"&quot;");
+    return `
+      <div class="card" style="margin:12px 0;padding:14px">
+        <div class="row" style="justify-content:space-between;align-items:flex-start">
+          <h4 style="margin:0 0 8px">${esc(s.title)}</h4>
+          <button class="ghost" data-copy-idx="${i}" onclick="copyOnboardStep(${i})">Copy</button>
+        </div>
+        <pre id="onboardStep-${i}" style="white-space:pre-wrap;word-break:break-all;background:#0f1116;color:#e6e8eb;padding:12px;border-radius:6px;overflow-x:auto;font-size:12px">${esc(code)}</pre>
+      </div>`;
+  }).join("");
+  $("#onboardContent").innerHTML = `
+    <h3 style="margin-bottom:4px">${esc(g.label)}</h3>
+    <p class="muted">${g.intro}</p>
+    ${prereqs ? `<h4 style="margin-top:14px">Prerequisites</h4><ul class="desc">${prereqs}</ul>` : ""}
+    ${steps}`;
+}
+
+window.copyOnboardStep = idx => {
+  const el = document.getElementById("onboardStep-" + idx);
+  if (el) copyToClipboard(el.textContent);
+};
+
+async function loadOnboard() {
+  // Default proxy host if the user hasn't typed one.
+  if (!$("#onboardHost").value) $("#onboardHost").value = detectedProxyHost();
+  // Fetch SSH CA pubkey once and cache; needed by Linux/Windows guides.
+  if (!window._caPub) {
+    try {
+      const r = await fetch("/api/vault/ca/pub", {headers: {Authorization: "Bearer " + token}});
+      if (r.ok) window._caPub = (await r.text()).trim();
+    } catch { /* ignore — guide will show a placeholder */ }
+  }
+  renderOnboardKindBar();
+  renderOnboardGuide();
+}
+
+$("#onboardHostReset")?.addEventListener("click", () => {
+  $("#onboardHost").value = detectedProxyHost();
+  renderOnboardGuide();
+});
+["onboardHost","onboardSshPort","onboardTacPort","onboardSecret"].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("input", () => renderOnboardGuide());
+});
 
 // --- Settings ---
 async function loadSettings() {
