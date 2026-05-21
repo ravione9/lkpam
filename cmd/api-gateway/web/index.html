@@ -569,19 +569,21 @@
   }
   .access-hints ul { margin: 6px 0 0; padding-left: 18px; }
 
-  /* ===== Machines page ===== */
-  .page-header {
+  /* ===== Machines page (dense data grid) ===== */
+  #tab-targets { padding: 12px 14px; }
+  #tab-targets .page-header {
     display: flex; flex-wrap: wrap;
-    align-items: flex-start; justify-content: space-between;
-    gap: 14px;
-    margin-bottom: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border);
+    align-items: center; justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding-bottom: 0;
+    border-bottom: none;
   }
-  .page-header h3 { margin: 0 0 3px; font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
-  .page-header .desc { margin: 0; max-width: 620px; line-height: 1.5; font-size: 11.5px; }
+  #tab-targets .page-header h3 { margin: 0; font-size: 14px; font-weight: 700; }
+  #tab-targets .page-header .desc { display: none; }
+  #tab-targets .page-header .primary { padding: 5px 12px; font-size: 11.5px; }
 
-  .machines-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .machines-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
   .machines-toolbar .search-wrap {
     flex: 1; min-width: 200px; max-width: 320px;
     position: relative;
@@ -625,93 +627,111 @@
 
   .table-wrap {
     border: 1px solid var(--border);
-    border-radius: var(--r-lg);
+    border-radius: var(--r);
     overflow: hidden;
     background: #fff;
-    box-shadow: var(--shadow-xs);
   }
-  .table-scroll { max-height: calc(100vh - 290px); overflow: auto; }
-  .table-pro { font-size: 12px; }
-  .table-pro thead { position: sticky; top: 0; z-index: 5; }
-  .table-pro thead th {
+  .table-scroll { max-height: calc(100vh - 220px); overflow: auto; }
+  #targetsTable {
+    table-layout: fixed;
+    width: 100%;
+    font-size: 11.5px;
+  }
+  #targetsTable thead { position: sticky; top: 0; z-index: 5; }
+  #targetsTable thead th {
     background: var(--surface-2);
-    padding: 6px 12px;
-    font-size: 9.5px;
-    letter-spacing: 0.08em;
+    padding: 5px 8px;
+    font-size: 9px;
+    letter-spacing: 0.07em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .table-pro th.sortable { cursor: pointer; user-select: none; transition: background var(--t-fast), color var(--t-fast); }
-  .table-pro th.sortable:hover { background: var(--bg); color: var(--fg); }
-  .table-pro th.sortable .sort-ind {
-    display: inline-block;
-    width: 9px; margin-left: 3px;
-    color: var(--muted-2);
-    font-size: 8px;
-    transition: color var(--t-fast);
+  #targetsTable th.sortable { cursor: pointer; user-select: none; }
+  #targetsTable th.sortable .sort-ind {
+    display: inline-block; width: 8px; margin-left: 2px;
+    font-size: 7px; color: var(--muted-2);
   }
-  .table-pro th.sortable.sort-asc .sort-ind::before  { content: "▲"; color: var(--accent); }
-  .table-pro th.sortable.sort-desc .sort-ind::before { content: "▼"; color: var(--accent); }
-  .table-pro th.sortable:not(.sort-asc):not(.sort-desc) .sort-ind::before { content: "↕"; opacity: 0.4; }
-  .table-pro tbody td { padding: 5px 12px; border-bottom: 1px solid var(--divider); line-height: 1.35; }
-  .table-pro td.name-cell { font-weight: 500; max-width: 220px; }
-  .table-pro td.name-cell .name-text {
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-weight: 600;
-    font-size: 12px;
-  }
-  .table-pro .machine-meta {
-    font-size: 9.5px; color: var(--muted); margin-top: 1px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  #targetsTable th.sortable.sort-asc .sort-ind::before  { content: "▲"; color: var(--accent); }
+  #targetsTable th.sortable.sort-desc .sort-ind::before { content: "▼"; color: var(--accent); }
+  #targetsTable th.sortable:not(.sort-asc):not(.sort-desc) .sort-ind::before { content: "↕"; opacity: 0.35; }
+  #targetsTable tbody td {
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--divider);
     line-height: 1.25;
+    vertical-align: middle;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .table-pro td.addr-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .table-pro td.addr-cell .muted { font-family: var(--font-mono); font-size: 10.5px; }
-  .table-pro td.tags-cell { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .table-pro .pill { padding: 1px 7px; font-size: 10px; }
-  .table-pro .actions { white-space: nowrap; display: flex; gap: 3px; justify-content: flex-end; align-items: center; }
-
-  /* Compact action buttons */
-  .btn-mini {
-    padding: 2px 8px;
-    font-size: 11px;
-    font-weight: 500;
-    border-radius: var(--r-sm);
+  #targetsTable .cell-ellipsis {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #targetsTable .cell-name { font-weight: 600; color: var(--fg); }
+  #targetsTable .cell-platform { color: var(--fg-soft); font-size: 11px; }
+  #targetsTable .cell-addr { font-family: var(--font-mono); font-size: 10.5px; color: var(--muted); }
+  #targetsTable .cell-conn { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-soft); }
+  #targetsTable .cell-conn .conn-dot { width: 6px; height: 6px; }
+  #targetsTable .cell-tier .pill { padding: 1px 6px; font-size: 9.5px; }
+  #targetsTable .cell-tags { color: var(--muted); font-size: 11px; }
+  /* act-bar — NOT .actions (global .actions has flex-wrap:wrap and stacks buttons vertically) */
+  #targetsTable td.act-cell { overflow: visible; white-space: nowrap; padding: 3px 6px; }
+  #targetsTable .act-bar {
+    display: inline-flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    width: 100%;
+  }
+  #targetsTable .act-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 22px;
+    padding: 0 8px;
+    font-size: 10.5px;
+    font-weight: 600;
+    border-radius: 4px;
     border: 1px solid var(--border);
     background: #fff;
     color: var(--fg-soft);
     cursor: pointer;
-    line-height: 1.4;
-    transition: all var(--t-fast);
     white-space: nowrap;
-    height: 22px;
+    flex-shrink: 0;
+    line-height: 1;
   }
-  .btn-mini:hover { border-color: var(--border-strong); background: var(--surface-2); color: var(--fg); }
-  .btn-mini.primary { background: var(--accent); color: #fff; border-color: transparent; box-shadow: var(--shadow-xs); }
-  .btn-mini.primary:hover { background: var(--accent-hover); color: #fff; }
-  .icon-btn {
-    width: 22px; height: 22px;
-    display: inline-flex; align-items: center; justify-content: center;
+  #targetsTable .act-btn:hover { border-color: var(--border-strong); background: var(--surface-2); }
+  #targetsTable .act-btn.launch {
+    background: var(--accent);
+    color: #fff;
+    border-color: transparent;
+    padding: 0 10px;
+  }
+  #targetsTable .act-btn.launch:hover { background: var(--accent-hover); }
+  #targetsTable .act-btn.icon {
+    width: 22px;
     padding: 0;
-    border: 1px solid transparent;
-    background: transparent;
     color: var(--muted);
-    border-radius: var(--r-sm);
-    cursor: pointer;
-    transition: all var(--t-fast);
+    border-color: transparent;
+    background: transparent;
   }
-  .icon-btn:hover { background: var(--surface-2); color: var(--fg); border-color: var(--border); }
-  .icon-btn.danger:hover { background: var(--err-soft); color: var(--err); border-color: #fecaca; }
-  .icon-btn svg { display: block; width: 12px; height: 12px; }
+  #targetsTable .act-btn.icon:hover { background: var(--surface-2); border-color: var(--border); color: var(--fg); }
+  #targetsTable .act-btn.icon.danger:hover { color: var(--err); background: var(--err-soft); }
 
   /* Pagination */
-  .pagination {
+  #tab-targets .pagination {
     display: flex; align-items: center; flex-wrap: wrap;
     gap: 8px;
-    padding: 5px 10px;
+    padding: 4px 8px;
     border-top: 1px solid var(--border);
     background: var(--surface-2);
-    font-size: 11px;
+    font-size: 10.5px;
     color: var(--muted);
-    min-height: 34px;
+    min-height: 28px;
   }
   .pagination-info b { color: var(--fg); font-weight: 600; }
   .pagination-spacer { flex: 1; }
@@ -730,6 +750,7 @@
     .pagination-spacer { display: none; }
   }
 
+  #tab-targets .empty-state { padding: 32px 16px; }
   .empty-state { text-align: center; padding: 56px 24px; }
   .empty-state .empty-icon {
     width: 56px; height: 56px;
@@ -1012,16 +1033,25 @@
         </div>
         <div class="table-wrap">
           <div class="table-scroll">
-            <table class="table-pro" id="targetsTable">
+            <table id="targetsTable">
+              <colgroup>
+                <col style="width:19%">
+                <col style="width:20%">
+                <col style="width:8%">
+                <col style="width:15%">
+                <col style="width:9%">
+                <col style="width:8%">
+                <col style="width:21%">
+              </colgroup>
               <thead>
                 <tr>
                   <th class="sortable" data-sort="name">Name <span class="sort-ind"></span></th>
                   <th class="sortable" data-sort="platform">Platform <span class="sort-ind"></span></th>
-                  <th class="sortable" data-sort="connection">Connection <span class="sort-ind"></span></th>
+                  <th class="sortable" data-sort="connection">Conn <span class="sort-ind"></span></th>
                   <th class="sortable" data-sort="address">Address <span class="sort-ind"></span></th>
                   <th class="sortable" data-sort="tier">Tier <span class="sort-ind"></span></th>
                   <th class="sortable" data-sort="tags">Tags <span class="sort-ind"></span></th>
-                  <th style="text-align:right">Actions</th>
+                  <th style="text-align:right;width:21%">Actions</th>
                 </tr>
               </thead>
               <tbody id="targetRows"><tr><td colspan="7" class="muted" style="padding:24px;text-align:center">Loading…</td></tr></tbody>
@@ -2849,34 +2879,47 @@ window.clearTargetFilters = () => {
   renderTargetsPage();
 };
 
+function targetAddressCell(t) {
+  if (t.connection_type === "web" || t.connection_type === "https-api") {
+    const url = t.web_url || "—";
+    return `<span class="cell-ellipsis cell-addr" title="${esc(url)}">${esc(url)}</span>`;
+  }
+  const addr = `${t.host || ""}:${t.port ?? ""}`;
+  return `<span class="cell-ellipsis cell-addr" title="${esc(addr)}">${esc(addr)}</span>`;
+}
+
+function targetConnCell(t) {
+  const ct = t.connection_type || "ssh";
+  const dot = ct === "https-api" ? "api" : ct;
+  return `<span class="cell-conn"><span class="conn-dot ${esc(dot)}"></span>${esc(ct)}</span>`;
+}
+
+function targetActBar(t, admin) {
+  const launch = `<button type="button" class="act-btn launch" onclick="launchTarget(${t.id})">Launch</button>`;
+  const req = `<button type="button" class="act-btn" onclick="requestForTarget(${t.id})">Req</button>`;
+  const adm = admin
+    ? `<button type="button" class="act-btn icon" onclick="editTarget(${t.id})" title="Edit">${ICON_EDIT}</button>` +
+      `<button type="button" class="act-btn icon danger" onclick="deleteTarget(${t.id})" title="Delete">${ICON_TRASH}</button>`
+    : "";
+  return `<div class="act-bar">${launch}${req}${adm}</div>`;
+}
+
 function renderTargetRowsSlice(slice) {
   const admin = isAdmin();
-  const tActions = t => {
-    const launchBtn  = `<button class="btn-mini primary" onclick="launchTarget(${t.id})" title="Launch session">Launch</button>`;
-    const requestBtn = `<button class="btn-mini" onclick="requestForTarget(${t.id})" title="Request access">Request</button>`;
-    const adminBtns = admin
-      ? `<button class="icon-btn" onclick="editTarget(${t.id})" title="Edit" aria-label="Edit">${ICON_EDIT}</button>` +
-        `<button class="icon-btn danger" onclick="deleteTarget(${t.id})" title="Delete" aria-label="Delete">${ICON_TRASH}</button>`
-      : "";
-    return launchBtn + requestBtn + adminBtns;
-  };
-  // Build with array.join for speed on large slices.
   const html = new Array(slice.length);
   for (let i = 0; i < slice.length; i++) {
     const t = slice[i];
     const platform = kindLabel(t.kind);
     const meta = [t.vendor, t.os_version].filter(Boolean).join(" · ");
+    const tip = esc(t.name + (meta ? " · " + meta : ""));
     html[i] = `<tr>
-      <td class="name-cell">
-        <div class="name-text" title="${esc(t.name)}">${esc(t.name)}</div>
-        ${meta ? `<div class="machine-meta" title="${esc(meta)}">${esc(meta)}</div>` : ""}
-      </td>
-      <td><span class="pill" title="${esc(platform)}">${esc(platform)}</span></td>
-      <td>${connectionBadge(t)}</td>
-      <td class="addr-cell">${targetAddress(t)}</td>
-      <td>${tierPill(t.tier)}</td>
-      <td class="muted tags-cell" title="${esc(t.tags || "")}">${esc(t.tags) || "—"}</td>
-      <td class="actions">${tActions(t)}</td>
+      <td title="${tip}"><span class="cell-ellipsis cell-name">${esc(t.name)}</span></td>
+      <td title="${esc(platform)}"><span class="cell-ellipsis cell-platform">${esc(platform)}</span></td>
+      <td>${targetConnCell(t)}</td>
+      <td>${targetAddressCell(t)}</td>
+      <td class="cell-tier">${tierPill(t.tier)}</td>
+      <td class="cell-tags" title="${esc(t.tags || "")}">${esc(t.tags) || "—"}</td>
+      <td class="act-cell">${targetActBar(t, admin)}</td>
     </tr>`;
   }
   $("#targetRows").innerHTML = html.join("");
