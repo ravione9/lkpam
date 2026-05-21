@@ -19,6 +19,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -173,21 +175,42 @@ func (s *Server) authenticate(username, password, otp string) (*authedUser, erro
 	return &authedUser{ID: uid, Role: uRole}, nil
 }
 
+// resolveTarget looks up a target by numeric ref (#42 / id:42) or by display name.
+// ID refs avoid SSH parsing issues when machine names contain spaces or @.
+func (s *Server) resolveTarget(targetRef string) (tid int64, name, kind, host string, port, tier int, err error) {
+	ref := strings.TrimSpace(targetRef)
+	if ref == "" {
+		return 0, "", "", "", 0, 0, errors.New("target not found")
+	}
+	if strings.HasPrefix(ref, "#") || strings.HasPrefix(ref, "id:") {
+		idStr := strings.TrimPrefix(strings.TrimPrefix(ref, "id:"), "#")
+		var id int64
+		id, err = strconv.ParseInt(idStr, 10, 64)
+		if err != nil || id <= 0 {
+			return 0, "", "", "", 0, 0, errors.New("target not found")
+		}
+		err = s.DB.QueryRow(`SELECT id, name, kind, host, port, tier FROM targets WHERE id = ?`, id).
+			Scan(&tid, &name, &kind, &host, &port, &tier)
+		if err != nil {
+			return 0, "", "", "", 0, 0, errors.New("target not found")
+		}
+		return tid, name, kind, host, port, tier, nil
+	}
+	err = s.DB.QueryRow(`SELECT id, name, kind, host, port, tier FROM targets WHERE name = ?`, ref).
+		Scan(&tid, &name, &kind, &host, &port, &tier)
+	if err != nil {
+		return 0, "", "", "", 0, 0, errors.New("target not found")
+	}
+	return tid, name, kind, host, port, tier, nil
+}
+
 // authorizeAndStash looks up the target, evaluates policy with the user's
 // effective roles, and packages routing info into ssh.Permissions for the
 // connection handler to consume.
 func (s *Server) authorizeAndStash(u *authedUser, target string) (*ssh.Permissions, error) {
-	var (
-		tid  int64
-		kind string
-		host string
-		port int
-		tier int
-	)
-	err := s.DB.QueryRow(`SELECT id, kind, host, port, tier FROM targets WHERE name = ?`, target).
-		Scan(&tid, &kind, &host, &port, &tier)
+	tid, name, kind, host, port, tier, err := s.resolveTarget(target)
 	if err != nil {
-		return nil, errors.New("target not found")
+		return nil, err
 	}
 
 	dec, err := s.Policy.Decide(context.Background(), policy.Input{
@@ -205,7 +228,7 @@ func (s *Server) authorizeAndStash(u *authedUser, target string) (*ssh.Permissio
 			"user-id":   fmt.Sprintf("%d", u.ID),
 			"role":      u.Role,
 			"target-id": fmt.Sprintf("%d", tid),
-			"target":    target,
+			"target":    name,
 			"kind":      kind,
 			"host":      host,
 			"port":      fmt.Sprintf("%d", port),

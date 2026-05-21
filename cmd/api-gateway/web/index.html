@@ -107,6 +107,21 @@
   /* Mini sparkline chart */
   .chart { display: block; width: 100%; height: 80px; }
   .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+
+  /* Access profile flow */
+  .access-flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin-bottom: 20px; }
+  @media (max-width: 900px) { .access-flow { grid-template-columns: 1fr 1fr; gap: 8px; } }
+  .access-step { padding: 14px 16px; background: var(--bg); border: 1px solid var(--border); position: relative; }
+  .access-step:first-child { border-radius: 8px 0 0 8px; }
+  .access-step:last-child { border-radius: 0 8px 8px 0; }
+  @media (max-width: 900px) { .access-step:first-child, .access-step:last-child { border-radius: 8px; } }
+  .access-step.ok { background: var(--ok-soft); border-color: #b7e4c7; }
+  .access-step.warn { background: var(--warn-soft); border-color: #fcd34d; }
+  .access-step .num { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .access-step h5 { margin: 4px 0 6px; font-size: 13px; font-weight: 600; }
+  .access-step p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .access-hints { background: var(--warn-soft); border: 1px solid #fcd34d; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; }
+  .access-hints ul { margin: 6px 0 0; padding-left: 18px; }
 </style>
 </head>
 <body>
@@ -206,7 +221,7 @@
         <div class="card" style="margin:0">
           <h3>Quick Start · Machine Access</h3>
           <p class="muted">Connect through the SSH proxy. Use <b>keyboard-interactive</b> auth when MFA is enrolled:</p>
-          <pre id="sshHint">ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password user@target-name@localhost</pre>
+          <pre id="sshHint">ssh -p 2222 … "user@#machine-id@host"</pre>
           <p class="muted" style="font-size:12px;margin-top:8px">Password prompt = portal password · MFA prompt = 6-digit TOTP code</p>
         </div>
 
@@ -224,7 +239,7 @@
             <div>
               <div class="label muted">Matching policies</div>
               <div id="profilePolicies" class="muted" style="font-size:13px">—</div>
-              <p class="desc" style="margin-top:12px">Policies are assigned by <b>role</b>. Set a user's role under Users, or add them to a Group that grants a role. Then create/edit rules under Policies.</p>
+        <p class="desc" style="margin-top:12px">See <b>My Access</b> for your full path: roles → policies → machines → approvers.</p>
             </div>
           </div>
         </div>
@@ -246,7 +261,16 @@
       <!-- My Access (role + policy visibility for all users) -->
       <section class="card tab" id="tab-access" style="display:none">
         <h3>My Access Profile</h3>
-        <p class="desc">Your portal role and group memberships determine which policies apply. Admins assign roles via <b>Users</b> or <b>Groups</b>; policies are matched by role name.</p>
+        <p class="desc">Your complete access path: roles &amp; groups → policies → machines → who approves. Use <b>Access Requests</b> to request JIT access, then <b>Launch</b> from Machines after approval.</p>
+
+        <div class="access-flow" id="accessFlow">
+          <div class="access-step" id="flowStep1"><div class="num">Step 1</div><h5>Roles &amp; Groups</h5><p id="flowRoles">Loading…</p></div>
+          <div class="access-step" id="flowStep2"><div class="num">Step 2</div><h5>Policies</h5><p id="flowPolicies">Loading…</p></div>
+          <div class="access-step" id="flowStep3"><div class="num">Step 3</div><h5>Machines</h5><p id="flowMachines">Loading…</p></div>
+          <div class="access-step" id="flowStep4"><div class="num">Step 4</div><h5>Approval</h5><p id="flowApproval">Loading…</p></div>
+        </div>
+        <div class="access-hints hidden" id="accessHints"></div>
+
         <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
           <div class="card" style="margin:0">
             <h4>Roles &amp; Groups</h4>
@@ -261,14 +285,19 @@
             <div id="accessPolicies">Loading…</div>
           </div>
         </div>
+
         <div class="card" style="margin-top:16px">
-          <h4>How policy assignment works</h4>
-          <ol class="desc" style="margin:0;padding-left:20px;line-height:1.8">
-            <li>Admin sets your <b>role</b> on the Users tab (e.g. netops, sysadmin).</li>
-            <li>Or admin adds you to a <b>Group</b> that grants a role (e.g. "Network Ops" → netops).</li>
-            <li>Admin creates <b>Policies</b> bound to that role + target kind + tier.</li>
-            <li>If policy requires approval, submit an access request and wait for a different admin to approve.</li>
-          </ol>
+          <div class="row" style="justify-content:space-between;margin-bottom:8px">
+            <h4 style="margin:0">Machines you can access</h4>
+            <button class="primary" id="accessReqBtn">Request access →</button>
+          </div>
+          <div id="accessTargets"><span class="muted">Loading…</span></div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h4>Your approval path</h4>
+          <p class="desc" style="margin-bottom:8px">When a policy requires approval, these matrix rules determine who must approve (based on your groups as requester).</p>
+          <div id="accessMatrix"><span class="muted">Loading…</span></div>
         </div>
       </section>
 
@@ -384,7 +413,7 @@
           <h3 style="margin:0">Access Policies</h3>
           <button class="primary" id="policyAddBtn">+ Add Policy</button>
         </div>
-        <p class="desc">Each policy rule binds a <b>role</b> to a target kind, tier ceiling, and command allowlist. Assign roles to users (Users tab) or groups (Groups tab), then create matching policy rules here. The most permissive matching rule wins for a user's effective roles.</p>
+        <p class="desc">Each policy binds a <b>role</b> to target kind, tier ceiling, and commands. Users inherit roles from their account or from <b>Groups</b>. When <b>Require approval</b> is checked, the <b>Approval Matrix</b> maps requester groups → approver groups.</p>
         <table>
           <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
           <tbody id="policyRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
@@ -469,7 +498,7 @@
       <section class="card tab" id="tab-requests" style="display:none">
         <div class="form-panel" id="reqForm">
           <h4>Request JIT Access</h4>
-          <p class="desc">Select a machine, provide a reason, and submit. An <b>admin other than you</b> must approve before you can connect.</p>
+          <p class="desc">Select a machine you are allowed to access (see <b>My Access</b>), provide a reason, and submit. Approval routing follows the matrix: your group → approver group.</p>
           <div class="row">
             <select id="reqTarget"><option value="">Select machine…</option></select>
             <input id="reqReason" placeholder="business reason" style="flex:1;min-width:200px"/>
@@ -690,7 +719,7 @@
           <h4 style="margin-top:0">How access works</h4>
           <div style="margin-bottom:16px">
             <p class="desc" style="margin:0 0 8px"><b>SSH / CLI</b> — after access is approved, connect via the PAM SSH proxy:</p>
-            <pre id="onboardSshCmd">ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password user@machine-name@localhost</pre>
+            <pre id="onboardSshCmd">ssh -p 2222 … "user@#machine-id@host"</pre>
           </div>
           <div>
             <p class="desc" style="margin:0 0 10px"><b>RDP (CyberArk-style)</b> — PAM does <em>not</em> create a Windows user for each portal login. Instead:</p>
@@ -698,8 +727,7 @@
               <li>Admin registers the Windows server under <b>Machines</b> (connection type <b>RDP</b>).</li>
               <li>Admin creates a <b>privileged account</b> in Safes → Privileged Accounts linked to this machine (e.g. <code>Administrator</code> or <code>_PAM_RDP</code>). CPM rotates the password.</li>
               <li>User submits <b>Request access</b> → approver grants JIT access.</li>
-              <li>User clicks <b>Launch</b> → PAM checks out the privileged credential and downloads a <code>.rdp</code> file + <code>Launch-RDP.ps1</code> helper.</li>
-              <li>On a Windows PC, run the script — it injects credentials and opens Remote Desktop. Delete the script when done.</li>
+              <li>User clicks <b>Launch</b> → <b>Open in browser (recorded)</b> — session is proxied through PAM/guacd and saved as a <code>.guac</code> recording. Or download .rdp + script for native mstsc (not recorded).</li>
             </ol>
             <p class="muted" style="font-size:12px;margin-top:8px">Select <b>Windows Server</b> below for the one-time onboarding script to create the PAM-managed local account on the target.</p>
           </div>
@@ -870,6 +898,8 @@
 <script>
 let token = null;
 let currentUser = null;
+const TOKEN_KEY = "pam_token";
+const SSH_PROXY_PORT = 2222;
 let pendingMFAUserID = null;
 let cache = { targets: [], users: [], groups: [], roles: [], matrix: [], safes: [], accounts: [], apps: [] };
 const $ = s => document.querySelector(s);
@@ -959,6 +989,109 @@ function esc(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// sshTargetRef returns a proxy-safe machine identifier (#id avoids spaces in names).
+function sshTargetRef(target) {
+  const id = typeof target === "object" ? target.id : target;
+  return "#" + id;
+}
+
+function sshProxyHost() {
+  return location.hostname || "localhost";
+}
+
+// buildSshCommand returns a quoted ssh command safe for CMD, PowerShell, and bash.
+function buildSshCommand(username, target) {
+  const dest = `${username}@${sshTargetRef(target)}@${sshProxyHost()}`;
+  return `ssh -p ${SSH_PROXY_PORT} -o PreferredAuthentications=keyboard-interactive,password -o StrictHostKeyChecking=accept-new "${dest}"`;
+}
+
+function buildSshBatContent(username, target) {
+  const dest = `${username}@${sshTargetRef(target)}@${sshProxyHost()}`;
+  const name = typeof target === "object" ? target.name : String(target);
+  const sshLine = `ssh -p ${SSH_PROXY_PORT} -o PreferredAuthentications=keyboard-interactive,password -o StrictHostKeyChecking=accept-new "${dest}"`;
+  return `@echo off\r\n` +
+    `title PAM SSH — ${name.replace(/"/g, "'")}\r\n` +
+    `echo Connecting to ${name.replace(/"/g, "'")} via PAM (port ${SSH_PROXY_PORT})...\r\n` +
+    `echo Login: portal password, then MFA code if enrolled.\r\n` +
+    `where wt >nul 2>&1\r\n` +
+    `if not errorlevel 1 (\r\n` +
+    `  wt -w 0 cmd /k ${sshLine}\r\n` +
+    `  exit /b 0\r\n` +
+    `)\r\n` +
+    `${sshLine}\r\n` +
+    `if errorlevel 1 pause\r\n`;
+}
+
+function buildPuttyBatContent(username, target) {
+  const login = `${username}@${sshTargetRef(target)}`;
+  const name = typeof target === "object" ? target.name : String(target);
+  return `@echo off\r\n` +
+    `title PAM PuTTY — ${name.replace(/"/g, "'")}\r\n` +
+    `where putty >nul 2>&1\r\n` +
+    `if errorlevel 1 (\r\n` +
+    `  echo PuTTY not found in PATH. Install from https://www.putty.org/ or use Launch-CMD.bat\r\n` +
+    `  pause\r\n` +
+    `  exit /b 1\r\n` +
+    `)\r\n` +
+    `putty -ssh -P ${SSH_PROXY_PORT} -l "${login.replace(/"/g, '""')}" ${sshProxyHost()}\r\n`;
+}
+
+function buildSshPs1Content(username, target) {
+  const cmd = buildSshCommand(username, target);
+  const name = typeof target === "object" ? target.name : String(target);
+  return `# PAM SSH launcher — ${name}\r\n` +
+    `Start-Process cmd.exe -ArgumentList '/k', ${JSON.stringify(cmd)}\r\n`;
+}
+
+function safeFilename(name) {
+  return String(name || "machine").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").slice(0, 40);
+}
+
+function trySshProtocol(username, target) {
+  const login = encodeURIComponent(`${username}@${sshTargetRef(target)}`);
+  const uri = `ssh://${login}@${sshProxyHost()}:${SSH_PROXY_PORT}`;
+  const a = document.createElement("a");
+  a.href = uri;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function persistToken(tok) {
+  token = tok;
+  if (tok) sessionStorage.setItem(TOKEN_KEY, tok);
+  else sessionStorage.removeItem(TOKEN_KEY);
+}
+
+async function restoreSession() {
+  const saved = sessionStorage.getItem(TOKEN_KEY);
+  if (!saved) return false;
+  token = saved;
+  try {
+    const claims = await api("/auth/verify", {method:"POST", body: JSON.stringify({Token: token})});
+    currentUser = { id: claims.uid, username: claims.u, role: claims.r, mfa_enabled: false };
+    try {
+      const users = await api("/auth/users");
+      const me = (users || []).find(u => u.id === claims.uid);
+      if (me) currentUser = me;
+    } catch { /* non-admin may not list users */ }
+    return true;
+  } catch {
+    await persistToken(null);
+    return false;
+  }
+}
+
+function enterApp() {
+  $("#login-wrap").style.display = "none";
+  $("#app").style.display = "grid";
+  $("#me").textContent = currentUser.username + " · " + currentUser.role + (currentUser.mfa_enabled ? " · MFA ✓" : "");
+  applyRoleUI();
+  ensureRoles();
+  showTab("dash");
+}
+
 function tierLabel(t) {
   return ({0:"0 · critical",1:"1 · prod",2:"2 · staging",3:"3 · dev"})[t] ?? t;
 }
@@ -1007,14 +1140,9 @@ async function doLogin() {
       toast("Enter your MFA code", "ok");
       return;
     }
-    token = data.token;
+    await persistToken(data.token);
     currentUser = data.user;
-    $("#login-wrap").style.display = "none";
-    $("#app").style.display = "grid";
-    $("#me").textContent = currentUser.username + " · " + currentUser.role + (currentUser.mfa_enabled ? " · MFA ✓" : "");
-    applyRoleUI();
-    ensureRoles();
-    showTab("dash");
+    enterApp();
   } catch (e) { toast(e.message, "err"); }
 }
 
@@ -1022,7 +1150,7 @@ $("#loginBtn").onclick = doLogin;
 $("#p").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 $("#otp").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 $("#u").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
-$("#signout").onclick = () => { token = null; location.reload(); };
+$("#signout").onclick = async () => { await persistToken(null); location.reload(); };
 $$("aside nav button[data-tab]").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 // --- Dashboard ---
@@ -1066,8 +1194,8 @@ async function loadDashboard() {
     const first = (targets || [])[0];
     const uname = currentUser ? currentUser.username : "user";
     $("#sshHint").textContent = first
-      ? `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${uname}@${first.name}@localhost`
-      : `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${uname}@machine-name@localhost`;
+      ? buildSshCommand(uname, first)
+      : buildSshCommand(uname, { id: 1, name: "machine" });
     loadAccessProfileSummary();
 
     // Login activity chart (24h, hourly buckets)
@@ -1298,43 +1426,122 @@ window.deleteMatrix = async id => {
   catch (e) { toast(e.message, "err"); }
 };
 
-// --- Access profile (roles → policies) ---
+// --- Access profile (roles → policies → machines → approval) ---
 async function fetchAccessProfileData() {
   if (!currentUser) return null;
-  const safe = p => p.catch(() => null);
-  const [rolesData, groups, policies] = await Promise.all([
-    api("/auth/users/" + currentUser.id + "/effective-roles"),
-    safe(api("/auth/users/" + currentUser.id + "/groups")),
-    safe(api("/policy/policies")),
-  ]);
-  const roles = (rolesData && rolesData.roles) || [currentUser.role];
-  const roleSet = new Set(roles);
-  const matched = (policies || []).filter(p => roleSet.has(p.role));
-  return { roles, groups: groups || [], policies: matched, allPolicies: policies || [] };
+  try {
+    return await api("/policy/access-profile");
+  } catch {
+    const safe = p => p.catch(() => null);
+    const [rolesData, groups, policies] = await Promise.all([
+      api("/auth/users/" + currentUser.id + "/effective-roles"),
+      safe(api("/auth/users/" + currentUser.id + "/groups")),
+      safe(api("/policy/policies")),
+    ]);
+    const roles = (rolesData && rolesData.roles) || [currentUser.role];
+    const roleSet = new Set(roles);
+    const matched = (policies || []).filter(p => roleSet.has(p.role));
+    return { primary_role: currentUser.role, roles, groups: groups || [], policies: matched, targets: [], matrix_rules: [], hints: [] };
+  }
 }
 
 function renderPolicyList(policies, el) {
   if (!(policies||[]).length) {
-    el.innerHTML = '<span class="muted">No policies match your roles yet. Ask an admin to assign a role and create policy rules.</span>';
+    el.innerHTML = '<span class="muted">No policies match your roles. An admin must create a policy for your role or add you to a group with a privileged role (e.g. netops).</span>';
     return;
   }
   el.innerHTML = `<table style="width:100%;font-size:13px">
-    <thead><tr><th>Role</th><th>Kind</th><th>Tier</th><th>Approval</th></tr></thead>
+    <thead><tr><th>Role</th><th>Kind</th><th>Tier max</th><th>Approval</th></tr></thead>
     <tbody>${policies.map(p => `
       <tr>
         <td><span class="pill">${esc(p.role)}</span></td>
-        <td>${esc(p.target_kind)}</td><td>${p.tier_max}</td>
-        <td>${p.require_approval ? '<span class="pill warn">required</span>' : 'no'}</td>
+        <td>${esc(p.target_kind)}</td><td>T${p.tier_max}</td>
+        <td>${p.require_approval ? '<span class="pill warn">JIT required</span>' : '<span class="pill ok">direct</span>'}</td>
       </tr>`).join("")}</tbody></table>`;
+}
+
+function renderAccessTargets(targets, el) {
+  const allowed = (targets || []).filter(t => t.allowed);
+  if (!allowed.length) {
+    el.innerHTML = '<span class="muted">No machines match your policies yet. Register machines under Machines, or ask an admin to adjust policy tier/kind for your role.</span>';
+    return;
+  }
+  el.innerHTML = `<table style="width:100%;font-size:13px">
+    <thead><tr><th>Machine</th><th>Platform</th><th>Tier</th><th>Access</th><th>Approvers</th><th></th></tr></thead>
+    <tbody>${allowed.map(t => `
+      <tr>
+        <td><b>${esc(t.name)}</b></td>
+        <td>${esc(t.kind)}</td>
+        <td><span class="pill">T${t.tier}</span></td>
+        <td>${t.require_approval ? '<span class="pill warn">request + approve</span>' : '<span class="pill ok">direct launch</span>'}</td>
+        <td class="muted">${t.require_approval ? esc((t.approver_groups||[]).join(", ") || "any admin") + (t.required_approvals > 1 ? ` (${t.required_approvals} needed)` : "") : "—"}</td>
+        <td>${t.require_approval ? `<button class="ghost" onclick="goRequest(${t.id})">Request</button>` : `<button class="ghost" onclick="switchTab('targets')">Launch</button>`}</td>
+      </tr>`).join("")}</tbody></table>`;
+}
+
+function renderAccessMatrix(rules, el) {
+  if (!(rules||[]).length) {
+    el.innerHTML = '<span class="muted">No approval-matrix rules match your groups. When you submit a request, any admin (other than you) can approve it.</span>';
+    return;
+  }
+  el.innerHTML = `<table style="width:100%;font-size:13px">
+    <thead><tr><th>Rule</th><th>Target kind</th><th>Tier range</th><th>Requester groups</th><th>Approver groups</th><th>Needed</th></tr></thead>
+    <tbody>${rules.map(r => `
+      <tr>
+        <td>${esc(r.name)}</td>
+        <td>${esc(r.target_kind)}</td>
+        <td>T${r.tier_min}–T${r.tier_max}</td>
+        <td>${(r.requester_groups||[]).length ? r.requester_groups.map(g => `<span class="pill accent">${esc(g)}</span>`).join(" ") : '<span class="muted">any</span>'}</td>
+        <td>${(r.approver_groups||[]).length ? r.approver_groups.map(g => `<span class="pill">${esc(g)}</span>`).join(" ") : '<span class="muted">any admin</span>'}</td>
+        <td>${r.required_approvals}</td>
+      </tr>`).join("")}</tbody></table>`;
+}
+
+function renderAccessFlow(data) {
+  const roles = data.roles || [];
+  const policies = data.policies || [];
+  const allowed = (data.targets || []).filter(t => t.allowed);
+  const matrix = data.matrix_rules || [];
+
+  const s1 = $("#flowStep1"), s2 = $("#flowStep2"), s3 = $("#flowStep3"), s4 = $("#flowStep4");
+  s1.className = "access-step " + (roles.length ? "ok" : "warn");
+  $("#flowRoles").textContent = roles.length
+    ? `Role: ${roles.join(", ")}${(data.groups||[]).length ? " · " + data.groups.length + " group(s)" : ""}`
+    : "No role assigned";
+
+  s2.className = "access-step " + (policies.length ? "ok" : "warn");
+  $("#flowPolicies").textContent = policies.length
+    ? `${policies.length} policy rule(s) match your role(s)`
+    : "No matching policies — ask admin";
+
+  s3.className = "access-step " + (allowed.length ? "ok" : "warn");
+  $("#flowMachines").textContent = allowed.length
+    ? `${allowed.length} machine(s) reachable`
+    : policies.length ? "Policies exist but no machines match tier/kind" : "Register machines first";
+
+  s4.className = "access-step " + (matrix.length || allowed.some(t => t.require_approval) ? "ok" : "");
+  const needsAppr = allowed.filter(t => t.require_approval).length;
+  $("#flowApproval").textContent = needsAppr
+    ? (matrix.length ? `${matrix.length} matrix rule(s) for your groups` : "Any admin approves (no matrix rule)")
+    : allowed.length ? "Direct launch — no approval needed" : "Submit request after policies match";
+
+  const hintsEl = $("#accessHints");
+  if ((data.hints||[]).length) {
+    hintsEl.classList.remove("hidden");
+    hintsEl.innerHTML = "<b>What to do next</b><ul>" + data.hints.map(h => `<li>${esc(h)}</li>`).join("") + "</ul>";
+  } else {
+    hintsEl.classList.add("hidden");
+    hintsEl.innerHTML = "";
+  }
 }
 
 async function loadAccessProfileSummary() {
   try {
     const data = await fetchAccessProfileData();
     if (!data) return;
-    $("#profileRole").textContent = currentUser.role;
-    $("#profileRoles").innerHTML = data.roles.map(r => `<span class="pill">${esc(r)}</span> `).join("");
-    $("#profileGroups").innerHTML = data.groups.length
+    $("#profileRole").textContent = data.primary_role || currentUser.role;
+    $("#profileRoles").innerHTML = (data.roles||[]).map(r => `<span class="pill">${esc(r)}</span> `).join("");
+    $("#profileGroups").innerHTML = (data.groups||[]).length
       ? data.groups.map(g => `<span class="pill accent">${esc(g.name)}</span> `).join("")
       : '<span class="muted">none</span>';
     renderPolicyList(data.policies, $("#profilePolicies"));
@@ -1345,14 +1552,28 @@ async function loadAccessProfile() {
   try {
     const data = await fetchAccessProfileData();
     if (!data) return;
-    $("#accessRole").textContent = currentUser.role;
-    $("#accessRoles").innerHTML = data.roles.map(r => `<span class="pill">${esc(r)}</span> `).join("") || "—";
-    $("#accessGroups").innerHTML = data.groups.length
-      ? data.groups.map(g => `<span class="pill accent">${esc(g.name)}</span> <span class="muted">→ ${esc(g.role)}</span><br>`).join("")
-      : '<span class="muted">Not in any groups</span>';
+    const role = data.primary_role || currentUser.role;
+    $("#accessRole").textContent = role;
+    $("#accessRoles").innerHTML = (data.roles||[]).map(r => `<span class="pill">${esc(r)}</span> `).join("") || "—";
+    $("#accessGroups").innerHTML = (data.groups||[]).length
+      ? data.groups.map(g => `<span class="pill accent">${esc(g.name)}</span> <span class="muted">→ grants ${esc(g.role)}</span><br>`).join("")
+      : '<span class="muted">Not in any groups — your primary role alone determines policy</span>';
     renderPolicyList(data.policies, $("#accessPolicies"));
-  } catch (e) { $("#accessPolicies").innerHTML = `<span class="muted">${esc(e.message)}</span>`; }
+    renderAccessTargets(data.targets, $("#accessTargets"));
+    renderAccessMatrix(data.matrix_rules, $("#accessMatrix"));
+    renderAccessFlow(data);
+    cache.accessProfile = data;
+  } catch (e) {
+    $("#accessPolicies").innerHTML = `<span class="muted">${esc(e.message)}</span>`;
+  }
 }
+
+window.goRequest = id => {
+  switchTab("requests");
+  if (id) $("#reqTarget").value = id;
+};
+const accessReqBtn = document.getElementById("accessReqBtn");
+if (accessReqBtn) accessReqBtn.onclick = () => switchTab("requests");
 
 // --- Targets / Machines ---
 //
@@ -1589,9 +1810,7 @@ window.launchTarget = async id => {
   const t = cache.targets.find(x => x.id === id); if (!t) { toast("Target not found", "err"); return; }
   const ct = t.connection_type || "ssh";
   if (ct === "ssh") {
-    const cmd = `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${currentUser.username}@${t.name}@${location.hostname}`;
-    copyToClipboard(cmd);
-    toast("SSH command copied — paste in your terminal", "ok");
+    showSshLaunchModal(t);
     return;
   }
   if (ct === "telnet") {
@@ -1635,6 +1854,44 @@ function downloadTextFile(filename, content, mime) {
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
+}
+
+function showSshLaunchModal(target) {
+  const cmd = buildSshCommand(currentUser.username, target);
+  const base = "PAM-SSH-" + safeFilename(target.name);
+  const modal = document.createElement("div");
+  modal.className = "modal-backdrop show";
+  modal.innerHTML = `
+    <div class="modal" style="max-width:640px">
+      <h3>SSH launch — ${esc(target.name)}</h3>
+      <p class="muted">Uses machine ID <code>${esc(sshTargetRef(target))}</code> so names with spaces (e.g. "MPLS Switch") work correctly. Connect to <b>${esc(sshProxyHost())}:${SSH_PROXY_PORT}</b>.</p>
+      <pre style="font-size:11px;max-height:100px;overflow:auto">${esc(cmd)}</pre>
+      <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
+        <button class="primary" id="sshOpenCmd">Open in CMD</button>
+        <button class="ghost" id="sshOpenPutty">Open in PuTTY</button>
+        <button class="ghost" id="sshCopyCmd">Copy command</button>
+        <button class="ghost" id="sshCloseBtn">Close</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin-top:12px">CMD/PuTTY scripts download automatically and open a terminal window when you run them. If your browser registered <code>ssh://</code>, we also try that first.</p>
+    </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.addEventListener("click", e => { if (e.target === modal) close(); });
+  modal.querySelector("#sshCloseBtn").onclick = close;
+  modal.querySelector("#sshCopyCmd").onclick = () => copyToClipboard(cmd);
+  modal.querySelector("#sshOpenCmd").onclick = () => {
+    downloadTextFile(base + "-CMD.bat", buildSshBatContent(currentUser.username, target), "application/bat");
+    downloadTextFile(base + ".ps1", buildSshPs1Content(currentUser.username, target), "text/plain");
+    trySshProtocol(currentUser.username, target);
+    toast("CMD launcher downloaded — run " + base + "-CMD.bat to connect", "ok");
+  };
+  modal.querySelector("#sshOpenPutty").onclick = () => {
+    downloadTextFile(base + "-PuTTY.bat", buildPuttyBatContent(currentUser.username, target), "application/bat");
+    toast("PuTTY launcher downloaded — run " + base + "-PuTTY.bat", "ok");
+  };
+  // Auto-download CMD launcher and try ssh:// on first open
+  downloadTextFile(base + "-CMD.bat", buildSshBatContent(currentUser.username, target), "application/bat");
+  trySshProtocol(currentUser.username, target);
 }
 
 function showRdpLaunchModal(target, res) {
@@ -2059,10 +2316,17 @@ function approvalProgressCell(r) {
 
 async function loadRequests() {
   try {
+    if (!cache.accessProfile) {
+      try { cache.accessProfile = await fetchAccessProfileData(); } catch { /* ignore */ }
+    }
     if (!cache.targets.length) cache.targets = await api("/policy/targets");
+    const allowedIds = new Set((cache.accessProfile?.targets || []).filter(t => t.allowed).map(t => t.id));
+    const reqTargets = allowedIds.size
+      ? cache.targets.filter(t => allowedIds.has(t.id))
+      : cache.targets;
     const sel = $("#reqTarget"); const cur = sel.value;
     sel.innerHTML = '<option value="">Select machine…</option>' +
-      cache.targets.map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join("");
+      reqTargets.map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join("");
     if (cur) sel.value = cur;
 
     const mine = await api("/approval/requests/mine");
@@ -2854,8 +3118,8 @@ account sufficient pam_tacplus.so service=ssh
 session sufficient pam_tacplus.so service=ssh` },
       { title: "6. Verify from your workstation",
         code:
-`ssh -p {{SSH_PORT}} -o PreferredAuthentications=keyboard-interactive,password \\
-    <pam-user>@<machine-name>@{{HOST}}` },
+`ssh -p {{SSH_PORT}} -o PreferredAuthentications=keyboard-interactive,password -o StrictHostKeyChecking=accept-new \\
+    "<pam-user>@#<machine-id>@{{HOST}}"` },
     ],
   },
 
@@ -3907,8 +4171,8 @@ Add-LocalGroupMember -Group "Remote Desktop Users" -Member "_PAM_RDP"` },
 #   Host: <hostname>
 #   Port: 22
 # Connect via:
-#   ssh -p {{SSH_PORT}} -o PreferredAuthentications=keyboard-interactive,password \\
-#       <pam-user>@<machine-name>@{{HOST}}` },
+#   ssh -p {{SSH_PORT}} -o PreferredAuthentications=keyboard-interactive,password -o StrictHostKeyChecking=accept-new \\
+#       "<pam-user>@#<machine-id>@{{HOST}}"` },
     ],
   },
 };
@@ -4019,9 +4283,9 @@ async function loadOnboard() {
       try { cache.targets = await api("/policy/targets") || []; } catch { /* ignore */ }
     }
     const t0 = cache.targets.find(t => (t.connection_type||"ssh") === "ssh") || cache.targets[0];
-    const machine = (t0 && t0.connection_type !== "web" && t0.connection_type !== "https-api") ? t0.name : "machine-name";
-    const host = detectedProxyHost();
-    $("#onboardSshCmd").textContent = `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${currentUser.username}@${machine}@${host}`;
+    $("#onboardSshCmd").textContent = t0
+      ? buildSshCommand(currentUser.username, t0)
+      : buildSshCommand(currentUser.username, { id: 1, name: "machine" });
   }
   // Fetch SSH CA pubkey once and cache; needed by Linux/Windows guides.
   if (!window._caPub) {
@@ -4143,14 +4407,12 @@ async function captureSSOToken() {
   token = decodeURIComponent(m[1]);
   try {
     const claims = await api("/auth/verify", {method:"POST", body: JSON.stringify({Token: token})});
+    await persistToken(token);
     currentUser = { id: claims.uid, username: claims.u, role: claims.r, mfa_enabled: false, source: "saml" };
-    $("#login-wrap").style.display = "none";
-    $("#app").style.display = "grid";
     $("#me").textContent = currentUser.username + " · " + currentUser.role + " · SSO";
-    applyRoleUI();
-    showTab("dash");
+    enterApp();
     return true;
-  } catch (e) { token = null; toast("SSO verify failed: " + e.message, "err"); }
+  } catch (e) { await persistToken(null); toast("SSO verify failed: " + e.message, "err"); }
   return false;
 }
 
@@ -4195,6 +4457,7 @@ loadSettings = async function() { await _origLoadSettings(); await loadSAMLSetti
 // Boot
 (async () => {
   if (await captureSSOToken()) return;
+  if (await restoreSession()) { enterApp(); return; }
   $("#login-wrap").style.display = "flex";
   discoverSSO();
 })();

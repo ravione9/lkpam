@@ -5,10 +5,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
 
+	"github.com/example/pam-platform/internal/approval"
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/groups"
@@ -26,13 +28,37 @@ func main() {
 	defer d.Close()
 
 	seedPolicies(d)
+	ensureUserPolicies(d)
 
 	eng := &policy.Engine{DB: d}
 	inv := &inventory.Service{DB: d}
 	groupSvc := &groups.Service{DB: d}
+	matrix := &approval.MatrixService{DB: d}
+	profile := &policy.ProfileBuilder{
+		Engine: eng, Inv: inv, Groups: groupSvc, Matrix: matrix,
+	}
 
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
+
+	mux.HandleFunc("GET /access-profile", func(w http.ResponseWriter, r *http.Request) {
+		uidStr := r.Header.Get("X-PAM-UID")
+		role := r.Header.Get("X-PAM-Role")
+		uid, err := strconv.ParseInt(uidStr, 10, 64)
+		if err != nil || uid <= 0 {
+			httpx.Error(w, http.StatusUnauthorized, errors.New("missing caller identity"))
+			return
+		}
+		if role == "" {
+			_ = d.QueryRowContext(r.Context(), `SELECT role FROM users WHERE id=?`, uid).Scan(&role)
+		}
+		out, err := profile.Build(r.Context(), uid, role)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
 
 	mux.HandleFunc("POST /decide", func(w http.ResponseWriter, r *http.Request) {
 		var in policy.Input
@@ -189,6 +215,10 @@ func seedPolicies(d *db.DB) {
 		{"secops", "forti", 1, 1, "show,get,config,ping", "execute reboot,execute factoryreset"},
 		{"sysadmin", "linux", 2, 0, "sudo,systemctl,journalctl,ls,cat,grep,less,tail", "rm -rf /,mkfs,dd if=/dev"},
 		{"viewer", "*", 3, 0, "show,get,cat,ls,grep,ping", "*"},
+		{"user", "*", 3, 1, "show,get,cat,ls,grep,ping", "reload,erase,reboot,format,delete,rm -rf,shutdown"},
+		{"user", "cisco", 2, 1, "show,ping", "configure,reload,erase,write"},
+		{"user", "linux", 2, 1, "ls,cat,grep,less,tail,ping", "rm -rf,mkfs,reboot"},
+		{"user", "windows", 2, 1, "", "format,shutdown"},
 	}
 	for _, r := range rows {
 		_, err := d.Exec(`INSERT INTO policies(role,target_kind,tier_max,require_approval,allowed_commands,denied_commands)
@@ -199,4 +229,32 @@ func seedPolicies(d *db.DB) {
 		}
 	}
 	log.Printf("seeded %d default policies", len(rows))
+}
+
+// ensureUserPolicies backfills JIT policies for the default "user" role on existing DBs.
+func ensureUserPolicies(d *db.DB) {
+	var n int
+	_ = d.QueryRow(`SELECT COUNT(*) FROM policies WHERE role = 'user'`).Scan(&n)
+	if n > 0 {
+		return
+	}
+	rows := []struct {
+		role, kind  string
+		tier, appr  int
+		allow, deny string
+	}{
+		{"user", "*", 3, 1, "show,get,cat,ls,grep,ping", "reload,erase,reboot,format,delete,rm -rf,shutdown"},
+		{"user", "cisco", 2, 1, "show,ping", "configure,reload,erase,write"},
+		{"user", "linux", 2, 1, "ls,cat,grep,less,tail,ping", "rm -rf,mkfs,reboot"},
+		{"user", "windows", 2, 1, "", "format,shutdown"},
+	}
+	for _, r := range rows {
+		_, err := d.Exec(`INSERT INTO policies(role,target_kind,tier_max,require_approval,allowed_commands,denied_commands)
+		                  VALUES(?,?,?,?,?,?)`,
+			r.role, r.kind, r.tier, r.appr, r.allow, r.deny)
+		if err != nil {
+			log.Printf("ensure user policy %s/%s: %v", r.role, r.kind, err)
+		}
+	}
+	log.Printf("backfilled default policies for role 'user'")
 }
