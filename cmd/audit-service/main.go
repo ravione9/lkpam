@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/example/pam-platform/internal/audit"
 	"github.com/example/pam-platform/internal/config"
@@ -32,6 +33,7 @@ type record struct {
 	Target   string `json:"target"`
 	Detail   string `json:"detail"`
 	Severity string `json:"severity"`
+	Source   string `json:"source"`
 }
 
 type session struct {
@@ -81,9 +83,42 @@ func main() {
 		if limit <= 0 || limit > 1000 {
 			limit = 200
 		}
+		q := r.URL.Query()
+		conds := []string{}
+		args := []any{}
+		if srcs := strings.TrimSpace(q.Get("source")); srcs != "" {
+			parts := strings.Split(srcs, ",")
+			placeholders := []string{}
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p == "" {
+					continue
+				}
+				placeholders = append(placeholders, "?")
+				args = append(args, p)
+			}
+			if len(placeholders) > 0 {
+				conds = append(conds, "source IN ("+strings.Join(placeholders, ",")+")")
+			}
+		}
+		if sev := strings.TrimSpace(q.Get("severity")); sev != "" {
+			conds = append(conds, "severity = ?")
+			args = append(args, sev)
+		}
+		if since := strings.TrimSpace(q.Get("since")); since != "" {
+			if v, err := strconv.ParseInt(since, 10, 64); err == nil {
+				conds = append(conds, "ts >= ?")
+				args = append(args, v)
+			}
+		}
+		where := ""
+		if len(conds) > 0 {
+			where = "WHERE " + strings.Join(conds, " AND ")
+		}
+		args = append(args, limit)
 		rows, err := d.QueryContext(context.Background(), `
-			SELECT ts, actor, kind, COALESCE(target,''), COALESCE(detail,''), severity
-			FROM audit_events ORDER BY id DESC LIMIT ?`, limit)
+			SELECT ts, actor, kind, COALESCE(target,''), COALESCE(detail,''), severity, COALESCE(source,'')
+			FROM audit_events `+where+` ORDER BY id DESC LIMIT ?`, args...)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
@@ -92,8 +127,26 @@ func main() {
 		out := []record{}
 		for rows.Next() {
 			var rec record
-			if err := rows.Scan(&rec.TS, &rec.Actor, &rec.Kind, &rec.Target, &rec.Detail, &rec.Severity); err == nil {
+			if err := rows.Scan(&rec.TS, &rec.Actor, &rec.Kind, &rec.Target, &rec.Detail, &rec.Severity, &rec.Source); err == nil {
 				out = append(out, rec)
+			}
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+
+	mux.HandleFunc("GET /event-sources", func(w http.ResponseWriter, r *http.Request) {
+		rows, err := d.QueryContext(r.Context(), `
+			SELECT DISTINCT source FROM audit_events WHERE source != '' ORDER BY source`)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		defer rows.Close()
+		out := []string{}
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err == nil {
+				out = append(out, s)
 			}
 		}
 		httpx.JSON(w, http.StatusOK, out)

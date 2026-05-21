@@ -109,7 +109,8 @@ func (d *DB) migrate() error {
 			kind TEXT NOT NULL,
 			target TEXT,
 			detail TEXT,
-			severity TEXT NOT NULL DEFAULT 'info'
+			severity TEXT NOT NULL DEFAULT 'info',
+			source TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS groups (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -277,6 +278,7 @@ func (d *DB) migrate() error {
 		`ALTER TABLE sessions ADD COLUMN account_id INTEGER REFERENCES privileged_accounts(id)`,
 		`ALTER TABLE approval_matrix ADD COLUMN requester_group_ids TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN role_locked INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE audit_events ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
 	} {
 		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
 	}

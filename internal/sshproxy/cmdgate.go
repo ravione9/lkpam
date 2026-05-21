@@ -17,17 +17,18 @@ import (
 type cmdGate struct {
 	up, down    io.Writer
 	allow, deny []string
+	onDeny      func(cmd string)
 
 	mu         sync.Mutex
 	devLine    []byte // visible characters of the device's current line
 	ignoreLine bool   // suppress policy check (e.g. after a password prompt)
 }
 
-func newCmdGate(up, down io.Writer, allow, deny []string) *cmdGate {
+func newCmdGate(up, down io.Writer, allow, deny []string, onDeny func(cmd string)) *cmdGate {
 	if len(allow) == 0 && len(deny) == 0 {
 		return nil
 	}
-	return &cmdGate{up: up, down: down, allow: allow, deny: deny}
+	return &cmdGate{up: up, down: down, allow: allow, deny: deny, onDeny: onDeny}
 }
 
 // noteOutput updates the visible-line mirror from device output.
@@ -84,11 +85,12 @@ func (g *cmdGate) Write(p []byte) (int, error) {
 				continue
 			}
 			if cmd != "" && !policy.CommandAllowed(cmd, g.allow, g.deny) {
-				// Ctrl+U clears the entered line on Cisco/network CLIs; no
-				// Enter is forwarded so the command never executes.
 				_, _ = g.up.Write([]byte{0x15})
 				_, _ = g.down.Write([]byte(fmt.Sprintf(
 					"\r\nPAM: command denied by policy: %s\r\n", cmd)))
+				if g.onDeny != nil {
+					g.onDeny(cmd)
+				}
 				continue
 			}
 			_, _ = g.up.Write([]byte{b})

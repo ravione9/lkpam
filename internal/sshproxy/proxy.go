@@ -154,11 +154,21 @@ func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInte
 	authedUser, err := s.authenticate(user, pw, otp)
 	if err != nil {
 		log.Printf("ssh-proxy: portal auth failed for %q: %v", user, err)
+		s.Bus.Publish(events.Event{
+			Source: "ssh-proxy", Kind: "auth.fail", Severity: "warn",
+			Actor: user, Target: target,
+			Detail: map[string]string{"reason": err.Error()},
+		})
 		return nil, err
 	}
 	perms, err := s.authorizeAndStash(authedUser, target)
 	if err != nil {
 		log.Printf("ssh-proxy: access denied for %q → %q: %v", user, target, err)
+		s.Bus.Publish(events.Event{
+			Source: "ssh-proxy", Kind: "policy.deny", Severity: "warn",
+			Actor: user, Target: target,
+			Detail: map[string]string{"reason": err.Error()},
+		})
 		return nil, err
 	}
 	s.stashPassthrough(perms, pw)
@@ -712,7 +722,16 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 	// Tee user input → upstream, and log it as the keystroke stream.
 	var wg sync.WaitGroup
 	wg.Add(2)
-	gate := newCmdGate(upCh, downCh, allowCmds, denyCmds)
+	gate := newCmdGate(upCh, downCh, allowCmds, denyCmds, func(cmd string) {
+		s.Bus.Publish(events.Event{
+			Source: "ssh-proxy", Kind: "cmd.deny", Severity: "warn",
+			Actor: user, Target: target,
+			Detail: map[string]string{
+				"session_id": sessionID,
+				"command":    cmd,
+			},
+		})
+	})
 
 	// downstream (user)  ───►   recorder (input)  ───►   upstream (target)
 	go func() {

@@ -54,9 +54,9 @@ func (s *Sink) Write(ctx context.Context, ev events.Event) error {
 	// DB sink
 	detailJSON, _ := json.Marshal(ev.Detail)
 	if _, err := s.DB.ExecContext(ctx, `
-		INSERT INTO audit_events(ts, actor, kind, target, detail, severity)
-		VALUES(?,?,?,?,?,?)`,
-		ev.Time.Unix(), ev.Actor, ev.Kind, ev.Target, string(detailJSON), ev.Severity); err != nil {
+		INSERT INTO audit_events(ts, actor, kind, target, detail, severity, source)
+		VALUES(?,?,?,?,?,?,?)`,
+		ev.Time.Unix(), ev.Actor, ev.Kind, ev.Target, string(detailJSON), ev.Severity, ev.Source); err != nil {
 		return fmt.Errorf("audit: db write: %w", err)
 	}
 

@@ -901,6 +901,7 @@
       <button data-tab="sessions"><span class="ico">▷</span> Sessions</button>
       <button data-tab="threats" data-admin><span class="ico">⚠</span> Threats</button>
       <div class="section-title">Compliance</div>
+      <button data-tab="proxy" data-admin><span class="ico">▶</span> Proxy Log</button>
       <button data-tab="audit" data-admin><span class="ico">≡</span> Audit Log</button>
       <button data-tab="reports" data-admin><span class="ico">▤</span> Reports</button>
       <button data-tab="ca" data-admin><span class="ico">★</span> SSH CA</button>
@@ -1345,6 +1346,55 @@
         <table>
           <thead><tr><th>Time</th><th>Actor</th><th>Kind</th><th>Target</th><th>Severity</th></tr></thead>
           <tbody id="auditRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </section>
+
+      <!-- Proxy Log -->
+      <section class="card tab" id="tab-proxy" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Proxy Log</h3>
+          <div class="row" style="flex-wrap:wrap;gap:8px">
+            <input id="proxyFilter" placeholder="Filter (actor / target / detail)..." style="width:260px"/>
+            <select id="proxySource">
+              <option value="">All sources</option>
+              <option value="ssh-proxy">ssh-proxy</option>
+              <option value="rdp-proxy">rdp-proxy</option>
+              <option value="tacacs">tacacs</option>
+              <option value="auth">auth</option>
+            </select>
+            <select id="proxyKind">
+              <option value="">All event kinds</option>
+              <option value="auth">Authentication</option>
+              <option value="policy">Policy / authorization</option>
+              <option value="cmd">Command (allow/deny)</option>
+              <option value="session">Session lifecycle</option>
+              <option value="acct">Accounting</option>
+            </select>
+            <select id="proxySeverity">
+              <option value="">All severities</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
+            <select id="proxyRange">
+              <option value="3600">Last hour</option>
+              <option value="86400" selected>Last 24 hours</option>
+              <option value="604800">Last 7 days</option>
+              <option value="0">All time</option>
+            </select>
+            <button class="ghost" id="proxyRefresh">Refresh</button>
+            <button class="ghost" id="proxyAuto">Auto-refresh: off</button>
+            <button class="ghost" id="proxyExport">Export CSV</button>
+          </div>
+        </div>
+        <p class="desc">Everything PAM proxies see — SSH logins and command attempts, RDP launches, TACACS+ authentication and per-command authorization, and portal logins. Use this for incident response and compliance reviews.</p>
+        <div class="row" id="proxyStats" style="gap:12px;margin-bottom:10px;flex-wrap:wrap"></div>
+        <table>
+          <thead><tr>
+            <th>Time</th><th>Source</th><th>Severity</th><th>Actor</th>
+            <th>Event</th><th>Target</th><th>Detail</th>
+          </tr></thead>
+          <tbody id="proxyRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
       </section>
 
@@ -1855,14 +1905,14 @@ const TAB_TITLES = {
   dash: "Dashboard", targets: "Machines", access: "My Access", users: "Users", groups: "Groups",
   roles: "Roles", secrets: "Vault Secrets", policies: "Access Policies",
   matrix: "Approval Matrix", requests: "Access Requests",
-  sessions: "SSH Sessions", audit: "Audit Log", ca: "SSH Certificate Authority",
+  sessions: "SSH Sessions", audit: "Audit Log", proxy: "Proxy Log", ca: "SSH Certificate Authority",
   onboard: "Device Setup",
   safes: "Safes", accounts: "Privileged Accounts", checkouts: "Credential Checkouts",
   apps: "Applications (CCP)", threats: "Threat Alerts", reports: "Reports",
   settings: "System Settings",
 };
 
-const ADMIN_TABS_SET = ["users","groups","roles","policies","matrix","secrets","audit","ca","settings",
+const ADMIN_TABS_SET = ["users","groups","roles","policies","matrix","secrets","audit","proxy","ca","settings",
                          "safes","apps","threats","reports"];
 
 function toast(msg, kind) {
@@ -2019,7 +2069,7 @@ function showTab(name) {
     users: loadUsers, groups: loadGroups, roles: loadRoles,
     secrets: loadSecrets, policies: loadPolicies, matrix: loadMatrix,
     requests: loadRequests,
-    sessions: loadSessions, audit: loadAudit, ca: loadCA,
+    sessions: loadSessions, audit: loadAudit, proxy: loadProxy, ca: loadCA,
     onboard: loadOnboard,
     safes: loadSafes, accounts: loadAccounts, checkouts: loadCheckouts,
     apps: loadApps, threats: loadThreats, reports: loadReports,
@@ -3781,6 +3831,133 @@ $("#auditExport").onclick = () => {
   const blob = new Blob([csv], {type: "text/csv"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = `pam-audit-${Date.now()}.csv`; a.click();
+};
+
+// --- Proxy Log ---
+let proxyCache = [];
+let proxyAutoTimer = null;
+const PROXY_KIND_GROUPS = {
+  auth:    ["auth.fail","auth.success","login.failed","login.ok","authen","mfa.failed","saml.failed"],
+  policy:  ["policy.deny","authorize"],
+  cmd:     ["cmd.deny","cmd.allow"],
+  session: ["session.open","session.close","session.io_finished","session.terminate.requested","session.terminated","dial.fail"],
+  acct:    ["acct","acct.start","acct.stop","acct.watchdog"],
+};
+
+async function loadProxy() {
+  try {
+    const rangeSec = parseInt($("#proxyRange").value, 10) || 0;
+    const src = $("#proxySource").value;
+    const sev = $("#proxySeverity").value;
+    const params = new URLSearchParams();
+    params.set("limit", "500");
+    if (src) params.set("source", src);
+    else params.set("source", "ssh-proxy,rdp-proxy,tacacs,auth");
+    if (sev) params.set("severity", sev);
+    if (rangeSec > 0) params.set("since", Math.floor(Date.now()/1000 - rangeSec).toString());
+    const rows = await api("/audit/events?" + params.toString());
+    proxyCache = rows || [];
+    renderProxy();
+  } catch (e) { $("#proxyRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+function renderProxy() {
+  const filt = $("#proxyFilter").value.toLowerCase();
+  const kindGroup = $("#proxyKind").value;
+  const wantKinds = kindGroup ? PROXY_KIND_GROUPS[kindGroup] || [] : null;
+  const filtered = proxyCache.filter(r => {
+    if (wantKinds && !wantKinds.some(k => r.kind === k || r.kind.startsWith(k + "."))) return false;
+    if (filt) {
+      const blob = `${r.actor} ${r.target} ${r.kind} ${r.detail}`.toLowerCase();
+      if (!blob.includes(filt)) return false;
+    }
+    return true;
+  });
+  renderProxyStats(filtered);
+  if (!filtered.length) {
+    $("#proxyRows").innerHTML = `<tr><td colspan="7" class="muted">No events match these filters.</td></tr>`;
+    return;
+  }
+  $("#proxyRows").innerHTML = filtered.map(r => {
+    const sevCls = r.severity === "error" ? "err" : r.severity === "warn" ? "warn" : "ok";
+    return `
+      <tr>
+        <td style="font-size:12px;white-space:nowrap">${fmtTime(r.ts)}</td>
+        <td><span class="pill">${esc(r.source) || '—'}</span></td>
+        <td><span class="pill ${sevCls}">${esc(r.severity)}</span></td>
+        <td>${esc(r.actor) || '—'}</td>
+        <td>${esc(r.kind)}</td>
+        <td class="muted">${esc(r.target) || '—'}</td>
+        <td class="muted" style="font-size:12px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${esc(r.detail)}">${esc(formatProxyDetail(r.detail))}</td>
+      </tr>`;
+  }).join("");
+}
+
+function formatProxyDetail(raw) {
+  if (!raw) return "";
+  try {
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object") {
+      return Object.entries(obj)
+        .filter(([,v]) => v !== "" && v != null)
+        .map(([k,v]) => `${k}=${v}`)
+        .join(", ");
+    }
+  } catch (_) {}
+  return raw;
+}
+
+function renderProxyStats(rows) {
+  const denies = rows.filter(r => r.kind === "cmd.deny" || r.kind === "policy.deny").length;
+  const authFails = rows.filter(r =>
+    r.kind === "auth.fail" || r.kind === "login.failed" || r.kind === "mfa.failed" ||
+    (r.kind === "authen" && r.severity === "warn")
+  ).length;
+  const sessions = rows.filter(r => r.kind === "session.open").length;
+  const errors = rows.filter(r => r.severity === "error").length;
+  const make = (label, val, cls) => `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:8px 14px;background:#fff">
+      <div class="muted" style="font-size:11px">${label}</div>
+      <div style="font-size:18px;font-weight:600;color:${cls||'var(--fg)'}">${val}</div>
+    </div>`;
+  $("#proxyStats").innerHTML = [
+    make("Events shown", rows.length),
+    make("Sessions opened", sessions, "var(--ok)"),
+    make("Auth failures", authFails, authFails > 0 ? "var(--err)" : null),
+    make("Policy / cmd denies", denies, denies > 0 ? "var(--err)" : null),
+    make("Errors", errors, errors > 0 ? "var(--err)" : null),
+  ].join("");
+}
+
+$("#proxyFilter").addEventListener("input", renderProxy);
+$("#proxyKind").addEventListener("change", renderProxy);
+$("#proxySource").addEventListener("change", loadProxy);
+$("#proxySeverity").addEventListener("change", loadProxy);
+$("#proxyRange").addEventListener("change", loadProxy);
+$("#proxyRefresh").onclick = loadProxy;
+$("#proxyAuto").onclick = () => {
+  const btn = $("#proxyAuto");
+  if (proxyAutoTimer) {
+    clearInterval(proxyAutoTimer);
+    proxyAutoTimer = null;
+    btn.textContent = "Auto-refresh: off";
+  } else {
+    loadProxy();
+    proxyAutoTimer = setInterval(loadProxy, 10000);
+    btn.textContent = "Auto-refresh: 10s";
+  }
+};
+$("#proxyExport").onclick = () => {
+  const rows = [["timestamp","source","severity","actor","kind","target","detail"]];
+  proxyCache.forEach(r => rows.push([
+    new Date(r.ts*1000).toISOString(),
+    r.source, r.severity, r.actor, r.kind, r.target, r.detail,
+  ]));
+  const csv = rows.map(r => r.map(c => `"${String(c||'').replace(/"/g,'""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], {type: "text/csv"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = `pam-proxy-log-${Date.now()}.csv`; a.click();
 };
 
 // --- CA ---
