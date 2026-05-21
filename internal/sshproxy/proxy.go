@@ -861,12 +861,11 @@ func (s *Server) buildDownstreamConfig(user, password string, certMethods []ssh.
 	}
 	if password == "" && len(certMethods) > 0 {
 		return &ssh.ClientConfig{
-			User:                user,
-			Auth:                certMethods,
-			HostKeyCallback:     ssh.InsecureIgnoreHostKey(),
-			HostKeyAlgorithms:   hostKeyAlgos,
-			PubKeyAuthAlgorithms: hostKeyAlgos,
-			Timeout:             10 * time.Second,
+			User:              user,
+			Auth:              certMethods,
+			HostKeyCallback:   ssh.InsecureIgnoreHostKey(),
+			HostKeyAlgorithms: hostKeyAlgos,
+			Timeout:           10 * time.Second,
 		}
 	}
 	pw := password
