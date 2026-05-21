@@ -190,7 +190,7 @@ func serveAuthed(w http.ResponseWriter, r *http.Request, next http.Handler, auth
 		http.SetCookie(w, &http.Cookie{
 			Name:     "pam_web_tok",
 			Value:    tok,
-			Path:     "/web/" + webSessionID + "/",
+			Path:     "/",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   7200,
