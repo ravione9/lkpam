@@ -220,7 +220,7 @@
 
         <div class="card" style="margin:0">
           <h3>Quick Start · Machine Access</h3>
-          <p class="muted">Click <b>Launch</b> on a machine to open a recorded SSH/RDP session in your browser. Advanced: native SSH via port 2222:</p>
+          <p class="muted">SSH: click <b>Launch</b> on a machine — command is copied for CMD/Terminal (port 2222). RDP opens in the browser.</p>
           <pre id="sshHint">ssh -p 2222 … "user@#machine-id@host"</pre>
           <p class="muted" style="font-size:12px;margin-top:8px">Password prompt = portal password · MFA prompt = 6-digit TOTP code</p>
         </div>
@@ -251,7 +251,7 @@
           <h3 style="margin:0">Managed Machines</h3>
           <button class="primary" id="targetAddBtn">+ Add Machine</button>
         </div>
-        <p class="desc">Register servers, network devices, firewalls, hypervisors, web admin consoles, and more. Users request JIT access then click <b>Launch</b> — SSH opens a recorded terminal in the browser (like RDP).</p>
+        <p class="desc">Register servers, network devices, firewalls, hypervisors, web admin consoles, and more. Click <b>Launch</b> — SSH copies a terminal command (port 2222); RDP opens a recorded browser session.</p>
         <table>
           <thead><tr><th>Name</th><th>Platform</th><th>Connection</th><th>Address</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
           <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
@@ -1767,23 +1767,7 @@ window.launchTarget = async id => {
   const t = cache.targets.find(x => x.id === id); if (!t) { toast("Target not found", "err"); return; }
   const ct = t.connection_type || "ssh";
   if (ct === "ssh") {
-    const reason = prompt("Reason for SSH session (for audit):", "Approved access");
-    if (reason === null) return;
-    try {
-      const res = await api(`/auth/targets/${t.id}/ssh-launch`, {
-        method: "POST",
-        body: JSON.stringify({ reason }),
-      });
-      if (openPamViewer("ssh-viewer.html", res.session_id)) {
-        toast("SSH terminal opened in browser (recorded)", "ok");
-      }
-    } catch (e) {
-      if (e.message && e.message.includes("approved")) {
-        toast("Access not approved yet — submit Request access first", "err");
-      } else {
-        toast(e.message, "err");
-      }
-    }
+    showSshLaunchModal(t);
     return;
   }
   if (ct === "telnet") {
@@ -1805,9 +1789,6 @@ window.launchTarget = async id => {
         method: "POST",
         body: JSON.stringify({ reason }),
       });
-      if (openPamViewer("rdp-viewer.html", res.session_id)) {
-        toast("RDP session opened in browser (recorded)", "ok");
-      }
       showRdpLaunchModal(t, res);
     } catch (e) {
       if (e.message && e.message.includes("privileged account")) {
@@ -1832,13 +1813,56 @@ function downloadTextFile(filename, content, mime) {
   URL.revokeObjectURL(url);
 }
 
+function showSshLaunchModal(target) {
+  const cmd = buildSshCommand(currentUser.username, target);
+  const modal = document.createElement("div");
+  modal.className = "modal-backdrop show";
+  modal.innerHTML = `
+    <div class="modal" style="max-width:640px">
+      <h3>SSH launch — ${esc(target.name)}</h3>
+      <p class="muted">Paste this command in <b>CMD</b>, <b>PowerShell</b>, or <b>Windows Terminal</b>. Uses machine ID <code>${esc(sshTargetRef(target))}</code> so names with spaces work. Connect to <b>${esc(sshProxyHost())}:${SSH_PROXY_PORT}</b>.</p>
+      <pre id="sshLaunchCmd" style="font-size:11px;max-height:120px;overflow:auto;white-space:pre-wrap;word-break:break-all">${esc(cmd)}</pre>
+      <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
+        <button class="primary" id="sshCopyBtn">Copy command</button>
+        <button class="ghost" id="sshBrowserBtn">Open in browser (recorded)</button>
+        <button class="ghost" id="sshCloseBtn">Close</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin-top:12px">Login with your portal password at the prompt; enter MFA if enrolled. Browser option requires guacd and PAM SSH CA on the device.</p>
+    </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.addEventListener("click", e => { if (e.target === modal) close(); });
+  modal.querySelector("#sshCloseBtn").onclick = close;
+  modal.querySelector("#sshCopyBtn").onclick = () => copyToClipboard(cmd);
+  modal.querySelector("#sshBrowserBtn").onclick = async () => {
+    const reason = prompt("Reason for recorded browser session:", "Approved access");
+    if (reason === null) return;
+    try {
+      const res = await api(`/auth/targets/${target.id}/ssh-launch`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      });
+      if (openPamViewer("ssh-viewer.html", res.session_id)) {
+        toast("Recorded SSH session opened in browser", "ok");
+      }
+    } catch (e) {
+      if (e.message && e.message.includes("approved")) {
+        toast("Access not approved yet — submit Request access first", "err");
+      } else {
+        toast(e.message, "err");
+      }
+    }
+  };
+  copyToClipboard(cmd);
+}
+
 function showRdpLaunchModal(target, res) {
   const modal = document.createElement("div");
   modal.className = "modal-backdrop show";
   modal.innerHTML = `
     <div class="modal" style="max-width:640px">
       <h3>RDP launch — ${esc(target.name)}</h3>
-      <p class="muted">Browser session opened in a new tab (recorded). Use the buttons below if you need native mstsc instead.</p>
+      <p class="muted">${esc(res.instructions)}</p>
       <div class="form-grid" style="margin:12px 0">
         <label>Privileged user</label><input value="${esc(res.username)}" readonly/>
         <label>Target</label><input value="${esc(res.host)}:${res.port}" readonly/>
@@ -1846,7 +1870,7 @@ function showRdpLaunchModal(target, res) {
         <label>Session ID</label><input value="${esc(res.session_id)}" readonly/>
       </div>
       <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
-        <button class="primary" id="rdpBrowserBtn">Re-open in browser</button>
+        <button class="primary" id="rdpBrowserBtn">Open in browser (recorded)</button>
         <button class="ghost" id="rdpDlBoth">Download .rdp + .ps1 (native)</button>
         <button class="ghost" id="rdpReturnBtn">Mark returned</button>
         <button class="ghost" onclick="this.closest('.modal-backdrop').remove()">Close</button>
