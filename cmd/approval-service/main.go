@@ -3,6 +3,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -13,6 +14,19 @@ import (
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/httpx"
 )
+
+func callerIdentity(r *http.Request) (uid int64, role string, ok bool) {
+	uidStr := r.Header.Get("X-PAM-UID")
+	role = r.Header.Get("X-PAM-Role")
+	if uidStr == "" {
+		return 0, "", false
+	}
+	uid, err := strconv.ParseInt(uidStr, 10, 64)
+	if err != nil || uid <= 0 {
+		return 0, "", false
+	}
+	return uid, role, true
+}
 
 func main() {
 	dsn := config.Get("PAM_DB", "file:./data/pam.db?cache=shared&_pragma=foreign_keys(1)")
@@ -28,8 +42,12 @@ func main() {
 	httpx.RegisterHealth(mux)
 
 	mux.HandleFunc("POST /requests", func(w http.ResponseWriter, r *http.Request) {
+		uid, _, ok := callerIdentity(r)
+		if !ok {
+			httpx.Error(w, http.StatusUnauthorized, errors.New("missing caller identity"))
+			return
+		}
 		var req struct {
-			UserID     int64  `json:"user_id"`
 			TargetID   int64  `json:"target_id"`
 			Reason     string `json:"reason"`
 			TTLSeconds int    `json:"ttl_seconds"`
@@ -38,7 +56,7 @@ func main() {
 			httpx.Error(w, http.StatusBadRequest, err)
 			return
 		}
-		id, err := svc.Create(r.Context(), req.UserID, req.TargetID, req.Reason, time.Duration(req.TTLSeconds)*time.Second)
+		id, err := svc.Create(r.Context(), uid, req.TargetID, req.Reason, time.Duration(req.TTLSeconds)*time.Second)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
@@ -47,25 +65,57 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /requests/{id}/decide", func(w http.ResponseWriter, r *http.Request) {
+		approverID, approverRole, ok := callerIdentity(r)
+		if !ok {
+			httpx.Error(w, http.StatusUnauthorized, errors.New("missing caller identity"))
+			return
+		}
 		idStr := r.PathValue("id")
 		id, _ := strconv.ParseInt(idStr, 10, 64)
 		var req struct {
-			ApproverID int64 `json:"approver_id"`
-			Approve    bool  `json:"approve"`
+			Approve bool `json:"approve"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpx.Error(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := svc.Decide(r.Context(), id, req.ApproverID, req.Approve); err != nil {
-			httpx.Error(w, http.StatusBadRequest, err)
+		if err := svc.Decide(r.Context(), id, approverID, approverRole, req.Approve); err != nil {
+			switch {
+			case errors.Is(err, approval.ErrSelfApproval), errors.Is(err, approval.ErrNotApprover):
+				httpx.Error(w, http.StatusForbidden, err)
+			default:
+				httpx.Error(w, http.StatusBadRequest, err)
+			}
 			return
 		}
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	mux.HandleFunc("GET /requests/pending", func(w http.ResponseWriter, r *http.Request) {
+		_, role, ok := callerIdentity(r)
+		if !ok {
+			httpx.Error(w, http.StatusUnauthorized, errors.New("missing caller identity"))
+			return
+		}
+		if role != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
+			return
+		}
 		out, err := svc.ListPendingEnriched(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+
+	mux.HandleFunc("GET /requests/mine", func(w http.ResponseWriter, r *http.Request) {
+		uid, _, ok := callerIdentity(r)
+		if !ok {
+			httpx.Error(w, http.StatusUnauthorized, errors.New("missing caller identity"))
+			return
+		}
+		out, err := svc.ListMineEnriched(r.Context(), uid)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return

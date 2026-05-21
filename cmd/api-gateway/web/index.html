@@ -137,7 +137,8 @@
       <div class="section-title">Overview</div>
       <button data-tab="dash" class="active"><span class="ico">▦</span> Dashboard</button>
       <div class="section-title">Access Control</div>
-      <button data-tab="targets"><span class="ico">▢</span> Targets</button>
+      <button data-tab="targets"><span class="ico">▢</span> Machines</button>
+      <button data-tab="access" data-user><span class="ico">◈</span> My Access</button>
       <button data-tab="users" data-admin><span class="ico">○</span> Users</button>
       <button data-tab="groups" data-admin><span class="ico">◇</span> Groups</button>
       <button data-tab="policies" data-admin><span class="ico">△</span> Policies</button>
@@ -189,18 +190,39 @@
         </div>
 
         <div class="card" style="margin:0">
-          <h3>Quick Start</h3>
-          <p class="muted">Connect through the SSH proxy using <code>user@target@host</code> syntax:</p>
-          <pre id="sshHint">ssh -p 2222 admin@core-sw-01@localhost</pre>
+          <h3>Quick Start · Machine Access</h3>
+          <p class="muted">Connect through the SSH proxy. Use <b>keyboard-interactive</b> auth when MFA is enrolled:</p>
+          <pre id="sshHint">ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password user@target-name@localhost</pre>
+          <p class="muted" style="font-size:12px;margin-top:8px">Password prompt = portal password · MFA prompt = 6-digit TOTP code</p>
+        </div>
+
+        <div class="card hidden" id="dashAccessProfile" style="margin:16px 0 0">
+          <h3>Your Access Profile</h3>
+          <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px">
+            <div>
+              <div class="label muted">Primary role</div>
+              <div id="profileRole" class="value" style="font-size:18px">—</div>
+              <div class="label muted" style="margin-top:8px">Effective roles</div>
+              <div id="profileRoles">—</div>
+              <div class="label muted" style="margin-top:8px">Group memberships</div>
+              <div id="profileGroups">—</div>
+            </div>
+            <div>
+              <div class="label muted">Matching policies</div>
+              <div id="profilePolicies" class="muted" style="font-size:13px">—</div>
+              <p class="desc" style="margin-top:12px">Policies are assigned by <b>role</b>. Set a user's role under Users, or add them to a Group that grants a role. Then create/edit rules under Policies.</p>
+            </div>
+          </div>
         </div>
       </section>
 
-      <!-- Targets -->
+      <!-- Machines (Targets) -->
       <section class="card tab" id="tab-targets" style="display:none">
         <div class="row" style="justify-content:space-between;margin-bottom:12px">
-          <h3 style="margin:0">Managed Targets</h3>
-          <button class="primary" id="targetAddBtn">+ Add Target</button>
+          <h3 style="margin:0">Managed Machines</h3>
+          <button class="primary" id="targetAddBtn">+ Add Machine</button>
         </div>
+        <p class="desc">Register servers and network devices here. Users request JIT access, then connect via the SSH proxy using keyboard-interactive auth (password + MFA).</p>
         <table>
           <thead><tr><th>Name</th><th>Kind</th><th>Host</th><th>Port</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
           <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
@@ -229,6 +251,41 @@
             <button class="ghost" id="targetCancelBtn">Cancel</button>
           </div>
         </div>
+        <div class="form-panel" id="targetConnectGuide" style="margin-top:16px">
+          <h4>Connect to a machine</h4>
+          <p class="muted">After access is approved, run from your workstation (replace <code>user</code>, <code>machine-name</code>, and proxy host):</p>
+          <pre id="targetSshCmd">ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password user@machine-name@localhost</pre>
+          <p class="muted" style="font-size:12px">Tip: click <b>Request access</b> on a machine row, wait for admin approval, then connect.</p>
+        </div>
+      </section>
+
+      <!-- My Access (role + policy visibility for all users) -->
+      <section class="card tab" id="tab-access" style="display:none">
+        <h3>My Access Profile</h3>
+        <p class="desc">Your portal role and group memberships determine which policies apply. Admins assign roles via <b>Users</b> or <b>Groups</b>; policies are matched by role name.</p>
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
+          <div class="card" style="margin:0">
+            <h4>Roles &amp; Groups</h4>
+            <p><span class="muted">Primary role:</span> <span class="pill" id="accessRole">—</span></p>
+            <p class="muted" style="margin:8px 0 4px">Effective roles (includes groups):</p>
+            <div id="accessRoles">—</div>
+            <p class="muted" style="margin:12px 0 4px">Group memberships:</p>
+            <div id="accessGroups">—</div>
+          </div>
+          <div class="card" style="margin:0">
+            <h4>Policies that apply to you</h4>
+            <div id="accessPolicies">Loading…</div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h4>How policy assignment works</h4>
+          <ol class="desc" style="margin:0;padding-left:20px;line-height:1.8">
+            <li>Admin sets your <b>role</b> on the Users tab (e.g. netops, sysadmin).</li>
+            <li>Or admin adds you to a <b>Group</b> that grants a role (e.g. "Network Ops" → netops).</li>
+            <li>Admin creates <b>Policies</b> bound to that role + target kind + tier.</li>
+            <li>If policy requires approval, submit an access request and wait for a different admin to approve.</li>
+          </ol>
+        </div>
       </section>
 
       <!-- Users -->
@@ -255,6 +312,8 @@
             </select>
             <label>Password</label><input id="userPassword" type="password"/>
             <label>Disabled</label><div><input type="checkbox" id="userDisabled" style="width:auto"/></div>
+            <label>Groups</label>
+            <div id="userGroupChecks" class="muted" style="font-size:13px">Loading groups…</div>
           </div>
           <div class="row" style="margin-top:12px">
             <button class="primary" id="userSaveBtn">Save</button>
@@ -323,7 +382,7 @@
           <h3 style="margin:0">Access Policies</h3>
           <button class="primary" id="policyAddBtn">+ Add Policy</button>
         </div>
-        <p class="desc">Each policy rule binds a <b>role</b> to a target kind, tier ceiling, and command allowlist. A user's effective roles include their own role plus all group-granted roles — the most permissive matching rule wins.</p>
+        <p class="desc">Each policy rule binds a <b>role</b> to a target kind, tier ceiling, and command allowlist. Assign roles to users (Users tab) or groups (Groups tab), then create matching policy rules here.</p>
         <table>
           <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
           <tbody id="policyRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
@@ -332,8 +391,20 @@
           <h4 id="policyFormTitle">Add policy</h4>
           <input type="hidden" id="policyId"/>
           <div class="form-grid">
-            <label>Role</label><input id="policyRole"/>
-            <label>Target kind</label><input id="policyKind" placeholder="* for any"/>
+            <label>Role</label>
+            <select id="policyRole">
+              <option value="admin">admin</option><option value="netops">netops</option>
+              <option value="secops">secops</option><option value="sysadmin">sysadmin</option>
+              <option value="viewer">viewer</option><option value="user">user</option>
+            </select>
+            <label>Target kind</label>
+            <select id="policyKind">
+              <option value="*">* (any)</option>
+              <option value="cisco">cisco</option><option value="arista">arista</option>
+              <option value="juniper">juniper</option><option value="linux">linux</option>
+              <option value="palo">palo</option><option value="forti">forti</option>
+              <option value="windows">windows</option>
+            </select>
             <label>Tier max</label><input id="policyTier" type="number" value="2"/>
             <label>Require approval</label><div><input type="checkbox" id="policyApproval" style="width:auto"/></div>
             <label>Allowed commands</label><input id="policyAllow" placeholder="show,configure terminal,interface" style="max-width:600px"/>
@@ -348,19 +419,30 @@
 
       <!-- Access Requests -->
       <section class="card tab" id="tab-requests" style="display:none">
-        <h3>Pending Access Requests</h3>
-        <table>
-          <thead><tr><th>ID</th><th>User</th><th>Target</th><th>Reason</th><th>TTL</th><th>Created</th><th></th></tr></thead>
-          <tbody id="reqRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
-        </table>
         <div class="form-panel" id="reqForm">
           <h4>Request JIT Access</h4>
+          <p class="desc">Select a machine, provide a reason, and submit. An <b>admin other than you</b> must approve before you can connect.</p>
           <div class="row">
-            <select id="reqTarget"><option value="">Select target…</option></select>
-            <input id="reqReason" placeholder="reason" style="flex:1;min-width:200px"/>
-            <input id="reqTTL" type="number" value="1800" style="width:120px"/>
-            <button class="primary" id="reqSubmitBtn">Submit</button>
+            <select id="reqTarget"><option value="">Select machine…</option></select>
+            <input id="reqReason" placeholder="business reason" style="flex:1;min-width:200px"/>
+            <input id="reqTTL" type="number" value="1800" title="TTL seconds" style="width:120px"/>
+            <button class="primary" id="reqSubmitBtn">Submit request</button>
           </div>
+        </div>
+
+        <h3 style="margin-top:20px">My Requests</h3>
+        <table>
+          <thead><tr><th>ID</th><th>Machine</th><th>Reason</th><th>Status</th><th>TTL</th><th>Created</th></tr></thead>
+          <tbody id="myReqRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+        </table>
+
+        <div id="adminReqSection" data-admin>
+          <h3 style="margin-top:24px">Awaiting Your Approval</h3>
+          <p class="desc">As admin, approve or deny requests from other users. You cannot approve your own requests.</p>
+          <table>
+            <thead><tr><th>ID</th><th>User</th><th>Machine</th><th>Reason</th><th>TTL</th><th>Created</th><th></th></tr></thead>
+            <tbody id="reqRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+          </table>
         </div>
       </section>
 
@@ -520,21 +602,28 @@ const $$ = s => document.querySelectorAll(s);
 
 function isAdmin() { return currentUser && currentUser.role === "admin"; }
 
+const KNOWN_ROLES = ["admin","netops","secops","sysadmin","viewer","user"];
+
 // applyRoleUI hides admin-only nav, buttons, and form panels for non-admins.
 function applyRoleUI() {
   const admin = isAdmin();
   document.querySelectorAll("[data-admin]").forEach(el => {
     el.style.display = admin ? "" : "none";
   });
+  document.querySelectorAll("[data-user]").forEach(el => {
+    el.style.display = "";
+  });
   // Hide "+ Add" buttons for non-admins; they aren't allowed to mutate.
   ["targetAddBtn","userAddBtn","groupAddBtn","policyAddBtn","secretAddBtn"].forEach(id => {
     const b = document.getElementById(id);
     if (b) b.style.display = admin ? "" : "none";
   });
+  const prof = document.getElementById("dashAccessProfile");
+  if (prof) prof.classList.remove("hidden");
 }
 
 const TAB_TITLES = {
-  dash: "Dashboard", targets: "Targets", users: "Users", groups: "Groups",
+  dash: "Dashboard", targets: "Machines", access: "My Access", users: "Users", groups: "Groups",
   secrets: "Vault Secrets", policies: "Access Policies", requests: "Access Requests",
   sessions: "SSH Sessions", audit: "Audit Log", ca: "SSH Certificate Authority",
   settings: "System Settings",
@@ -585,7 +674,7 @@ function showTab(name) {
   $$("aside nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   $("#pageTitle").textContent = TAB_TITLES[name] || name;
   const loaders = {
-    dash: loadDashboard, targets: loadTargets, users: loadUsers, groups: loadGroups,
+    dash: loadDashboard, targets: loadTargets, access: loadAccessProfile, users: loadUsers, groups: loadGroups,
     secrets: loadSecrets, policies: loadPolicies, requests: loadRequests,
     sessions: loadSessions, audit: loadAudit, ca: loadCA, settings: loadSettings,
   };
@@ -636,7 +725,7 @@ async function loadDashboard() {
       safe(api("/policy/targets")),
       safe(api("/auth/users")),
       safe(api("/auth/groups")),
-      safe(api("/approval/requests/pending")),
+      isAdmin() ? safe(api("/approval/requests/pending")) : Promise.resolve([]),
       safe(api("/audit/sessions?limit=200")),
       safe(api("/audit/events?limit=300")),
     ]);
@@ -665,9 +754,11 @@ async function loadDashboard() {
     }
 
     const first = (targets || [])[0];
+    const uname = currentUser ? currentUser.username : "user";
     $("#sshHint").textContent = first
-      ? `ssh -p 2222 ${currentUser.username}@${first.name}@localhost`
-      : "ssh -p 2222 user@target-name@localhost";
+      ? `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${uname}@${first.name}@localhost`
+      : `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${uname}@machine-name@localhost`;
+    loadAccessProfileSummary();
 
     // Login activity chart (24h, hourly buckets)
     const now = Math.floor(Date.now()/1000);
@@ -716,13 +807,69 @@ function renderBars(sel, vals, colors) {
   }).join("");
 }
 
+// --- Access profile (roles → policies) ---
+async function fetchAccessProfileData() {
+  if (!currentUser) return null;
+  const safe = p => p.catch(() => null);
+  const [rolesData, groups, policies] = await Promise.all([
+    api("/auth/users/" + currentUser.id + "/effective-roles"),
+    safe(api("/auth/users/" + currentUser.id + "/groups")),
+    safe(api("/policy/policies")),
+  ]);
+  const roles = (rolesData && rolesData.roles) || [currentUser.role];
+  const roleSet = new Set(roles);
+  const matched = (policies || []).filter(p => roleSet.has(p.role));
+  return { roles, groups: groups || [], policies: matched, allPolicies: policies || [] };
+}
+
+function renderPolicyList(policies, el) {
+  if (!(policies||[]).length) {
+    el.innerHTML = '<span class="muted">No policies match your roles yet. Ask an admin to assign a role and create policy rules.</span>';
+    return;
+  }
+  el.innerHTML = `<table style="width:100%;font-size:13px">
+    <thead><tr><th>Role</th><th>Kind</th><th>Tier</th><th>Approval</th></tr></thead>
+    <tbody>${policies.map(p => `
+      <tr>
+        <td><span class="pill">${esc(p.role)}</span></td>
+        <td>${esc(p.target_kind)}</td><td>${p.tier_max}</td>
+        <td>${p.require_approval ? '<span class="pill warn">required</span>' : 'no'}</td>
+      </tr>`).join("")}</tbody></table>`;
+}
+
+async function loadAccessProfileSummary() {
+  try {
+    const data = await fetchAccessProfileData();
+    if (!data) return;
+    $("#profileRole").textContent = currentUser.role;
+    $("#profileRoles").innerHTML = data.roles.map(r => `<span class="pill">${esc(r)}</span> `).join("");
+    $("#profileGroups").innerHTML = data.groups.length
+      ? data.groups.map(g => `<span class="pill accent">${esc(g.name)}</span> `).join("")
+      : '<span class="muted">none</span>';
+    renderPolicyList(data.policies, $("#profilePolicies"));
+  } catch { /* dashboard still usable */ }
+}
+
+async function loadAccessProfile() {
+  try {
+    const data = await fetchAccessProfileData();
+    if (!data) return;
+    $("#accessRole").textContent = currentUser.role;
+    $("#accessRoles").innerHTML = data.roles.map(r => `<span class="pill">${esc(r)}</span> `).join("") || "—";
+    $("#accessGroups").innerHTML = data.groups.length
+      ? data.groups.map(g => `<span class="pill accent">${esc(g.name)}</span> <span class="muted">→ ${esc(g.role)}</span><br>`).join("")
+      : '<span class="muted">Not in any groups</span>';
+    renderPolicyList(data.policies, $("#accessPolicies"));
+  } catch (e) { $("#accessPolicies").innerHTML = `<span class="muted">${esc(e.message)}</span>`; }
+}
+
 // --- Targets ---
 async function loadTargets() {
   try {
     const rows = await api("/policy/targets");
     cache.targets = rows || [];
     if (!cache.targets.length) {
-      $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">No targets yet.</td></tr>`;
+      $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">No machines yet. Admins: click + Add Machine.</td></tr>`;
       return;
     }
     const tActions = t => isAdmin()
@@ -736,6 +883,10 @@ async function loadTargets() {
         <td class="muted">${esc(t.tags)}</td>
         <td class="actions">${tActions(t)}</td>
       </tr>`).join("");
+    if (currentUser) {
+      const t0 = cache.targets[0];
+      $("#targetSshCmd").textContent = `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${currentUser.username}@${t0.name}@localhost`;
+    }
   } catch (e) { $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
 }
 
@@ -809,17 +960,51 @@ function resetUserForm() {
   ["userId","userName","userEmail","userPassword"].forEach(id => $("#"+id).value = "");
   $("#userName").disabled = false; $("#userRole").value = "user"; $("#userDisabled").checked = false;
   $("#userPassword").placeholder = "password"; $("#userForm").classList.add("hidden");
+  $("#userGroupChecks").innerHTML = '<span class="muted">Save user first, then edit to assign groups.</span>';
 }
-$("#userAddBtn").onclick = () => { resetUserForm(); $("#userFormTitle").textContent = "Add user"; $("#userPassword").placeholder = "password (required)"; $("#userForm").classList.remove("hidden"); };
+async function renderUserGroupChecks(userId, memberGroupIds) {
+  if (!cache.groups.length) {
+    try { cache.groups = await api("/auth/groups"); } catch { cache.groups = []; }
+  }
+  if (!cache.groups.length) {
+    $("#userGroupChecks").innerHTML = '<span class="muted">No groups defined. Create groups under Groups tab.</span>';
+    return;
+  }
+  const mids = new Set(memberGroupIds || []);
+  $("#userGroupChecks").innerHTML = cache.groups.map(g => `
+    <label style="display:block;margin:4px 0">
+      <input type="checkbox" data-gid="${g.id}" ${mids.has(g.id)?'checked':''} style="width:auto"/>
+      ${esc(g.name)} <span class="muted">→ ${esc(g.role)}</span>
+    </label>`).join("");
+}
+$("#userAddBtn").onclick = () => { resetUserForm(); $("#userFormTitle").textContent = "Add user"; $("#userPassword").placeholder = "password (required)"; renderUserGroupChecks(null, []); $("#userForm").classList.remove("hidden"); };
 $("#userCancelBtn").onclick = resetUserForm;
-window.editUser = id => {
+window.editUser = async id => {
   const u = cache.users.find(x => x.id === id); if (!u) return;
   $("#userId").value = u.id; $("#userName").value = u.username; $("#userName").disabled = true;
   $("#userEmail").value = u.email || ""; $("#userRole").value = u.role;
   $("#userPassword").value = ""; $("#userPassword").placeholder = "new password (blank to keep)";
   $("#userDisabled").checked = !!u.disabled; $("#userFormTitle").textContent = "Edit user";
+  try {
+    const grps = await api("/auth/users/"+id+"/groups");
+    await renderUserGroupChecks(id, (grps||[]).map(g => g.id));
+  } catch { await renderUserGroupChecks(id, []); }
   $("#userForm").classList.remove("hidden");
 };
+async function syncUserGroups(userId) {
+  const boxes = $("#userGroupChecks").querySelectorAll("input[data-gid]");
+  if (!boxes.length) return;
+  const want = new Set([...boxes].filter(b => b.checked).map(b => parseInt(b.dataset.gid, 10)));
+  let current = [];
+  try { current = await api("/auth/users/"+userId+"/groups"); } catch { return; }
+  const have = new Set((current||[]).map(g => g.id));
+  for (const gid of want) {
+    if (!have.has(gid)) await api("/auth/groups/"+gid+"/members", {method:"POST", body: JSON.stringify({user_id: userId})});
+  }
+  for (const g of (current||[])) {
+    if (!want.has(g.id)) await api(`/auth/groups/${g.id}/members/${userId}`, {method:"DELETE"});
+  }
+}
 $("#userSaveBtn").onclick = async () => {
   try {
     const id = $("#userId").value;
@@ -827,12 +1012,15 @@ $("#userSaveBtn").onclick = async () => {
       const body = { email: $("#userEmail").value.trim(), role: $("#userRole").value, disabled: $("#userDisabled").checked };
       const pw = $("#userPassword").value; if (pw) body.password = pw;
       await api("/auth/users/"+id, {method:"PUT", body: JSON.stringify(body)});
+      await syncUserGroups(+id);
     } else {
       const pw = $("#userPassword").value; if (!pw) throw new Error("password required");
-      await api("/auth/users", {method:"POST", body: JSON.stringify({
+      const res = await api("/auth/users", {method:"POST", body: JSON.stringify({
         username: $("#userName").value.trim(), email: $("#userEmail").value.trim(),
         role: $("#userRole").value, password: pw,
       })});
+      const newId = res && res.id;
+      if (newId) await syncUserGroups(newId);
     }
     toast(id ? "User updated" : "User created", "ok");
     resetUserForm(); loadUsers();
@@ -980,8 +1168,11 @@ async function loadPolicies() {
   } catch (e) { $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
 }
 function resetPolicyForm() {
-  ["policyId","policyRole","policyKind","policyAllow","policyDeny"].forEach(id => $("#"+id).value = "");
-  $("#policyTier").value = "2"; $("#policyApproval").checked = false; $("#policyForm").classList.add("hidden");
+  $("#policyId").value = "";
+  $("#policyRole").value = "netops"; $("#policyKind").value = "linux";
+  $("#policyTier").value = "2"; $("#policyApproval").checked = false;
+  ["policyAllow","policyDeny"].forEach(id => $("#"+id).value = "");
+  $("#policyForm").classList.add("hidden");
 }
 $("#policyAddBtn").onclick = () => { resetPolicyForm(); $("#policyForm").classList.remove("hidden"); };
 $("#policyCancelBtn").onclick = resetPolicyForm;
@@ -1014,16 +1205,39 @@ window.deletePolicy = async id => {
 };
 
 // --- Requests ---
+function reqStatusPill(status) {
+  const cls = status === "approved" ? "ok" : status === "denied" ? "err" : "warn";
+  return `<span class="pill ${cls}">${esc(status)}</span>`;
+}
+
 async function loadRequests() {
   try {
     if (!cache.targets.length) cache.targets = await api("/policy/targets");
     const sel = $("#reqTarget"); const cur = sel.value;
-    sel.innerHTML = '<option value="">Select target…</option>' +
+    sel.innerHTML = '<option value="">Select machine…</option>' +
       cache.targets.map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join("");
     if (cur) sel.value = cur;
+
+    const mine = await api("/approval/requests/mine");
+    if (!(mine||[]).length) {
+      $("#myReqRows").innerHTML = `<tr><td colspan="6" class="muted">No requests yet.</td></tr>`;
+    } else {
+      $("#myReqRows").innerHTML = mine.map(r => `
+        <tr>
+          <td>${r.id}</td><td>${esc(r.target_name)}</td><td>${esc(r.reason)}</td>
+          <td>${reqStatusPill(r.status)}</td><td>${r.ttl_seconds}s</td>
+          <td class="muted">${fmtTime(r.created_at)}</td>
+        </tr>`).join("");
+    }
+
+    if (!isAdmin()) return;
     const rows = await api("/approval/requests/pending");
-    if (!(rows||[]).length) { $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">No pending requests.</td></tr>`; return; }
-    $("#reqRows").innerHTML = rows.map(r => `
+    const others = (rows||[]).filter(r => r.user_id !== currentUser.id);
+    if (!others.length) {
+      $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">No requests awaiting your approval.</td></tr>`;
+      return;
+    }
+    $("#reqRows").innerHTML = others.map(r => `
       <tr>
         <td>${r.id}</td><td>${esc(r.username)}</td><td>${esc(r.target_name)}</td>
         <td>${esc(r.reason)}</td><td>${r.ttl_seconds}s</td>
@@ -1033,24 +1247,30 @@ async function loadRequests() {
           <button class="ghost danger" onclick="decide(${r.id}, false)">Deny</button>
         </td>
       </tr>`).join("");
-  } catch (e) { $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+  } catch (e) {
+    $("#myReqRows").innerHTML = `<tr><td colspan="6" class="muted">${esc(e.message)}</td></tr>`;
+    if (isAdmin()) $("#reqRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`;
+  }
 }
 window.decide = async (id, approve) => {
   try {
-    await api(`/approval/requests/${id}/decide`, {method:"POST", body: JSON.stringify({approver_id: currentUser.id, approve})});
+    await api(`/approval/requests/${id}/decide`, {method:"POST", body: JSON.stringify({approve})});
     toast(approve ? "Approved" : "Denied", "ok"); loadRequests();
   } catch (e) { toast(e.message, "err"); }
 };
 $("#reqSubmitBtn").onclick = async () => {
   const tid = parseInt($("#reqTarget").value, 10);
-  if (!tid) { toast("Select a target", "err"); return; }
+  if (!tid) { toast("Select a machine", "err"); return; }
+  const reason = $("#reqReason").value.trim();
+  if (!reason) { toast("Provide a reason", "err"); return; }
   try {
     await api("/approval/requests", {method:"POST", body: JSON.stringify({
-      user_id: currentUser.id, target_id: tid,
-      reason: $("#reqReason").value.trim(),
+      target_id: tid,
+      reason: reason,
       ttl_seconds: parseInt($("#reqTTL").value,10)||1800,
     })});
-    toast("Request submitted", "ok"); $("#reqReason").value = ""; loadRequests();
+    toast("Request submitted — waiting for admin approval", "ok");
+    $("#reqReason").value = ""; loadRequests();
   } catch (e) { toast(e.message, "err"); }
 };
 

@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/example/pam-platform/internal/config"
@@ -147,6 +148,7 @@ func gated(next http.Handler, authBase *url.URL) http.Handler {
 		r2 := r.Clone(context.WithValue(r.Context(), ctxKey{}, c))
 		r2.Header.Set("X-PAM-User", c.User)
 		r2.Header.Set("X-PAM-Role", c.Role)
+		r2.Header.Set("X-PAM-UID", strconv.FormatInt(c.UID, 10))
 		next.ServeHTTP(w, r2)
 	})
 }

@@ -41,8 +41,40 @@ func (s *Service) Create(ctx context.Context, userID, targetID int64, reason str
 	return id, nil
 }
 
-// Decide marks a request approved or denied.
-func (s *Service) Decide(ctx context.Context, id, approverID int64, approve bool) error {
+// ErrSelfApproval is returned when a requester tries to approve their own request.
+var ErrSelfApproval = errors.New("cannot approve your own request")
+
+// ErrNotApprover is returned when the caller lacks approval authority.
+var ErrNotApprover = errors.New("admin role required to approve requests")
+
+// Get loads a single access request by ID.
+func (s *Service) Get(ctx context.Context, id int64) (*Request, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT id, user_id, target_id, reason, status, created_at, ttl_seconds
+		FROM access_requests WHERE id = ?`, id)
+	var r Request
+	if err := row.Scan(&r.ID, &r.UserID, &r.TargetID, &r.Reason, &r.Status, &r.CreatedAt, &r.TTLSeconds); err != nil {
+		return nil, errors.New("request not found")
+	}
+	return &r, nil
+}
+
+// Decide marks a request approved or denied. approverRole must be "admin" and
+// approverID must differ from the requester's user ID.
+func (s *Service) Decide(ctx context.Context, id, approverID int64, approverRole string, approve bool) error {
+	if approverRole != "admin" {
+		return ErrNotApprover
+	}
+	req, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if req.UserID == approverID {
+		return ErrSelfApproval
+	}
+	if req.Status != "pending" {
+		return errors.New("request not found or already decided")
+	}
 	status := "denied"
 	if approve {
 		status = "approved"
@@ -114,6 +146,33 @@ func (s *Service) ListPendingEnriched(ctx context.Context) ([]RequestView, error
 		JOIN targets t ON t.id = ar.target_id
 		WHERE ar.status = 'pending'
 		ORDER BY ar.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RequestView
+	for rows.Next() {
+		var v RequestView
+		if err := rows.Scan(&v.ID, &v.UserID, &v.TargetID, &v.Reason, &v.Status, &v.CreatedAt, &v.TTLSeconds,
+			&v.Username, &v.TargetName); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ListMineEnriched returns all requests filed by a user (any status).
+func (s *Service) ListMineEnriched(ctx context.Context, userID int64) ([]RequestView, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds,
+		       u.username, t.name
+		FROM access_requests ar
+		JOIN users u ON u.id = ar.user_id
+		JOIN targets t ON t.id = ar.target_id
+		WHERE ar.user_id = ?
+		ORDER BY ar.created_at DESC
+		LIMIT 50`, userID)
 	if err != nil {
 		return nil, err
 	}
