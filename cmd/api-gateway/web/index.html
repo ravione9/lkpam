@@ -783,6 +783,36 @@
           <span id="ldapStatus" class="muted"></span>
         </div>
 
+        <div class="card" style="margin-top:20px;padding:16px" id="ldapSyncPanel">
+          <h4 style="margin:0 0 8px">AD user &amp; group sync</h4>
+          <p class="desc" style="margin-bottom:12px">Search Active Directory, select only the users and groups to import, then sync. When at least one user is selected, <b>only those users</b> may sign in with AD credentials.</p>
+          <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
+            <div>
+              <div class="row" style="margin-bottom:8px">
+                <b>Users to sync</b>
+                <input id="ldapUserSearch" placeholder="Search AD users…" style="flex:1;min-width:120px"/>
+                <button class="ghost" id="ldapUserSearchBtn">Search</button>
+              </div>
+              <div id="ldapUserResults" class="muted" style="font-size:12px;max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">Save LDAP settings and search.</div>
+              <div id="ldapSelectedUsers" style="font-size:12px;min-height:60px"></div>
+            </div>
+            <div>
+              <div class="row" style="margin-bottom:8px">
+                <b>Groups to sync</b>
+                <input id="ldapGroupSearch" placeholder="Search AD groups…" style="flex:1;min-width:120px"/>
+                <button class="ghost" id="ldapGroupSearchBtn">Search</button>
+              </div>
+              <div id="ldapGroupResults" class="muted" style="font-size:12px;max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">Save LDAP settings and search.</div>
+              <div id="ldapSelectedGroups" style="font-size:12px;min-height:60px"></div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="ldapSyncSaveBtn">Save selection</button>
+            <button class="ghost" id="ldapSyncRunBtn">Run sync now</button>
+            <span id="ldapSyncStatus" class="muted"></span>
+          </div>
+        </div>
+
         <h4 style="margin-top:24px">SAML SSO (Google / Okta / Azure AD)</h4>
         <p class="muted" style="font-size:12px;margin-top:0">After saving with Enabled = on, download the SP metadata and upload it to your IdP. Set the IdP ACS URL to <code id="samlACS">https://&lt;host&gt;/api/auth/saml/acs</code>.</p>
         <div class="form-grid">
@@ -4280,6 +4310,7 @@ async function loadSettings() {
     $("#ldapEmailAttr").value = cfg.email_attr || "mail";
     $("#ldapDefaultRole").value = cfg.default_role || "user";
     $("#ldapStatus").textContent = "";
+    if (isAdmin()) await loadLDAPSyncSelection();
 
     const all = await api("/auth/settings");
     $("#mfaPolicy").value = all.mfa_policy || "off";
@@ -4311,6 +4342,116 @@ $("#ldapTestBtn").onclick = async () => {
     $("#ldapStatus").innerHTML = r.ok ? '<span class="pill ok">Connection OK</span>' : `<span class="pill err">${esc(r.error)}</span>`;
   } catch (e) { $("#ldapStatus").innerHTML = `<span class="pill err">${esc(e.message)}</span>`; }
 };
+
+let ldapSyncSel = { user_dns: [], group_dns: [] };
+let ldapSyncMeta = { users: {}, groups: {} };
+
+function renderLdapSyncSelection() {
+  const uEl = $("#ldapSelectedUsers");
+  const gEl = $("#ldapSelectedGroups");
+  if (!uEl || !gEl) return;
+  if (!ldapSyncSel.user_dns.length) {
+    uEl.innerHTML = '<span class="muted">No users selected — all AD users can sign in (login-time sync only).</span>';
+  } else {
+    uEl.innerHTML = ldapSyncSel.user_dns.map(dn => {
+      const m = ldapSyncMeta.users[dn] || { name: dn };
+      return `<span class="pill accent" style="margin:2px">${esc(m.name)} <a href="#" onclick="event.preventDefault();removeLdapUser(${JSON.stringify(dn)})">×</a></span>`;
+    }).join(" ");
+  }
+  if (!ldapSyncSel.group_dns.length) {
+    gEl.innerHTML = '<span class="muted">No groups selected.</span>';
+  } else {
+    gEl.innerHTML = ldapSyncSel.group_dns.map(dn => {
+      const m = ldapSyncMeta.groups[dn] || { name: dn };
+      return `<span class="pill" style="margin:2px">${esc(m.name)} <a href="#" onclick="event.preventDefault();removeLdapGroup(${JSON.stringify(dn)})">×</a></span>`;
+    }).join(" ");
+  }
+}
+
+window.removeLdapUser = dn => {
+  ldapSyncSel.user_dns = ldapSyncSel.user_dns.filter(x => x !== dn);
+  renderLdapSyncSelection();
+};
+window.removeLdapGroup = dn => {
+  ldapSyncSel.group_dns = ldapSyncSel.group_dns.filter(x => x !== dn);
+  renderLdapSyncSelection();
+};
+window.addLdapUser = (dn, name, email) => {
+  if (ldapSyncSel.user_dns.includes(dn)) return;
+  ldapSyncSel.user_dns.push(dn);
+  ldapSyncMeta.users[dn] = { name, email };
+  renderLdapSyncSelection();
+};
+window.addLdapGroup = (dn, name) => {
+  if (ldapSyncSel.group_dns.includes(dn)) return;
+  ldapSyncSel.group_dns.push(dn);
+  ldapSyncMeta.groups[dn] = { name };
+  renderLdapSyncSelection();
+};
+
+async function loadLDAPSyncSelection() {
+  try {
+    ldapSyncSel = await api("/auth/settings/ldap/sync") || { user_dns: [], group_dns: [] };
+    if (!ldapSyncSel.user_dns) ldapSyncSel.user_dns = [];
+    if (!ldapSyncSel.group_dns) ldapSyncSel.group_dns = [];
+    renderLdapSyncSelection();
+  } catch { /* admin only */ }
+}
+
+async function searchLdapDirectory(type, q, resultEl) {
+  resultEl.innerHTML = '<span class="muted">Searching…</span>';
+  try {
+    const rows = await api("/auth/settings/ldap/browse?type=" + encodeURIComponent(type) + "&q=" + encodeURIComponent(q || ""));
+    if (!(rows||[]).length) {
+      resultEl.innerHTML = '<span class="muted">No results.</span>';
+      return;
+    }
+    resultEl.innerHTML = rows.map(r => {
+      const addFn = r.type === "group"
+        ? `addLdapGroup(${JSON.stringify(r.dn)}, ${JSON.stringify(r.name)})`
+        : `addLdapUser(${JSON.stringify(r.dn)}, ${JSON.stringify(r.name)}, ${JSON.stringify(r.email||"")})`;
+      const sub = r.email ? ` <span class="muted">${esc(r.email)}</span>` : "";
+      return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+        <b>${esc(r.name)}</b>${sub}
+        <div class="muted" style="font-size:10px;word-break:break-all">${esc(r.dn)}</div>
+        <button class="ghost" style="margin-top:4px" onclick="${addFn}">Add</button>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    resultEl.innerHTML = `<span class="pill err">${esc(e.message)}</span>`;
+  }
+}
+
+const ldapUserSearchBtn = document.getElementById("ldapUserSearchBtn");
+if (ldapUserSearchBtn) {
+  ldapUserSearchBtn.onclick = () => searchLdapDirectory("users", $("#ldapUserSearch").value, $("#ldapUserResults"));
+  document.getElementById("ldapGroupSearchBtn").onclick = () => searchLdapDirectory("groups", $("#ldapGroupSearch").value, $("#ldapGroupResults"));
+  $("#ldapUserSearch").addEventListener("keydown", e => { if (e.key === "Enter") ldapUserSearchBtn.click(); });
+  $("#ldapGroupSearch").addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("ldapGroupSearchBtn").click(); });
+  document.getElementById("ldapSyncSaveBtn").onclick = async () => {
+    try {
+      await api("/auth/settings/ldap/sync", { method: "PUT", body: JSON.stringify(ldapSyncSel) });
+      toast("AD sync selection saved", "ok");
+      $("#ldapSyncStatus").innerHTML = '<span class="pill ok">Selection saved</span>';
+    } catch (e) { toast(e.message, "err"); }
+  };
+  document.getElementById("ldapSyncRunBtn").onclick = async () => {
+    $("#ldapSyncStatus").textContent = "Syncing…";
+    try {
+      await api("/auth/settings/ldap/sync", { method: "PUT", body: JSON.stringify(ldapSyncSel) });
+      const res = await api("/auth/settings/ldap/sync/run", { method: "POST" });
+      const errNote = (res.errors||[]).length ? ` · ${res.errors.length} warning(s)` : "";
+      $("#ldapSyncStatus").innerHTML = `<span class="pill ok">Synced ${res.users_synced} user(s), ${res.groups_synced} group(s)${esc(errNote)}</span>`;
+      if ((res.errors||[]).length) toast(res.errors.join("; "), "err");
+      else toast("AD sync complete", "ok");
+      loadUsers(); loadGroups();
+    } catch (e) {
+      $("#ldapSyncStatus").innerHTML = `<span class="pill err">${esc(e.message)}</span>`;
+      toast(e.message, "err");
+    }
+  };
+}
+
 $("#mfaPolicySaveBtn").onclick = async () => {
   try { await api("/auth/settings/mfa_policy", {method:"PUT", body: JSON.stringify({value: $("#mfaPolicy").value})}); toast("MFA policy saved", "ok"); }
   catch (e) { toast(e.message, "err"); }

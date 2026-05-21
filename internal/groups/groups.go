@@ -243,6 +243,36 @@ func (s *Service) EffectiveRoles(ctx context.Context, userID int64, userRole str
 	return out, nil
 }
 
+// UpsertLDAP creates or updates a group linked to an AD/LDAP DN.
+func (s *Service) UpsertLDAP(ctx context.Context, name, description, role, dn string) (int64, error) {
+	if dn == "" {
+		return 0, errors.New("ldap dn required")
+	}
+	if name == "" {
+		name = dn
+	}
+	if role == "" {
+		role = "user"
+	}
+	existing, err := s.FindByLDAPDN(ctx, dn)
+	if err != nil {
+		return 0, err
+	}
+	if existing != nil {
+		if err := s.Update(ctx, Group{
+			ID: existing.ID, Name: existing.Name,
+			Description: description, Role: role, LDAPDN: dn,
+		}); err != nil {
+			return 0, err
+		}
+		return existing.ID, nil
+	}
+	return s.Create(ctx, Group{
+		Name: name, Description: description, Role: role,
+		LDAPDN: dn, Source: "ldap",
+	})
+}
+
 // FindByLDAPDN returns the group with the given LDAP DN, if any.
 func (s *Service) FindByLDAPDN(ctx context.Context, dn string) (*Group, error) {
 	var g Group

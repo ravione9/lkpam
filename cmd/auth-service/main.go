@@ -40,6 +40,7 @@ import (
 
 const (
 	settingsKeyLDAP       = "ldap"
+	settingsKeyLDAPSync   = "ldap_sync"
 	settingsKeySAML       = "saml"
 	settingsKeyMFAPolicy  = "mfa_policy"
 	vaultLDAPBindPassword = "_ldap_bind_password"
@@ -398,6 +399,96 @@ func main() {
 			return
 		}
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("GET /settings/ldap/sync", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-PAM-Role") != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin required"))
+			return
+		}
+		sel := loadLDAPSyncSelection(r.Context(), settingsStore)
+		httpx.JSON(w, http.StatusOK, sel)
+	})
+	mux.HandleFunc("PUT /settings/ldap/sync", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-PAM-Role") != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin required"))
+			return
+		}
+		var sel ldappkg.SyncSelection
+		if err := httpx.ReadJSON(r, &sel); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := settingsStore.SetJSON(r.Context(), settingsKeyLDAPSync, sel); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "ldap.sync.selection.updated", Severity: "info"})
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /settings/ldap/browse", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-PAM-Role") != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin required"))
+			return
+		}
+		cfg := loadLDAPConfig(r.Context(), settingsStore, v)
+		if !cfg.Enabled {
+			httpx.Error(w, http.StatusBadRequest, errors.New("ldap is not enabled"))
+			return
+		}
+		pw, _ := v.GetSecret(r.Context(), vaultLDAPBindPassword)
+		client := &ldappkg.Client{Cfg: cfg, Password: string(pw)}
+		q := r.URL.Query().Get("q")
+		typ := r.URL.Query().Get("type")
+		var (
+			out []ldappkg.DirectoryEntry
+			err error
+		)
+		switch typ {
+		case "groups":
+			out, err = client.SearchGroups(q, 100)
+		default:
+			out, err = client.SearchUsers(q, 100)
+		}
+		if err != nil {
+			httpx.Error(w, http.StatusBadGateway, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("POST /settings/ldap/sync/run", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-PAM-Role") != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin required"))
+			return
+		}
+		cfg := loadLDAPConfig(r.Context(), settingsStore, v)
+		if !cfg.Enabled {
+			httpx.Error(w, http.StatusBadRequest, errors.New("ldap is not enabled"))
+			return
+		}
+		sel := loadLDAPSyncSelection(r.Context(), settingsStore)
+		if len(sel.UserDNs) == 0 && len(sel.GroupDNs) == 0 {
+			httpx.Error(w, http.StatusBadRequest, errors.New("no users or groups selected for sync"))
+			return
+		}
+		pw, _ := v.GetSecret(r.Context(), vaultLDAPBindPassword)
+		syncSvc := &ldappkg.SyncService{
+			Client: &ldappkg.Client{Cfg: cfg, Password: string(pw)},
+			Auth:   svc, Groups: groupSvc, Cfg: cfg,
+		}
+		res, err := syncSvc.Run(r.Context(), sel)
+		if err != nil {
+			httpx.Error(w, http.StatusBadGateway, err)
+			return
+		}
+		bus.Publish(events.Event{
+			Source: "auth", Kind: "ldap.sync.completed", Severity: "info",
+			Detail: map[string]string{
+				"users":  strconv.Itoa(res.UsersSynced),
+				"groups": strconv.Itoa(res.GroupsSynced),
+			},
+		})
+		httpx.JSON(w, http.StatusOK, res)
 	})
 
 	// --- SAML ---
@@ -993,6 +1084,10 @@ func tryLDAP(
 	if err != nil {
 		return nil, err
 	}
+	sel := loadLDAPSyncSelection(ctx, settingsStore)
+	if !ldappkg.AllowedUser(sel, lu.DN) {
+		return nil, errors.New("user is not in the AD sync allowlist — ask an admin to add you under Settings → AD Sync")
+	}
 	// Map LDAP groups → first matching local group's role, else default.
 	role := cfg.DefaultRole
 	if role == "" {
@@ -1018,6 +1113,12 @@ func tryLDAP(
 		_ = groupSvc.ReplaceMemberships(ctx, u.ID, matchedGroupIDs)
 	}
 	return u, nil
+}
+
+func loadLDAPSyncSelection(ctx context.Context, settingsStore *settings.Store) ldappkg.SyncSelection {
+	var sel ldappkg.SyncSelection
+	_ = settingsStore.GetJSON(ctx, settingsKeyLDAPSync, &sel)
+	return sel
 }
 
 // loadLDAPConfig returns the persisted LDAP config (or sane defaults) merged
