@@ -332,32 +332,56 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		Detail: map[string]string{"session_id": sessionID},
 	})
 
-	// Issue ephemeral SSH cert for downstream connection. The principals
-	// declare *who* the bearer claims to be on the target; the target's
-	// AuthorizedPrincipalsFile (or vendor equivalent) maps these to local
-	// users / roles.
-	principals := []string{sconn.Permissions.Extensions["role"], "pam-user"}
-	upPriv, upCertAuth, err := s.Vault.IssueSSHCert(principals, 30*time.Minute)
-	if err != nil {
-		log.Printf("issue cert: %v", err)
-		return
-	}
-	upSigner, err := buildCertSigner(upPriv, upCertAuth)
-	if err != nil {
-		log.Printf("build cert signer: %v", err)
-		return
+	// Build downstream auth. Preferred: use the privileged account linked
+	// to the target (CyberArk PSM model — admin stores device credentials
+	// in a safe, PAM injects them transparently). Fallback: ephemeral SSH
+	// cert as user "pam-user" (requires the target to trust the PAM CA).
+	targetID := mustAtoi(sconn.Permissions.Extensions["target-id"])
+	downUser, downPassword, hasPrivAccount := s.lookupPrivilegedAccount(targetID)
+
+	var authMethods []ssh.AuthMethod
+	if hasPrivAccount && downPassword != "" {
+		authMethods = append(authMethods,
+			ssh.Password(downPassword),
+			ssh.KeyboardInteractive(func(_, _ string, qs []string, _ []bool) ([]string, error) {
+				out := make([]string, len(qs))
+				for i := range qs {
+					out[i] = downPassword
+				}
+				return out, nil
+			}),
+		)
+	} else {
+		downUser = "pam-user"
+		principals := []string{sconn.Permissions.Extensions["role"], "pam-user"}
+		upPriv, upCertAuth, certErr := s.Vault.IssueSSHCert(principals, 30*time.Minute)
+		if certErr != nil {
+			log.Printf("issue cert: %v", certErr)
+			s.sendShellError(chans, "PAM: no privileged account linked to this target.\r\nAdmin must add one in Privileged Accounts (Safes tab).\r\n")
+			return
+		}
+		upSigner, certErr := buildCertSigner(upPriv, upCertAuth)
+		if certErr != nil {
+			log.Printf("build cert signer: %v", certErr)
+			return
+		}
+		authMethods = []ssh.AuthMethod{ssh.PublicKeys(upSigner)}
 	}
 
-	// Connect downstream
 	target := fmt.Sprintf("%s:%s", host, port)
 	upClient, err := ssh.Dial("tcp", target, &ssh.ClientConfig{
-		User:            "pam-user", // expected to match a principal trusted on the target
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(upSigner)},
+		User:            downUser,
+		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // dev mode; replace with HostKeys table in prod
 		Timeout:         10 * time.Second,
 	})
 	if err != nil {
-		log.Printf("dial target %s: %v", target, err)
+		log.Printf("dial target %s as %q: %v", target, downUser, err)
+		if hasPrivAccount {
+			s.sendShellError(chans, fmt.Sprintf("PAM: failed to authenticate to %s as %s.\r\nCheck the privileged account password in Safes -> Privileged Accounts.\r\n%v\r\n", host, downUser, err))
+		} else {
+			s.sendShellError(chans, fmt.Sprintf("PAM: failed to connect to %s.\r\nAdd a privileged account for this target in the Privileged Accounts tab so PAM can log in for you.\r\n", host))
+		}
 		return
 	}
 	defer upClient.Close()
@@ -492,6 +516,70 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 		Actor: user, Target: target,
 		Detail: map[string]string{"session_id": sessionID},
 	})
+}
+
+// lookupPrivilegedAccount returns the SSH-capable privileged account linked to
+// a target along with its plaintext password fetched from the vault. The third
+// return value is true when an account was found and its password retrieved.
+func (s *Server) lookupPrivilegedAccount(targetID int64) (username, password string, ok bool) {
+	if targetID == 0 {
+		return "", "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var secretRef string
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT a.username, a.secret_ref
+		FROM privileged_accounts a
+		WHERE a.target_id = ?
+		  AND a.platform IN ('linux','cisco','arista','juniper','palo','forti','ssh','huawei','arubaos','mikrotik','sophos','fortinet','pfsense','sonicwall','f5','netscaler','ontap','a10','dlink','extreme','brocade')
+		ORDER BY a.id
+		LIMIT 1`, targetID).Scan(&username, &secretRef)
+	if err != nil {
+		return "", "", false
+	}
+	pw, err := s.Vault.GetSecret(ctx, secretRef)
+	if err != nil || len(pw) == 0 {
+		return "", "", false
+	}
+	return username, string(pw), true
+}
+
+// sendShellError accepts the user's first session channel and writes a
+// human-readable error message to it, then closes — so the user sees the
+// reason in their terminal instead of an opaque connection-closed drop.
+func (s *Server) sendShellError(chans <-chan ssh.NewChannel, msg string) {
+	log.Printf("ssh-proxy reply: %s", strings.TrimSpace(msg))
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case nc, ok := <-chans:
+			if !ok {
+				return
+			}
+			if nc.ChannelType() != "session" {
+				_ = nc.Reject(ssh.UnknownChannelType, "session channels only")
+				continue
+			}
+			ch, reqs, err := nc.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				for r := range reqs {
+					if r.WantReply {
+						_ = r.Reply(true, nil)
+					}
+				}
+			}()
+			_, _ = ch.Write([]byte(msg))
+			_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 1}))
+			_ = ch.Close()
+			return
+		case <-deadline:
+			return
+		}
+	}
 }
 
 // forwardRequests forwards out-of-band ssh requests between sides.

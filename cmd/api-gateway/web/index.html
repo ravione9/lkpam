@@ -1183,6 +1183,11 @@ function showTab(name) {
   if (tab) tab.style.display = "block";
   $$("aside nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   $("#pageTitle").textContent = TAB_TITLES[name] || name;
+  // Preload privileged accounts when admin lands on Machines so the SSH
+  // launch modal can warn if a target has no account linked.
+  if (name === "targets" && isAdmin() && !(cache.accounts && cache.accounts.length)) {
+    loadAccounts().catch(() => { /* non-fatal */ });
+  }
   const loaders = {
     dash: loadDashboard, targets: loadTargets, access: loadAccessProfile,
     users: loadUsers, groups: loadGroups, roles: loadRoles,
@@ -1947,12 +1952,19 @@ function downloadTextFile(filename, content, mime) {
 function showSshLaunchModal(target) {
   const cmd = buildSshCommand(currentUser.username, target);
   const puttyCmd = buildPuttyCommand(currentUser.username, target);
+  // Only warn admins (others can't list accounts and may see false negatives).
+  const accountsLoaded = Array.isArray(cache.accounts) && cache.accounts.length >= 0 && isAdmin();
+  const hasAccount = accountsLoaded && cache.accounts.some(a => a.target_id === target.id);
+  const accountWarn = (accountsLoaded && !hasAccount)
+    ? `<div class="pill warn" style="margin:8px 0;display:block;padding:8px 12px">No privileged account linked to this target — PAM cannot log you in to <b>${esc(target.host || target.name)}</b>. Add one in <b>Privileged Accounts</b> (Safes tab) with the target's local username + password.</div>`
+    : "";
   const modal = document.createElement("div");
   modal.className = "modal-backdrop show";
   modal.innerHTML = `
     <div class="modal" style="max-width:680px">
       <h3>SSH launch — ${esc(target.name)}</h3>
       <p class="muted">Choose how to connect. All paths go through the PAM SSH proxy on <b>${esc(sshProxyHost())}:${SSH_PROXY_PORT}</b> (machine ID <code>${esc(sshTargetRef(target))}</code>).</p>
+      ${accountWarn}
       <label class="muted" style="font-size:12px;display:block;margin-top:10px"><b>Terminal / CMD / Windows Terminal</b></label>
       <pre id="sshLaunchCmd" style="font-size:11px;max-height:90px;overflow:auto;white-space:pre-wrap;word-break:break-all">${esc(cmd)}</pre>
       <label class="muted" style="font-size:12px;display:block;margin-top:10px"><b>PuTTY</b> (paste into Run dialog or save as shortcut)</label>
