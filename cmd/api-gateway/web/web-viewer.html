@@ -67,6 +67,10 @@
     nameEl.textContent = "Missing session — launch from the PAM portal.";
     statusEl.textContent = "error";
     statusEl.className = "pill warn";
+  } else if (!token) {
+    nameEl.textContent = "Missing sign-in token — launch from the PAM portal.";
+    statusEl.textContent = "error";
+    statusEl.className = "pill warn";
   } else {
     labelEl.textContent = "Session: " + sessionId;
 
@@ -75,7 +79,7 @@
       .then(info => {
         nameEl.textContent   = info.target_name || sessionId;
         targetURL            = info.web_url     || "";
-        const proxyURL       = "/web/" + encodeURIComponent(sessionId) + "/";
+        const proxyURL       = "/web/" + encodeURIComponent(sessionId) + "/?token=" + encodeURIComponent(token);
 
         openDirect.onclick  = () => window.open(targetURL, "_blank", "noopener");
         openDirect2.onclick = () => window.open(targetURL, "_blank", "noopener");

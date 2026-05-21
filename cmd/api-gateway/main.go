@@ -125,10 +125,10 @@ func main() {
 	}
 
 	// Web console reverse-proxy: /web/{sessionID}/{*path}
-	// Validates the portal JWT, loads session credentials from vault (via auth-service),
-	// and transparently proxies the browser to the target web console.
+	// Validates the portal JWT (header, ?token=, or session cookie), loads session
+	// credentials from vault, and transparently proxies to the target web console.
 	vaultSvc := mustURL(config.Get("PAM_VAULT_URL", "http://localhost:8082"))
-	mux.Handle("/web/", gated(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/web/", webGated(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		webConsoleProxy(w, r, authURL, vaultSvc)
 	}), authURL))
 
@@ -182,23 +182,65 @@ func gated(next http.Handler, authBase *url.URL) http.Handler {
 			httpx.Error(w, http.StatusUnauthorized, err)
 			return
 		}
-		c, status, err := verifyToken(r.Context(), authBase, tok)
-		if err != nil {
-			httpx.Error(w, status, err)
-			return
-		}
-		if requiresAdmin(r.Method, r.URL.Path) && c.Role != "admin" {
-			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
-			return
-		}
-		// Forward identity to downstream services in case they want to log /
-		// enforce on top.
-		r2 := r.Clone(context.WithValue(r.Context(), ctxKey{}, c))
-		r2.Header.Set("X-PAM-User", c.User)
-		r2.Header.Set("X-PAM-Role", c.Role)
-		r2.Header.Set("X-PAM-UID", strconv.FormatInt(c.UID, 10))
-		next.ServeHTTP(w, r2)
+		serveAuthed(w, r, next, authBase, tok, "", false)
 	})
+}
+
+// webGated authenticates web-console proxy requests. Browser iframes cannot set
+// Authorization headers, so the viewer passes ?token= on first load; we store it
+// in an HttpOnly cookie scoped to /web/{sessionID}/ for subsequent assets.
+func webGated(next http.Handler, authBase *url.URL) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok, err := httpx.BearerTokenFromRequest(r)
+		if err != nil {
+			httpx.Error(w, http.StatusUnauthorized, err)
+			return
+		}
+		sessionID := webSessionIDFromPath(r.URL.Path)
+		setCookie := sessionID != "" && (r.URL.Query().Get("token") != "" || r.Header.Get("Authorization") != "")
+		serveAuthed(w, r, next, authBase, tok, sessionID, setCookie)
+	})
+}
+
+func serveAuthed(w http.ResponseWriter, r *http.Request, next http.Handler, authBase *url.URL, tok, webSessionID string, setWebCookie bool) {
+	c, status, err := verifyToken(r.Context(), authBase, tok)
+	if err != nil {
+		httpx.Error(w, status, err)
+		return
+	}
+	if setWebCookie && webSessionID != "" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "pam_web_tok",
+			Value:    tok,
+			Path:     "/web/" + webSessionID + "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   7200,
+		})
+	}
+	if requiresAdmin(r.Method, r.URL.Path) && c.Role != "admin" {
+		httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
+		return
+	}
+	r2 := r.Clone(context.WithValue(r.Context(), ctxKey{}, c))
+	r2.Header.Set("X-PAM-User", c.User)
+	r2.Header.Set("X-PAM-Role", c.Role)
+	r2.Header.Set("X-PAM-UID", strconv.FormatInt(c.UID, 10))
+	next.ServeHTTP(w, r2)
+}
+
+func webSessionIDFromPath(path string) string {
+	path = strings.TrimPrefix(path, "/web/")
+	if path == "" {
+		return ""
+	}
+	if i := strings.IndexByte(path, '/'); i >= 0 {
+		return path[:i]
+	}
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		return path[:i]
+	}
+	return path
 }
 
 func requiresAdmin(method, path string) bool {

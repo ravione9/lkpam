@@ -61,3 +61,18 @@ func BearerToken(r *http.Request) (string, error) {
 	}
 	return strings.TrimPrefix(h, "Bearer "), nil
 }
+
+// BearerTokenFromRequest returns a JWT from Authorization header, ?token= query,
+// or the pam_web_tok cookie set when a web console iframe first authenticates.
+func BearerTokenFromRequest(r *http.Request) (string, error) {
+	if tok, err := BearerToken(r); err == nil {
+		return tok, nil
+	}
+	if tok := strings.TrimSpace(r.URL.Query().Get("token")); tok != "" {
+		return tok, nil
+	}
+	if c, err := r.Cookie("pam_web_tok"); err == nil && strings.TrimSpace(c.Value) != "" {
+		return c.Value, nil
+	}
+	return "", errors.New("missing bearer token")
+}
