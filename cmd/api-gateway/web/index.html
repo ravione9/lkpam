@@ -145,11 +145,18 @@
       <button data-tab="policies" data-admin><span class="ico">△</span> Policies</button>
       <button data-tab="matrix" data-admin><span class="ico">⧉</span> Approval Matrix</button>
       <button data-tab="requests"><span class="ico">✦</span> Access Requests</button>
-      <div class="section-title" data-admin>Secrets &amp; Sessions</div>
+      <div class="section-title">Vault</div>
+      <button data-tab="safes" data-admin><span class="ico">▣</span> Safes</button>
+      <button data-tab="accounts"><span class="ico">⚷</span> Privileged Accounts</button>
+      <button data-tab="checkouts"><span class="ico">⇲</span> Checkouts</button>
       <button data-tab="secrets" data-admin><span class="ico">⚿</span> Secrets</button>
+      <button data-tab="apps" data-admin><span class="ico">⚛</span> Apps (CCP)</button>
+      <div class="section-title">Operations</div>
       <button data-tab="sessions"><span class="ico">▷</span> Sessions</button>
+      <button data-tab="threats" data-admin><span class="ico">⚠</span> Threats</button>
       <div class="section-title">Compliance</div>
       <button data-tab="audit" data-admin><span class="ico">≡</span> Audit Log</button>
+      <button data-tab="reports" data-admin><span class="ico">▤</span> Reports</button>
       <button data-tab="ca" data-admin><span class="ico">★</span> SSH CA</button>
       <div class="section-title">Onboarding</div>
       <button data-tab="onboard"><span class="ico">⚒</span> Device Setup</button>
@@ -509,9 +516,10 @@
       <!-- Sessions -->
       <section class="card tab" id="tab-sessions" style="display:none">
         <h3>SSH Sessions</h3>
+        <p class="desc">Active sessions can be terminated by admins. The ssh-proxy polls for kill orders every 5 seconds.</p>
         <table>
-          <thead><tr><th>Started</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th></tr></thead>
-          <tbody id="sessionRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+          <thead><tr><th>Started</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th><th></th></tr></thead>
+          <tbody id="sessionRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
       </section>
 
@@ -535,6 +543,151 @@
           <thead><tr><th>Time</th><th>Actor</th><th>Kind</th><th>Target</th><th>Severity</th></tr></thead>
           <tbody id="auditRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
         </table>
+      </section>
+
+      <!-- Safes -->
+      <section class="card tab" id="tab-safes" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Safes</h3>
+          <button class="primary" id="safeAddBtn">+ Add Safe</button>
+        </div>
+        <p class="desc">Safes are containers for privileged accounts with their own access policy. Enable <b>CPM</b> to auto-rotate every credential in a safe on a schedule. Turn on <b>dual control</b> to require an approved access request before a credential can be checked out.</p>
+        <table>
+          <thead><tr><th>Name</th><th>Description</th><th>Accounts</th><th>Members</th><th>CPM</th><th>Rotation</th><th>Dual Control</th><th></th></tr></thead>
+          <tbody id="safeRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="safeForm">
+          <h4 id="safeFormTitle">Add safe</h4>
+          <input type="hidden" id="safeId"/>
+          <div class="form-grid">
+            <label>Name</label><input id="safeName" placeholder="prod-network"/>
+            <label>Description</label><input id="safeDesc"/>
+            <label>Enable CPM (auto-rotation)</label><div><input type="checkbox" id="safeCpm" style="width:auto"/></div>
+            <label>Rotation cadence (days)</label><input id="safeRotDays" type="number" value="90" style="width:120px"/>
+            <label>Require dual control on checkout</label><div><input type="checkbox" id="safeDual" style="width:auto"/></div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="safeSaveBtn">Save</button>
+            <button class="ghost" id="safeCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Privileged Accounts -->
+      <section class="card tab" id="tab-accounts" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Privileged Accounts</h3>
+          <div class="row">
+            <select id="accountSafeFilter"><option value="">All safes</option></select>
+            <button class="primary" id="accountAddBtn" data-admin>+ Add Account</button>
+          </div>
+        </div>
+        <p class="desc">Managed credentials living inside safes. <b>Check out</b> reveals the password to you (audited). <b>Rotate</b> changes the password in the vault. Use <b>Break-glass</b> only for emergency, unplanned access — it raises an audit alert.</p>
+        <table>
+          <thead><tr><th>Name</th><th>Safe</th><th>Username</th><th>Machine</th><th>Platform</th><th>Last rotated</th><th>Next due</th><th>Status</th><th></th></tr></thead>
+          <tbody id="accountRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="accountForm">
+          <h4 id="accountFormTitle">Add privileged account</h4>
+          <input type="hidden" id="accountId"/>
+          <div class="form-grid">
+            <label>Safe</label><select id="accountSafe"></select>
+            <label>Account name</label><input id="accountName" placeholder="root@db01"/>
+            <label>Username on target</label><input id="accountUsername" placeholder="root"/>
+            <label>Machine</label><select id="accountTarget"><option value="">(none)</option></select>
+            <label>Platform</label>
+            <select id="accountPlatform">
+              <option value="linux">linux</option><option value="windows">windows</option>
+              <option value="cisco">cisco</option><option value="arista">arista</option>
+              <option value="juniper">juniper</option><option value="palo">palo</option>
+              <option value="forti">forti</option>
+            </select>
+            <label>Initial password <span class="muted">(blank = auto-generate)</span></label>
+            <input id="accountPassword" type="password" placeholder="leave blank to generate strong password"/>
+            <label>Notes</label><input id="accountNotes"/>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="accountSaveBtn">Save</button>
+            <button class="ghost" id="accountCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Apps / CCP -->
+      <section class="card tab" id="tab-apps" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Applications (Central Credential Provider)</h3>
+          <button class="primary" id="appAddBtn">+ Register App</button>
+        </div>
+        <p class="desc">Register applications (CI, batch jobs, microservices) so they can fetch privileged credentials at runtime via API key instead of hardcoded secrets. Calls look like <code>GET /api/ccp/accounts?account=&lt;name&gt;</code> with header <code>X-API-Key: pam_…</code>.</p>
+        <table>
+          <thead><tr><th>Name</th><th>Safe</th><th>Allowed accounts</th><th>Client IP allow</th><th>Enabled</th><th>Last used</th><th></th></tr></thead>
+          <tbody id="appRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+        <div class="form-panel hidden" id="appForm">
+          <h4 id="appFormTitle">Register application</h4>
+          <input type="hidden" id="appId"/>
+          <div class="form-grid">
+            <label>Name</label><input id="appName" placeholder="ci-runner-prod"/>
+            <label>Safe (optional)</label><select id="appSafe"><option value="">(any)</option></select>
+            <label>Allowed accounts</label><input id="appAccounts" placeholder="* or comma-separated account ids/names"/>
+            <label>Allowed client IPs</label><input id="appIPs" placeholder="10.0.0.0/8,192.168.1.5"/>
+            <label>Enabled</label><div><input type="checkbox" id="appEnabled" checked style="width:auto"/></div>
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button class="primary" id="appSaveBtn">Save</button>
+            <button class="ghost" id="appCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Checkouts -->
+      <section class="card tab" id="tab-checkouts" style="display:none">
+        <h3>Credential Checkouts</h3>
+        <p class="desc">Audit trail of every password reveal. Break-glass entries are highlighted.</p>
+        <table>
+          <thead><tr><th>Time</th><th>User</th><th>Account</th><th>Reason</th><th>Type</th><th>Returned</th></tr></thead>
+          <tbody id="checkoutRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </section>
+
+      <!-- Threats -->
+      <section class="card tab" id="tab-threats" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h3 style="margin:0">Threat Alerts</h3>
+          <div class="row">
+            <label class="muted" style="font-size:12px"><input type="checkbox" id="threatShowAll" style="width:auto"/> show acknowledged</label>
+            <button class="ghost" id="threatRefresh">Refresh</button>
+          </div>
+        </div>
+        <p class="desc">Behavioral anomaly detections: off-hours logins, new source IPs, brute-force spikes. Acknowledge an alert after triage.</p>
+        <table>
+          <thead><tr><th>Time</th><th>User</th><th>Category</th><th>Severity</th><th>Message</th><th>Detail</th><th></th></tr></thead>
+          <tbody id="threatRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </section>
+
+      <!-- Reports -->
+      <section class="card tab" id="tab-reports" style="display:none">
+        <h3>Reports</h3>
+        <p class="desc">Snapshots for compliance audits and platform health reviews.</p>
+        <div class="grid" id="reportSummaryGrid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:18px"></div>
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
+          <div class="card" style="margin:0">
+            <h4>Top users by sessions (last 30 days)</h4>
+            <table>
+              <thead><tr><th>User</th><th>Sessions</th><th>Distinct machines</th></tr></thead>
+              <tbody id="reportAccessRows"><tr><td colspan="3" class="muted">—</td></tr></tbody>
+            </table>
+          </div>
+          <div class="card" style="margin:0">
+            <h4>Password age</h4>
+            <table>
+              <thead><tr><th>Account</th><th>Safe</th><th>Age (days)</th><th>Status</th></tr></thead>
+              <tbody id="reportPwAgeRows"><tr><td colspan="4" class="muted">—</td></tr></tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <!-- SSH CA -->
@@ -682,7 +835,7 @@
 let token = null;
 let currentUser = null;
 let pendingMFAUserID = null;
-let cache = { targets: [], users: [], groups: [], roles: [], matrix: [] };
+let cache = { targets: [], users: [], groups: [], roles: [], matrix: [], safes: [], accounts: [], apps: [] };
 const TARGET_KINDS = ["cisco","arista","juniper","linux","palo","forti","windows"];
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
@@ -743,10 +896,13 @@ const TAB_TITLES = {
   matrix: "Approval Matrix", requests: "Access Requests",
   sessions: "SSH Sessions", audit: "Audit Log", ca: "SSH Certificate Authority",
   onboard: "Device Setup",
+  safes: "Safes", accounts: "Privileged Accounts", checkouts: "Credential Checkouts",
+  apps: "Applications (CCP)", threats: "Threat Alerts", reports: "Reports",
   settings: "System Settings",
 };
 
-const ADMIN_TABS_SET = ["users","groups","roles","policies","matrix","secrets","audit","ca","settings"];
+const ADMIN_TABS_SET = ["users","groups","roles","policies","matrix","secrets","audit","ca","settings",
+                         "safes","apps","threats","reports"];
 
 function toast(msg, kind) {
   const el = $("#toast");
@@ -799,6 +955,8 @@ function showTab(name) {
     requests: loadRequests,
     sessions: loadSessions, audit: loadAudit, ca: loadCA,
     onboard: loadOnboard,
+    safes: loadSafes, accounts: loadAccounts, checkouts: loadCheckouts,
+    apps: loadApps, threats: loadThreats, reports: loadReports,
     settings: loadSettings,
   };
   if (loaders[name]) loaders[name]();
@@ -1611,17 +1769,36 @@ async function loadSessions() {
     const tm = Object.fromEntries(cache.targets.map(t => [t.id, t.name]));
     const rows = await api("/audit/sessions?limit=200");
     if (!(rows||[]).length) { $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">No sessions yet.</td></tr>`; return; }
-    $("#sessionRows").innerHTML = rows.map(s => `
-      <tr>
+    $("#sessionRows").innerHTML = rows.map(s => {
+      const active = !s.ended_at;
+      const terminateBtn = (active && isAdmin())
+        ? `<button class="ghost danger" onclick="terminateSession(${JSON.stringify(s.id)})">Terminate</button>`
+        : "";
+      return `<tr>
         <td>${fmtTime(s.started_at)}</td>
         <td>${esc(um[s.user_id] || s.user_id)}</td>
         <td>${esc(tm[s.target_id] || s.target_id)}</td>
         <td class="muted">${esc(s.client_ip) || '—'}</td>
-        <td>${s.ended_at ? `<span class="pill">${esc(s.ended_reason || 'ended')}</span>` : '<span class="pill ok">active</span>'}</td>
+        <td>${active ? '<span class="pill ok">active</span>' : `<span class="pill">${esc(s.ended_reason || 'ended')}</span>`}</td>
         <td class="muted" style="font-size:11px">${esc(s.recording_path) || '—'}</td>
-      </tr>`).join("");
+        <td class="actions">${terminateBtn}</td>
+      </tr>`;
+    }).join("");
   } catch (e) { $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">${esc(e.message)}</td></tr>`; }
 }
+
+window.terminateSession = async sid => {
+  const reason = prompt("Reason for terminating this session:", "");
+  if (reason === null) return;
+  try {
+    await api(`/audit/sessions/${encodeURIComponent(sid)}/terminate`, {
+      method: "POST",
+      body: JSON.stringify({reason}),
+    });
+    toast("Terminate requested — proxy will kill the session within 5s", "ok");
+    setTimeout(loadSessions, 6000);
+  } catch (e) { toast(e.message, "err"); }
+};
 
 // --- Audit ---
 let auditCache = [];
@@ -1667,6 +1844,424 @@ async function loadCA() {
     if (!r.ok) throw new Error(await r.text());
     $("#caPub").textContent = await r.text();
   } catch (e) { $("#caPub").textContent = e.message; }
+}
+
+// --- Safes ---
+async function loadSafes() {
+  try {
+    const rows = await api("/auth/safes");
+    cache.safes = rows || [];
+    if (!cache.safes.length) {
+      $("#safeRows").innerHTML = `<tr><td colspan="8" class="muted">No safes. Click + Add Safe to create one.</td></tr>`;
+      return;
+    }
+    $("#safeRows").innerHTML = cache.safes.map(s => `
+      <tr>
+        <td><b>${esc(s.name)}</b></td>
+        <td class="muted">${esc(s.description)}</td>
+        <td>${s.accounts||0}</td>
+        <td>${s.members||0}</td>
+        <td>${s.cpm_enabled ? '<span class="pill ok">on</span>' : '<span class="pill">off</span>'}</td>
+        <td>${s.rotation_days}d</td>
+        <td>${s.require_dual_control ? '<span class="pill warn">required</span>' : 'no'}</td>
+        <td class="actions">
+          <button class="ghost" onclick="editSafe(${s.id})">Edit</button>
+          <button class="ghost danger" onclick="deleteSafe(${s.id})">Delete</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) { $("#safeRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
+}
+function resetSafeForm() {
+  ["safeId","safeName","safeDesc"].forEach(id => $("#"+id).value = "");
+  $("#safeName").disabled = false;
+  $("#safeCpm").checked = false; $("#safeDual").checked = false;
+  $("#safeRotDays").value = "90";
+  $("#safeForm").classList.add("hidden");
+}
+$("#safeAddBtn").onclick = () => { resetSafeForm(); $("#safeFormTitle").textContent = "Add safe"; $("#safeForm").classList.remove("hidden"); };
+$("#safeCancelBtn").onclick = resetSafeForm;
+window.editSafe = id => {
+  const s = cache.safes.find(x => x.id === id); if (!s) return;
+  $("#safeId").value = s.id; $("#safeName").value = s.name; $("#safeName").disabled = true;
+  $("#safeDesc").value = s.description || "";
+  $("#safeCpm").checked = !!s.cpm_enabled; $("#safeDual").checked = !!s.require_dual_control;
+  $("#safeRotDays").value = s.rotation_days || 90;
+  $("#safeFormTitle").textContent = "Edit safe"; $("#safeForm").classList.remove("hidden");
+};
+$("#safeSaveBtn").onclick = async () => {
+  const body = {
+    name: $("#safeName").value.trim(),
+    description: $("#safeDesc").value.trim(),
+    cpm_enabled: $("#safeCpm").checked,
+    rotation_days: parseInt($("#safeRotDays").value, 10) || 90,
+    require_dual_control: $("#safeDual").checked,
+  };
+  if (!body.name) { toast("Safe name required", "err"); return; }
+  try {
+    const id = $("#safeId").value;
+    if (id) await api("/auth/safes/"+id, {method:"PUT", body: JSON.stringify(body)});
+    else    await api("/auth/safes", {method:"POST", body: JSON.stringify(body)});
+    toast(id ? "Safe updated" : "Safe created", "ok");
+    resetSafeForm(); loadSafes();
+  } catch (e) { toast(e.message, "err"); }
+};
+window.deleteSafe = async id => {
+  const s = cache.safes.find(x => x.id === id);
+  if (!s || !confirm(`Delete safe "${s.name}"?`)) return;
+  try { await api("/auth/safes/"+id, {method:"DELETE"}); toast("Safe deleted", "ok"); loadSafes(); }
+  catch (e) { toast(e.message, "err"); }
+};
+
+// --- Privileged Accounts ---
+async function ensureSafesCached() {
+  if (!cache.safes.length) {
+    try { cache.safes = await api("/auth/safes"); } catch {}
+  }
+}
+function populateSafeSelect(el, currentID, placeholder) {
+  el.innerHTML =
+    (placeholder ? `<option value="">${esc(placeholder)}</option>` : "") +
+    cache.safes.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  if (currentID) el.value = currentID;
+}
+async function loadAccounts() {
+  try {
+    await ensureSafesCached();
+    populateSafeSelect($("#accountSafeFilter"), $("#accountSafeFilter").value, "All safes");
+    const safeID = parseInt($("#accountSafeFilter").value, 10) || 0;
+    const q = safeID ? "?safe_id="+safeID : "";
+    const rows = await api("/auth/accounts"+q);
+    cache.accounts = rows || [];
+    if (!cache.accounts.length) {
+      $("#accountRows").innerHTML = `<tr><td colspan="9" class="muted">No accounts.${isAdmin() ? ' Click + Add Account to register one.' : ''}</td></tr>`;
+      return;
+    }
+    $("#accountRows").innerHTML = cache.accounts.map(a => {
+      const due = a.next_rotation ? new Date(a.next_rotation*1000) : null;
+      const overdue = due && due < new Date();
+      const adminActions = isAdmin()
+        ? `<button class="ghost" onclick="editAccount(${a.id})">Edit</button>
+           <button class="ghost" onclick="rotateAccount(${a.id})">Rotate</button>
+           <button class="ghost danger" onclick="deleteAccount(${a.id})">Delete</button>`
+        : "";
+      return `<tr>
+        <td><b>${esc(a.name)}</b></td>
+        <td><span class="pill">${esc(a.safe_name)}</span></td>
+        <td>${esc(a.username)}</td>
+        <td class="muted">${esc(a.target_name || '—')}</td>
+        <td><span class="pill">${esc(a.platform)}</span></td>
+        <td class="muted">${a.last_rotated ? fmtTime(a.last_rotated) : '—'}</td>
+        <td class="${overdue?'':''}">${due ? fmtTime(a.next_rotation) : '—'}</td>
+        <td>${a.rotation_status === 'failed' ? '<span class="pill err">failed</span>' :
+            overdue ? '<span class="pill warn">overdue</span>' : '<span class="pill ok">ok</span>'}</td>
+        <td class="actions">
+          <button class="ghost" onclick="checkoutAccount(${a.id}, false)">Check out</button>
+          <button class="ghost" onclick="checkoutAccount(${a.id}, true)" title="Break-glass: emergency reveal with audit alert">Break-glass</button>
+          ${adminActions}
+        </td>
+      </tr>`;
+    }).join("");
+  } catch (e) { $("#accountRows").innerHTML = `<tr><td colspan="9" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+$("#accountSafeFilter").addEventListener("change", loadAccounts);
+
+function resetAccountForm() {
+  ["accountId","accountName","accountUsername","accountPassword","accountNotes"].forEach(id => $("#"+id).value = "");
+  $("#accountName").disabled = false; $("#accountPlatform").value = "linux";
+  $("#accountTarget").value = ""; $("#accountForm").classList.add("hidden");
+}
+async function openAccountForm() {
+  await ensureSafesCached();
+  if (!cache.targets.length) { try { cache.targets = await api("/policy/targets"); } catch { cache.targets = []; } }
+  populateSafeSelect($("#accountSafe"), null);
+  $("#accountTarget").innerHTML = '<option value="">(none)</option>' +
+    cache.targets.map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join("");
+  $("#accountForm").classList.remove("hidden");
+}
+$("#accountAddBtn").onclick = () => { resetAccountForm(); $("#accountFormTitle").textContent = "Add privileged account"; openAccountForm(); };
+$("#accountCancelBtn").onclick = resetAccountForm;
+window.editAccount = async id => {
+  const a = cache.accounts.find(x => x.id === id); if (!a) return;
+  await openAccountForm();
+  $("#accountId").value = a.id;
+  $("#accountName").value = a.name; $("#accountName").disabled = true;
+  $("#accountUsername").value = a.username; $("#accountPlatform").value = a.platform;
+  $("#accountNotes").value = a.notes || "";
+  $("#accountSafe").value = a.safe_id; $("#accountTarget").value = a.target_id || "";
+  $("#accountFormTitle").textContent = "Edit privileged account";
+};
+$("#accountSaveBtn").onclick = async () => {
+  try {
+    const id = $("#accountId").value;
+    const target = $("#accountTarget").value ? parseInt($("#accountTarget").value, 10) : null;
+    if (id) {
+      await api("/auth/accounts/"+id, {method:"PUT", body: JSON.stringify({
+        username: $("#accountUsername").value.trim(),
+        target_id: target,
+        platform: $("#accountPlatform").value,
+        notes: $("#accountNotes").value.trim(),
+      })});
+    } else {
+      await api("/auth/accounts", {method:"POST", body: JSON.stringify({
+        safe_id: parseInt($("#accountSafe").value, 10),
+        name: $("#accountName").value.trim(),
+        username: $("#accountUsername").value.trim(),
+        target_id: target,
+        platform: $("#accountPlatform").value,
+        password: $("#accountPassword").value,
+        notes: $("#accountNotes").value.trim(),
+      })});
+    }
+    toast(id ? "Account updated" : "Account created", "ok");
+    resetAccountForm(); loadAccounts();
+  } catch (e) { toast(e.message, "err"); }
+};
+window.rotateAccount = async id => {
+  if (!confirm("Rotate this account's password now?")) return;
+  try { await api("/auth/accounts/"+id+"/rotate", {method:"POST"}); toast("Rotated", "ok"); loadAccounts(); }
+  catch (e) { toast(e.message, "err"); }
+};
+window.deleteAccount = async id => {
+  const a = cache.accounts.find(x => x.id === id);
+  if (!a || !confirm(`Delete account "${a.name}"? Its vault secret will be removed too.`)) return;
+  try { await api("/auth/accounts/"+id, {method:"DELETE"}); toast("Deleted", "ok"); loadAccounts(); }
+  catch (e) { toast(e.message, "err"); }
+};
+window.checkoutAccount = async (id, breakGlass) => {
+  const a = cache.accounts.find(x => x.id === id);
+  if (!a) return;
+  const reason = prompt(`${breakGlass ? "BREAK-GLASS reveal — " : ""}Reason for checking out "${a.name}":`, "");
+  if (reason === null) return;
+  if (breakGlass && !confirm("Confirm break-glass reveal? An audit alert will be raised.")) return;
+  try {
+    const res = await api(`/auth/accounts/${id}/checkout`, {method:"POST", body: JSON.stringify({reason, break_glass: !!breakGlass})});
+    showCheckoutModal(a, res);
+  } catch (e) { toast(e.message, "err"); }
+};
+function showCheckoutModal(a, res) {
+  const modal = document.createElement("div");
+  modal.className = "modal-backdrop show";
+  modal.innerHTML = `
+    <div class="modal" style="max-width:600px">
+      <h3>${a.name} — credentials</h3>
+      <p class="muted">Use these credentials only for the stated reason. The reveal is logged.</p>
+      <div class="form-grid">
+        <label>Username</label><input value="${esc(a.username)}" readonly/>
+        <label>Password</label>
+        <div class="row" style="gap:6px">
+          <input id="copPw" value="${esc(res.password)}" readonly style="flex:1"/>
+          <button class="ghost" onclick="copyToClipboard(${JSON.stringify(res.password)})">Copy</button>
+        </div>
+      </div>
+      ${res.break_glass ? '<p class="pill err" style="margin-top:12px">Break-glass reveal — audit alert raised</p>' : ''}
+      <div class="row" style="margin-top:14px;justify-content:flex-end">
+        <button class="ghost" onclick="returnCheckout(${res.checkout_id}, this)">Mark returned &amp; close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  window._activeCheckoutModal = modal;
+}
+window.returnCheckout = async (id, btn) => {
+  try { await api(`/auth/checkouts/${id}/return`, {method:"POST"}); }
+  catch (e) { /* best-effort */ }
+  if (window._activeCheckoutModal) {
+    window._activeCheckoutModal.remove();
+    window._activeCheckoutModal = null;
+  }
+  toast("Checkout marked returned", "ok");
+};
+
+// --- Checkouts list ---
+async function loadCheckouts() {
+  try {
+    const q = isAdmin() ? "" : "?user_id="+currentUser.id;
+    const rows = await api("/auth/checkouts"+q);
+    if (!(rows||[]).length) {
+      $("#checkoutRows").innerHTML = `<tr><td colspan="6" class="muted">No checkouts yet.</td></tr>`;
+      return;
+    }
+    $("#checkoutRows").innerHTML = rows.map(c => `
+      <tr>
+        <td>${fmtTime(c.checked_out_at)}</td>
+        <td>${esc(c.username)}</td>
+        <td>${esc(c.account_name)}</td>
+        <td class="muted">${esc(c.reason || '—')}</td>
+        <td>${c.break_glass ? '<span class="pill err">break-glass</span>' : '<span class="pill">standard</span>'}</td>
+        <td>${c.returned_at ? fmtTime(c.returned_at) : '<span class="muted">in use</span>'}</td>
+      </tr>`).join("");
+  } catch (e) { $("#checkoutRows").innerHTML = `<tr><td colspan="6" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+// --- Apps / CCP ---
+async function loadApps() {
+  try {
+    await ensureSafesCached();
+    const rows = await api("/auth/apps");
+    cache.apps = rows || [];
+    if (!cache.apps.length) {
+      $("#appRows").innerHTML = `<tr><td colspan="7" class="muted">No applications registered.</td></tr>`;
+      return;
+    }
+    $("#appRows").innerHTML = cache.apps.map(a => `
+      <tr>
+        <td><b>${esc(a.name)}</b></td>
+        <td>${esc(a.safe_name || 'any')}</td>
+        <td class="muted">${esc(a.allowed_accounts || '*')}</td>
+        <td class="muted">${esc(a.client_ip_allow || 'any')}</td>
+        <td>${a.enabled ? '<span class="pill ok">on</span>' : '<span class="pill">off</span>'}</td>
+        <td class="muted">${a.last_used ? fmtTime(a.last_used) : 'never'}</td>
+        <td class="actions">
+          <button class="ghost" onclick="editApp(${a.id})">Edit</button>
+          <button class="ghost" onclick="rotateApp(${a.id})">Rotate key</button>
+          <button class="ghost danger" onclick="deleteApp(${a.id})">Delete</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) { $("#appRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+}
+function resetAppForm() {
+  ["appId","appName","appAccounts","appIPs"].forEach(id => $("#"+id).value = "");
+  $("#appEnabled").checked = true; $("#appName").disabled = false;
+  populateSafeSelect($("#appSafe"), null, "(any)");
+  $("#appForm").classList.add("hidden");
+}
+$("#appAddBtn").onclick = async () => {
+  await ensureSafesCached();
+  resetAppForm(); $("#appFormTitle").textContent = "Register application"; $("#appForm").classList.remove("hidden");
+};
+$("#appCancelBtn").onclick = resetAppForm;
+window.editApp = async id => {
+  const a = cache.apps.find(x => x.id === id); if (!a) return;
+  await ensureSafesCached();
+  resetAppForm();
+  $("#appId").value = a.id; $("#appName").value = a.name; $("#appName").disabled = true;
+  $("#appAccounts").value = a.allowed_accounts || "*";
+  $("#appIPs").value = a.client_ip_allow || "";
+  $("#appEnabled").checked = !!a.enabled;
+  populateSafeSelect($("#appSafe"), a.safe_id, "(any)");
+  $("#appFormTitle").textContent = "Edit application"; $("#appForm").classList.remove("hidden");
+};
+$("#appSaveBtn").onclick = async () => {
+  const body = {
+    name: $("#appName").value.trim(),
+    safe_id: $("#appSafe").value ? parseInt($("#appSafe").value, 10) : null,
+    allowed_accounts: $("#appAccounts").value.trim() || "*",
+    client_ip_allow: $("#appIPs").value.trim(),
+    enabled: $("#appEnabled").checked,
+  };
+  try {
+    const id = $("#appId").value;
+    if (id) {
+      await api("/auth/apps/"+id, {method:"PUT", body: JSON.stringify(body)});
+      toast("App updated", "ok");
+    } else {
+      const res = await api("/auth/apps", {method:"POST", body: JSON.stringify(body)});
+      showAPIKeyModal(body.name, res.api_key);
+    }
+    resetAppForm(); loadApps();
+  } catch (e) { toast(e.message, "err"); }
+};
+window.rotateApp = async id => {
+  const a = cache.apps.find(x => x.id === id);
+  if (!a || !confirm(`Rotate API key for "${a.name}"? Existing key will stop working.`)) return;
+  try { const res = await api("/auth/apps/"+id+"/rotate", {method:"POST"}); showAPIKeyModal(a.name, res.api_key); loadApps(); }
+  catch (e) { toast(e.message, "err"); }
+};
+window.deleteApp = async id => {
+  const a = cache.apps.find(x => x.id === id);
+  if (!a || !confirm(`Delete app "${a.name}"?`)) return;
+  try { await api("/auth/apps/"+id, {method:"DELETE"}); toast("Deleted", "ok"); loadApps(); }
+  catch (e) { toast(e.message, "err"); }
+};
+function showAPIKeyModal(name, key) {
+  const m = document.createElement("div");
+  m.className = "modal-backdrop show";
+  m.innerHTML = `
+    <div class="modal" style="max-width:560px">
+      <h3>API key for ${esc(name)}</h3>
+      <p class="muted">Copy this key now — it will not be shown again.</p>
+      <div class="row" style="gap:6px">
+        <input value="${esc(key)}" readonly style="flex:1"/>
+        <button class="ghost" onclick="copyToClipboard(${JSON.stringify(key)})">Copy</button>
+      </div>
+      <p class="desc" style="margin-top:12px">Use as:</p>
+      <pre style="background:#0f1116;color:#e6e8eb;padding:10px;border-radius:6px;font-size:12px">curl -H "X-API-Key: ${esc(key)}" \\
+  "${location.origin}/api/ccp/accounts?account=&lt;account-name&gt;"</pre>
+      <div class="row" style="margin-top:14px;justify-content:flex-end">
+        <button class="primary" onclick="this.closest('.modal-backdrop').remove()">Done</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+}
+
+// --- Threats ---
+async function loadThreats() {
+  try {
+    const all = $("#threatShowAll").checked ? "?all=1" : "";
+    const rows = await api("/auth/alerts"+all);
+    if (!(rows||[]).length) {
+      $("#threatRows").innerHTML = `<tr><td colspan="7" class="muted">No alerts.</td></tr>`;
+      return;
+    }
+    $("#threatRows").innerHTML = rows.map(a => {
+      const sevCls = a.severity === "high" ? "err" : a.severity === "warn" ? "warn" : "ok";
+      return `<tr>
+        <td>${fmtTime(a.ts)}</td>
+        <td>${esc(a.username || '—')}</td>
+        <td>${esc(a.category)}</td>
+        <td><span class="pill ${sevCls}">${esc(a.severity)}</span></td>
+        <td>${esc(a.message)}</td>
+        <td class="muted" style="font-size:12px">${esc(a.detail)}</td>
+        <td class="actions">${a.acknowledged ? '<span class="muted">acknowledged</span>' :
+          `<button class="ghost" onclick="ackAlert(${a.id})">Acknowledge</button>`}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) { $("#threatRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+}
+$("#threatRefresh")?.addEventListener("click", loadThreats);
+$("#threatShowAll")?.addEventListener("change", loadThreats);
+window.ackAlert = async id => {
+  try { await api(`/auth/alerts/${id}/ack`, {method:"POST"}); loadThreats(); }
+  catch (e) { toast(e.message, "err"); }
+};
+
+// --- Reports ---
+async function loadReports() {
+  try {
+    const sum = await api("/auth/reports/summary");
+    const cards = [
+      ["Users", sum.users, `${sum.users_mfa_enabled} with MFA · ${sum.users_disabled} disabled`],
+      ["Groups", sum.groups, "role bindings"],
+      ["Machines", sum.targets, "managed"],
+      ["Safes", sum.safes, `${sum.privileged_accounts} accounts`],
+      ["Overdue rotations", sum.accounts_overdue_rotation, "needs attention", sum.accounts_overdue_rotation>0?"warn":""],
+      ["Pending requests", sum.pending_requests, "awaiting approval"],
+      ["Active sessions", sum.active_sessions, `${sum.sessions_24h} in last 24h`],
+      ["Failed logins (24h)", sum.login_failed_24h, "", sum.login_failed_24h>10?"warn":""],
+      ["Open alerts", sum.open_alerts, "threat analytics", sum.open_alerts>0?"warn":""],
+    ];
+    $("#reportSummaryGrid").innerHTML = cards.map(([label,val,sub,cls]) => `
+      <div class="stat ${cls||''}">
+        <div class="label">${esc(label)}</div>
+        <div class="value">${val}</div>
+        <div class="delta">${esc(sub||'')}</div>
+      </div>`).join("");
+    const [access, ages] = await Promise.all([
+      api("/auth/reports/access-by-user?days=30"),
+      api("/auth/reports/password-age"),
+    ]);
+    $("#reportAccessRows").innerHTML = (access||[]).length
+      ? access.map(r => `<tr><td>${esc(r.username)}</td><td>${r.sessions}</td><td>${r.targets}</td></tr>`).join("")
+      : `<tr><td colspan="3" class="muted">No sessions in last 30 days.</td></tr>`;
+    $("#reportPwAgeRows").innerHTML = (ages||[]).length
+      ? ages.slice(0,30).map(a => `<tr>
+          <td>${esc(a.account_name)}</td>
+          <td>${esc(a.safe_name)}</td>
+          <td>${a.age_days}</td>
+          <td>${a.status === 'overdue' ? '<span class="pill warn">overdue</span>' : '<span class="pill ok">ok</span>'}</td>
+        </tr>`).join("")
+      : `<tr><td colspan="4" class="muted">No privileged accounts yet.</td></tr>`;
+  } catch (e) { $("#reportSummaryGrid").innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
 }
 
 // --- Device Setup (integration guides) ---

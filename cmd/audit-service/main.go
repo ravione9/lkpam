@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -17,6 +18,8 @@ import (
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/httpx"
 )
+
+func errStr(s string) error { return errors.New(s) }
 
 type record struct {
 	TS       int64  `json:"ts"`
@@ -89,6 +92,98 @@ func main() {
 			}
 		}
 		httpx.JSON(w, http.StatusOK, out)
+	})
+
+	// POST /sessions/{id}/terminate — admin requests that the SSH proxy
+	// terminate an active session. The proxy polls session_terminations and
+	// closes the matching transport.
+	mux.HandleFunc("POST /sessions/{id}/terminate", func(w http.ResponseWriter, r *http.Request) {
+		uidStr := r.Header.Get("X-PAM-UID")
+		role := r.Header.Get("X-PAM-Role")
+		uid, _ := strconv.ParseInt(uidStr, 10, 64)
+		if role != "admin" {
+			httpx.Error(w, http.StatusForbidden,
+				errStr("admin role required"))
+			return
+		}
+		sid := r.PathValue("id")
+		var req struct {
+			Reason string `json:"reason"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		// Confirm session exists and is active.
+		var ended sql.NullInt64
+		err := d.QueryRowContext(r.Context(),
+			`SELECT ended_at FROM sessions WHERE id = ?`, sid).Scan(&ended)
+		if err == sql.ErrNoRows {
+			httpx.Error(w, http.StatusNotFound, errStr("session not found"))
+			return
+		}
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		if ended.Valid {
+			httpx.Error(w, http.StatusConflict, errStr("session already ended"))
+			return
+		}
+		if _, err := d.ExecContext(r.Context(), `
+			INSERT INTO session_terminations(session_id, requested_by, requested_at, reason)
+			VALUES(?,?,?,?)
+			ON CONFLICT(session_id) DO UPDATE SET
+			  requested_by=excluded.requested_by,
+			  requested_at=excluded.requested_at,
+			  reason=excluded.reason`,
+			sid, uid, db.Now(), req.Reason); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		// Best-effort audit row.
+		_, _ = d.ExecContext(r.Context(), `
+			INSERT INTO audit_events(ts, actor, kind, target, detail, severity)
+			VALUES(?,?,?,?,?,?)`,
+			db.Now(), r.Header.Get("X-PAM-User"), "session.terminate.requested",
+			sid, req.Reason, "warn")
+		httpx.JSON(w, http.StatusAccepted, map[string]string{"status": "requested"})
+	})
+
+	mux.HandleFunc("GET /sessions/terminations", func(w http.ResponseWriter, r *http.Request) {
+		// SSH proxy polls this endpoint to discover sessions it must kill.
+		rows, err := d.QueryContext(r.Context(), `
+			SELECT session_id, requested_by, requested_at, reason
+			FROM session_terminations
+			WHERE acknowledged_at IS NULL`)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		defer rows.Close()
+		type term struct {
+			SessionID   string `json:"session_id"`
+			RequestedBy int64  `json:"requested_by"`
+			RequestedAt int64  `json:"requested_at"`
+			Reason      string `json:"reason"`
+		}
+		out := []term{}
+		for rows.Next() {
+			var t term
+			if err := rows.Scan(&t.SessionID, &t.RequestedBy, &t.RequestedAt, &t.Reason); err == nil {
+				out = append(out, t)
+			}
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+
+	mux.HandleFunc("POST /sessions/terminations/{id}/ack", func(w http.ResponseWriter, r *http.Request) {
+		sid := r.PathValue("id")
+		_, err := d.ExecContext(r.Context(),
+			`UPDATE session_terminations SET acknowledged_at=? WHERE session_id=?`,
+			db.Now(), sid)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, r *http.Request) {

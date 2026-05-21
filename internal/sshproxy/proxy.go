@@ -11,6 +11,7 @@ package sshproxy
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -292,6 +293,12 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		log.Printf("insert session: %v", err)
 	}
 
+	// Background watcher: poll session_terminations every 5s and tear down
+	// this connection if an admin requested termination.
+	termCtx, termCancel := context.WithCancel(context.Background())
+	defer termCancel()
+	go s.watchTermination(termCtx, sessionID, sconn, upClient)
+
 	// Each downstream channel from the user is mirrored to the target.
 	for newChan := range chans {
 		if newChan.ChannelType() != "session" {
@@ -302,7 +309,44 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	}
 
 	// Mark session closed
-	_, _ = s.DB.Exec(`UPDATE sessions SET ended_at = ? WHERE id = ?`, time.Now().Unix(), sessionID)
+	_, _ = s.DB.Exec(`UPDATE sessions SET ended_at = ?, ended_reason = COALESCE(ended_reason, 'closed') WHERE id = ?`,
+		time.Now().Unix(), sessionID)
+}
+
+// watchTermination polls the session_terminations table for a kill order
+// against this session and, on hit, closes the user-side connection.
+func (s *Server) watchTermination(ctx context.Context, sessionID string,
+	sconn *ssh.ServerConn, upClient *ssh.Client) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			var ack sql.NullInt64
+			var reason string
+			err := s.DB.QueryRow(
+				`SELECT acknowledged_at, COALESCE(reason,'') FROM session_terminations WHERE session_id = ?`,
+				sessionID).Scan(&ack, &reason)
+			if err != nil {
+				continue
+			}
+			if ack.Valid {
+				continue
+			}
+			log.Printf("ssh-proxy: terminating session %s by admin order (%s)", sessionID, reason)
+			_, _ = s.DB.Exec(
+				`UPDATE sessions SET ended_at=?, ended_reason='terminated' WHERE id=?`,
+				time.Now().Unix(), sessionID)
+			_, _ = s.DB.Exec(
+				`UPDATE session_terminations SET acknowledged_at=? WHERE session_id=?`,
+				time.Now().Unix(), sessionID)
+			_ = upClient.Close()
+			_ = sconn.Close()
+			return
+		}
+	}
 }
 
 func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string) {

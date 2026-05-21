@@ -1,14 +1,19 @@
-// vault-service exposes credential storage and SSH cert issuance over HTTP.
-// All endpoints require a valid JWT from auth-service and a role of
-// "admin" or "proxy" (i.e. callers are services, not end users).
+// vault-service exposes credential storage, SSH cert issuance, the CCP
+// (Central Credential Provider) endpoint that lets applications fetch
+// privileged passwords via API key, and runs the CPM (Central Policy
+// Manager) background worker that rotates passwords on schedule.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/example/pam-platform/internal/accounts"
+	"github.com/example/pam-platform/internal/ccp"
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/httpx"
@@ -27,6 +32,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("vault: init: %v", err)
 	}
+
+	accountSvc := &accounts.Service{DB: d, Vault: v}
+	ccpSvc := &ccp.Service{DB: d}
+
+	// CPM rotation worker — runs every 5 minutes, rotates due accounts.
+	go runCPM(accountSvc)
 
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
@@ -99,9 +110,125 @@ func main() {
 		})
 	})
 
+	// --- Central Credential Provider (app-to-app) ---
+	//
+	// Apps call:
+	//   GET /ccp/accounts?account=<name-or-id>
+	//   X-API-Key: pam_<plaintext>
+	// Returns: { "username": "...", "password": "...", "account": {...} }
+	mux.HandleFunc("GET /ccp/accounts", func(w http.ResponseWriter, r *http.Request) {
+		apiKey := r.Header.Get("X-API-Key")
+		app, err := ccpSvc.Authenticate(r.Context(), apiKey, r.RemoteAddr)
+		if err != nil {
+			httpx.Error(w, http.StatusUnauthorized, err)
+			return
+		}
+		acctQ := r.URL.Query().Get("account")
+		if acctQ == "" {
+			httpx.Error(w, http.StatusBadRequest,
+				newErr("account query parameter required"))
+			return
+		}
+		acct, err := lookupAccount(r.Context(), d, accountSvc, acctQ, app.SafeID)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, err)
+			return
+		}
+		if !app.AccountAllowed(acct.ID, acct.Name) {
+			httpx.Error(w, http.StatusForbidden,
+				newErr("account not in app allowlist"))
+			return
+		}
+		pw, err := v.GetSecret(r.Context(), acct.SecretRef)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{
+			"account_id":   acct.ID,
+			"account_name": acct.Name,
+			"username":     acct.Username,
+			"safe":         acct.SafeName,
+			"password":     string(pw),
+			"app":          app.Name,
+		})
+	})
+
 	addr := config.Get("PAM_VAULT_ADDR", ":8082")
 	log.Printf("vault-service listening on %s", addr)
 	if err := http.ListenAndServe(addr, httpx.LoggingMiddleware(mux)); err != nil {
 		log.Fatal(err)
 	}
 }
+
+// lookupAccount finds a privileged account by id or name, optionally scoped
+// to a safe.
+func lookupAccount(ctx context.Context, d *db.DB, svc *accounts.Service,
+	q string, safeID *int64) (*accounts.PrivilegedAccount, error) {
+	if id, err := strconv.ParseInt(q, 10, 64); err == nil {
+		return svc.Get(ctx, id)
+	}
+	row := d.QueryRowContext(ctx,
+		`SELECT id FROM privileged_accounts WHERE name = ?`+
+			func() string {
+				if safeID != nil {
+					return ` AND safe_id = ?`
+				}
+				return ``
+			}(),
+		argList(q, safeID)...)
+	var id int64
+	if err := row.Scan(&id); err != nil {
+		return nil, newErr("account not found")
+	}
+	return svc.Get(ctx, id)
+}
+
+func argList(q string, safeID *int64) []any {
+	args := []any{q}
+	if safeID != nil {
+		args = append(args, *safeID)
+	}
+	return args
+}
+
+// runCPM is the Central Policy Manager loop. Every interval it asks the
+// accounts service for due-for-rotation accounts and rotates them. In
+// production this would also push the new password to the target via a
+// platform-specific rotator plugin; for now the vault stores the new value
+// and the target operator must apply it (this scaffold doesn't push to live
+// devices yet).
+func runCPM(svc *accounts.Service) {
+	interval := config.GetDuration("PAM_CPM_INTERVAL", 5*time.Minute)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	log.Printf("cpm: rotation worker started (interval=%s)", interval)
+	for range t.C {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		due, err := svc.Due(ctx)
+		cancel()
+		if err != nil {
+			log.Printf("cpm: due query failed: %v", err)
+			continue
+		}
+		if len(due) == 0 {
+			continue
+		}
+		log.Printf("cpm: %d accounts due for rotation", len(due))
+		for _, a := range due {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			if err := svc.Rotate(ctx, a.ID, "cpm-worker"); err != nil {
+				log.Printf("cpm: rotate %d (%s): %v", a.ID, a.Name, err)
+			} else {
+				log.Printf("cpm: rotated account %d (%s)", a.ID, a.Name)
+			}
+			cancel()
+		}
+	}
+}
+
+type strErr struct{ s string }
+
+func (e *strErr) Error() string { return e.s }
+
+func newErr(s string) error { return &strErr{s: s} }

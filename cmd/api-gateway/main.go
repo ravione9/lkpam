@@ -67,6 +67,17 @@ var adminWriteMatchers = []struct {
 	{"POST", "/api/approval/matrix"},
 	{"PUT", "/api/approval/matrix/"},
 	{"DELETE", "/api/approval/matrix/"},
+	{"POST", "/api/auth/safes"},
+	{"PUT", "/api/auth/safes/"},
+	{"DELETE", "/api/auth/safes/"},
+	{"POST", "/api/auth/accounts"},
+	{"PUT", "/api/auth/accounts/"},
+	{"DELETE", "/api/auth/accounts/"},
+	{"POST", "/api/auth/apps"},
+	{"PUT", "/api/auth/apps/"},
+	{"DELETE", "/api/auth/apps/"},
+	{"POST", "/api/auth/alerts/"},
+	{"POST", "/api/audit/sessions/"}, // terminate
 }
 
 func main() {
@@ -86,6 +97,8 @@ func main() {
 	mux.Handle("POST /api/auth/saml/acs", forwardTo(authURL, "/saml/acs"))
 	mux.Handle("GET /api/auth/saml/metadata", forwardTo(authURL, "/saml/metadata"))
 	mux.Handle("GET /api/auth/sso/status", forwardTo(authURL, "/sso/status"))
+	// Central Credential Provider (uses X-API-Key, not Bearer JWT).
+	mux.Handle("GET /api/ccp/accounts", forwardTo(vaultURL, "/ccp/accounts"))
 
 	// Authenticated + role-gated
 	mux.Handle("/api/auth/", gated(http.StripPrefix("/api/auth", reverse(authURL)), authURL))
@@ -161,10 +174,14 @@ func gated(next http.Handler, authBase *url.URL) http.Handler {
 func requiresAdmin(method, path string) bool {
 	for _, m := range adminWriteMatchers {
 		if m.method == method && strings.HasPrefix(path, m.prefix) {
-			// Special case: PUT/POST/DELETE under /api/auth/users/{id}/mfa/* is
-			// allowed for any authenticated user (acting on themselves). The
-			// MFA endpoints live under /api/auth/users/{id}/mfa.
-			if strings.HasPrefix(path, "/api/auth/users/") && strings.Contains(path, "/mfa") {
+			// Per-user actions that authenticated users may take on themselves
+			// or their own checkouts. These bypass the admin gate.
+			switch {
+			case strings.HasPrefix(path, "/api/auth/users/") && strings.Contains(path, "/mfa"):
+				return false
+			case strings.HasSuffix(path, "/checkout"):
+				return false
+			case strings.HasPrefix(path, "/api/auth/checkouts/") && strings.HasSuffix(path, "/return"):
 				return false
 			}
 			return true

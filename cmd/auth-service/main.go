@@ -15,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/pam-platform/internal/accounts"
 	"github.com/example/pam-platform/internal/auth"
+	"github.com/example/pam-platform/internal/ccp"
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
@@ -23,9 +25,12 @@ import (
 	"github.com/example/pam-platform/internal/httpx"
 	ldappkg "github.com/example/pam-platform/internal/ldap"
 	"github.com/example/pam-platform/internal/mfa"
+	"github.com/example/pam-platform/internal/reports"
 	"github.com/example/pam-platform/internal/roles"
+	"github.com/example/pam-platform/internal/safes"
 	samlpkg "github.com/example/pam-platform/internal/saml"
 	"github.com/example/pam-platform/internal/settings"
+	"github.com/example/pam-platform/internal/threat"
 	"github.com/example/pam-platform/internal/vault"
 )
 
@@ -60,15 +65,20 @@ func main() {
 	}
 	groupSvc := &groups.Service{DB: d}
 	roleSvc := &roles.Service{DB: d}
+	safeSvc := &safes.Service{DB: d}
+	accountSvc := &accounts.Service{DB: d, Vault: v}
+	ccpSvc := &ccp.Service{DB: d}
+	threatSvc := &threat.Service{DB: d}
+	reportsSvc := &reports.Service{DB: d}
 	settingsStore := &settings.Store{DB: d}
 	bus := events.New()
 
-	bootstrap(svc, groupSvc, roleSvc)
+	bootstrap(svc, groupSvc, roleSvc, safeSvc)
 
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
 
-	mux.HandleFunc("POST /login", loginHandler(svc, groupSvc, settingsStore, v, bus))
+	mux.HandleFunc("POST /login", loginHandler(svc, groupSvc, settingsStore, v, bus, threatSvc))
 	mux.HandleFunc("POST /verify", func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Token string }
 		if err := httpx.ReadJSON(r, &req); err != nil {
@@ -479,6 +489,303 @@ func main() {
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// --- Safes ---
+	mux.HandleFunc("GET /safes", func(w http.ResponseWriter, r *http.Request) {
+		out, err := safeSvc.List(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("POST /safes", func(w http.ResponseWriter, r *http.Request) {
+		var in safes.Safe
+		if err := httpx.ReadJSON(r, &in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		id, err := safeSvc.Create(r.Context(), in)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "safe.create", Severity: "info", Actor: in.Name})
+		httpx.JSON(w, http.StatusCreated, map[string]int64{"id": id})
+	})
+	mux.HandleFunc("PUT /safes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		var in safes.Safe
+		if err := httpx.ReadJSON(r, &in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		in.ID = id
+		if err := safeSvc.Update(r.Context(), in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("DELETE /safes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := safeSvc.Delete(r.Context(), id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	})
+	mux.HandleFunc("GET /safes/{id}/members", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		out, err := safeSvc.ListMembers(r.Context(), id)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("POST /safes/{id}/members", func(w http.ResponseWriter, r *http.Request) {
+		safeID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		var in struct {
+			PrincipalType string `json:"principal_type"`
+			PrincipalID   int64  `json:"principal_id"`
+			Permissions   string `json:"permissions"`
+		}
+		if err := httpx.ReadJSON(r, &in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := safeSvc.AddMember(r.Context(), safeID, in.PrincipalType, in.PrincipalID, in.Permissions); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("DELETE /safes/{id}/members/{ptype}/{pid}", func(w http.ResponseWriter, r *http.Request) {
+		safeID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		pid, _ := strconv.ParseInt(r.PathValue("pid"), 10, 64)
+		if err := safeSvc.RemoveMember(r.Context(), safeID, r.PathValue("ptype"), pid); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	// --- Privileged Accounts ---
+	mux.HandleFunc("GET /accounts", func(w http.ResponseWriter, r *http.Request) {
+		safeID, _ := strconv.ParseInt(r.URL.Query().Get("safe_id"), 10, 64)
+		out, err := accountSvc.List(r.Context(), safeID)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("POST /accounts", func(w http.ResponseWriter, r *http.Request) {
+		var in accounts.CreateInput
+		if err := httpx.ReadJSON(r, &in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		id, err := accountSvc.Create(r.Context(), in)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "account.create", Severity: "info", Target: in.Name})
+		httpx.JSON(w, http.StatusCreated, map[string]int64{"id": id})
+	})
+	mux.HandleFunc("PUT /accounts/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		var in accounts.PrivilegedAccount
+		if err := httpx.ReadJSON(r, &in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		in.ID = id
+		if err := accountSvc.Update(r.Context(), in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("DELETE /accounts/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := accountSvc.Delete(r.Context(), id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	})
+	mux.HandleFunc("POST /accounts/{id}/rotate", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		actor := r.Header.Get("X-PAM-User")
+		if actor == "" {
+			actor = "admin"
+		}
+		if err := accountSvc.Rotate(r.Context(), id, actor); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "account.rotate", Severity: "info", Actor: actor, Target: strconv.FormatInt(id, 10)})
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "rotated"})
+	})
+	mux.HandleFunc("GET /accounts/{id}/history", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		out, err := accountSvc.History(r.Context(), id, 50)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("POST /accounts/{id}/checkout", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		uidStr := r.Header.Get("X-PAM-UID")
+		uid, _ := strconv.ParseInt(uidStr, 10, 64)
+		var in struct {
+			Reason     string `json:"reason"`
+			BreakGlass bool   `json:"break_glass"`
+		}
+		_ = httpx.ReadJSON(r, &in)
+		res, err := accountSvc.Checkout(r.Context(), id, uid, in.Reason, in.BreakGlass)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		sev := "info"
+		if in.BreakGlass {
+			sev = "warn"
+		}
+		bg := "false"
+		if in.BreakGlass {
+			bg = "true"
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "credential.checkout", Severity: sev,
+			Actor: r.Header.Get("X-PAM-User"), Target: strconv.FormatInt(id, 10),
+			Detail: map[string]string{"reason": in.Reason, "break_glass": bg}})
+		httpx.JSON(w, http.StatusOK, res)
+	})
+	mux.HandleFunc("POST /checkouts/{id}/return", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := accountSvc.Return(r.Context(), id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /checkouts", func(w http.ResponseWriter, r *http.Request) {
+		userID, _ := strconv.ParseInt(r.URL.Query().Get("user_id"), 10, 64)
+		out, err := accountSvc.ListCheckouts(r.Context(), userID, 100)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+
+	// --- App credentials (CCP) ---
+	mux.HandleFunc("GET /apps", func(w http.ResponseWriter, r *http.Request) {
+		out, err := ccpSvc.List(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("POST /apps", func(w http.ResponseWriter, r *http.Request) {
+		var in ccp.App
+		if err := httpx.ReadJSON(r, &in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		res, err := ccpSvc.Create(r.Context(), in)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "app.create", Severity: "info", Actor: in.Name})
+		httpx.JSON(w, http.StatusCreated, res)
+	})
+	mux.HandleFunc("PUT /apps/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		var in ccp.App
+		if err := httpx.ReadJSON(r, &in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		in.ID = id
+		if err := ccpSvc.Update(r.Context(), in); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("POST /apps/{id}/rotate", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		res, err := ccpSvc.Rotate(r.Context(), id)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "app.rotate", Severity: "warn",
+			Target: strconv.FormatInt(id, 10)})
+		httpx.JSON(w, http.StatusOK, res)
+	})
+	mux.HandleFunc("DELETE /apps/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := ccpSvc.Delete(r.Context(), id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	})
+
+	// --- Reports ---
+	mux.HandleFunc("GET /reports/summary", func(w http.ResponseWriter, r *http.Request) {
+		sum, err := reportsSvc.Summary(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, sum)
+	})
+	mux.HandleFunc("GET /reports/access-by-user", func(w http.ResponseWriter, r *http.Request) {
+		days, _ := strconv.Atoi(r.URL.Query().Get("days"))
+		out, err := reportsSvc.AccessByUser(r.Context(), days)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("GET /reports/password-age", func(w http.ResponseWriter, r *http.Request) {
+		out, err := reportsSvc.PasswordAge(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+
+	// --- Threat alerts ---
+	mux.HandleFunc("GET /alerts", func(w http.ResponseWriter, r *http.Request) {
+		incAck := r.URL.Query().Get("all") == "1"
+		out, err := threatSvc.List(r.Context(), 200, incAck)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	mux.HandleFunc("POST /alerts/{id}/ack", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := threatSvc.Acknowledge(r.Context(), id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
 	addr := config.Get("PAM_AUTH_ADDR", ":8081")
 	log.Printf("auth-service listening on %s", addr)
 	if err := http.ListenAndServe(addr, httpx.LoggingMiddleware(mux)); err != nil {
@@ -494,6 +801,7 @@ func loginHandler(
 	settingsStore *settings.Store,
 	v *vault.Vault,
 	bus events.Publisher,
+	threatSvc *threat.Service,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Username, Password, OTP string }
@@ -548,7 +856,15 @@ func loginHandler(
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
 		}
-		bus.Publish(events.Event{Source: "auth", Kind: "login.ok", Severity: "info", Actor: u.Username})
+		clientIP := r.Header.Get("X-Forwarded-For")
+		if clientIP == "" {
+			clientIP = r.RemoteAddr
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "login.ok", Severity: "info",
+			Actor: u.Username, Detail: map[string]string{"ip": clientIP}})
+		// Run threat analytics off the request path — anomalies become alerts
+		// surfaced on the Threats tab.
+		go threatSvc.EvaluateLogin(context.Background(), u.ID, u.Username, clientIP, time.Now())
 		httpx.JSON(w, http.StatusOK, map[string]any{
 			"token": tok,
 			"user":  u,
@@ -720,7 +1036,7 @@ func samlACSHandler(
 <p>Signing in… if you are not redirected, <a href="/#sso=%s">click here</a>.</p>`, tok, tok)
 }
 
-func bootstrap(svc *auth.Service, groupSvc *groups.Service, roleSvc *roles.Service) {
+func bootstrap(svc *auth.Service, groupSvc *groups.Service, roleSvc *roles.Service, safeSvc *safes.Service) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -755,6 +1071,17 @@ func bootstrap(svc *auth.Service, groupSvc *groups.Service, roleSvc *roles.Servi
 			_, _ = groupSvc.Create(ctx, g)
 		}
 		log.Printf("bootstrap: seeded default groups")
+	}
+
+	// Seed a default "General" safe so the Accounts UI works out of the box.
+	var ns int
+	_ = svc.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM safes`).Scan(&ns)
+	if ns == 0 {
+		_, _ = safeSvc.Create(ctx, safes.Safe{
+			Name: "General", Description: "Default safe for shared privileged accounts",
+			CPMEnabled: false, RotationDays: 90,
+		})
+		log.Printf("bootstrap: seeded default safe 'General'")
 	}
 }
 

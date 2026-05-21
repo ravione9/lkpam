@@ -168,9 +168,93 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, started_at)`,
+		`CREATE TABLE IF NOT EXISTS safes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			cpm_enabled INTEGER NOT NULL DEFAULT 0,
+			rotation_days INTEGER NOT NULL DEFAULT 90,
+			require_dual_control INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS safe_members (
+			safe_id INTEGER NOT NULL REFERENCES safes(id) ON DELETE CASCADE,
+			principal_type TEXT NOT NULL,        -- 'user' | 'group'
+			principal_id INTEGER NOT NULL,
+			permissions TEXT NOT NULL DEFAULT 'use', -- 'owner' | 'use' | 'view'
+			added_at INTEGER NOT NULL,
+			PRIMARY KEY (safe_id, principal_type, principal_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS privileged_accounts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			safe_id INTEGER NOT NULL REFERENCES safes(id),
+			name TEXT NOT NULL,
+			username TEXT NOT NULL,
+			target_id INTEGER REFERENCES targets(id),
+			platform TEXT NOT NULL DEFAULT 'linux',
+			secret_ref TEXT NOT NULL,            -- vault secret name
+			last_rotated INTEGER,
+			next_rotation INTEGER,
+			rotation_status TEXT NOT NULL DEFAULT 'pending',
+			rotation_error TEXT NOT NULL DEFAULT '',
+			notes TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL,
+			UNIQUE(safe_id, name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS rotation_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			account_id INTEGER NOT NULL REFERENCES privileged_accounts(id) ON DELETE CASCADE,
+			ts INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			actor TEXT NOT NULL,
+			detail TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS credential_checkouts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			account_id INTEGER NOT NULL REFERENCES privileged_accounts(id),
+			user_id INTEGER NOT NULL REFERENCES users(id),
+			checked_out_at INTEGER NOT NULL,
+			returned_at INTEGER,
+			reason TEXT NOT NULL DEFAULT '',
+			break_glass INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE TABLE IF NOT EXISTS app_credentials (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			api_key_hash TEXT NOT NULL,
+			safe_id INTEGER REFERENCES safes(id),
+			allowed_accounts TEXT NOT NULL DEFAULT '',  -- CSV of account ids, or '*'
+			client_ip_allow TEXT NOT NULL DEFAULT '',   -- CSV of CIDRs
+			enabled INTEGER NOT NULL DEFAULT 1,
+			last_used INTEGER,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS threat_alerts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts INTEGER NOT NULL,
+			user_id INTEGER,
+			username TEXT NOT NULL DEFAULT '',
+			category TEXT NOT NULL,
+			severity TEXT NOT NULL DEFAULT 'info',
+			message TEXT NOT NULL,
+			detail TEXT NOT NULL DEFAULT '',
+			acknowledged INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE TABLE IF NOT EXISTS session_terminations (
+			session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+			requested_by INTEGER NOT NULL,
+			requested_at INTEGER NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			acknowledged_at INTEGER
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_groups_group ON user_groups(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_approval_decisions_req ON approval_decisions(request_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_approval_matrix_target ON approval_matrix(target_kind, tier_min, tier_max)`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_safe ON privileged_accounts(safe_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_accounts_next_rotation ON privileged_accounts(next_rotation)`,
+		`CREATE INDEX IF NOT EXISTS idx_rotation_history_acct ON rotation_history(account_id, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_checkouts_user ON credential_checkouts(user_id, checked_out_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_threat_ts ON threat_alerts(ts DESC)`,
 	}
 	for _, s := range stmts {
 		if _, err := d.Exec(s); err != nil {
