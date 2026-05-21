@@ -23,6 +23,8 @@ import (
 
 func errStr(s string) error { return errors.New(s) }
 
+const pendingSessionTimeoutSeconds = 120
+
 type record struct {
 	TS       int64  `json:"ts"`
 	Actor    string `json:"actor"`
@@ -201,6 +203,7 @@ func main() {
 		if limit <= 0 || limit > 500 {
 			limit = 100
 		}
+		cleanupPendingSessions(r.Context(), d)
 		rows, err := d.QueryContext(context.Background(), `
 			SELECT id, user_id, target_id, started_at, ended_at,
 			       COALESCE(recording_path,''), COALESCE(client_ip,''), COALESCE(ended_reason,''),
@@ -273,4 +276,70 @@ func main() {
 	if err := http.ListenAndServe(addr, httpx.LoggingMiddleware(mux)); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// cleanupPendingSessions marks browser-launched sessions as failed when the
+// viewer/proxy never produced a recording. These rows are created before
+// guacd proves the target connection works, so failed launches can otherwise
+// sit in the UI as "active" forever.
+func cleanupPendingSessions(ctx context.Context, d *db.DB) {
+	cutoff := db.Now() - pendingSessionTimeoutSeconds
+	rows, err := d.QueryContext(ctx, `
+		SELECT id, COALESCE(recording_path,'')
+		  FROM sessions
+		 WHERE ended_at IS NULL
+		   AND started_at <= ?
+		   AND COALESCE(recording_path,'') != ''
+		   AND COALESCE(protocol,'ssh') IN ('ssh','rdp')`,
+		cutoff)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type pending struct {
+		id, recPath string
+	}
+	var stale []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.id, &p.recPath); err != nil {
+			continue
+		}
+		if pendingRecordingMissing(p.recPath) {
+			stale = append(stale, p)
+		}
+	}
+	for _, p := range stale {
+		_, _ = d.ExecContext(ctx, `
+			UPDATE sessions
+			   SET ended_at = ?, ended_reason = 'failed'
+			 WHERE id = ? AND ended_at IS NULL`,
+			db.Now(), p.id)
+		_, _ = d.ExecContext(ctx, `
+			INSERT INTO audit_events(ts, actor, kind, target, detail, severity)
+			VALUES(?,?,?,?,?,?)`,
+			db.Now(), "audit", "session.auto.failed", p.id,
+			"no browser recording/connection appeared before timeout", "warn")
+	}
+}
+
+func pendingRecordingMissing(recPath string) bool {
+	info, err := os.Stat(recPath)
+	if err != nil {
+		return true
+	}
+	if !info.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(recPath)
+	if err != nil {
+		return true
+	}
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".guac" {
+			return false
+		}
+	}
+	return true
 }

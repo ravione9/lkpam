@@ -128,6 +128,11 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 	if err != nil {
 		return nil, err
 	}
+	failConnect := func(format string, args ...any) (guac.Tunnel, error) {
+		err := fmt.Errorf(format, args...)
+		s.failSession(r.Context(), sessionID, "failed", err.Error())
+		return nil, err
+	}
 
 	config := guac.NewGuacamoleConfiguration()
 	if params.Protocol == "ssh" {
@@ -178,16 +183,16 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 
 	addr, err := net.ResolveTCPAddr("tcp", s.GuacdAddr)
 	if err != nil {
-		return nil, fmt.Errorf("resolve guacd: %w", err)
+		return failConnect("resolve guacd: %w", err)
 	}
 	conn, err := net.DialTCP("tcp", nil, addr)
 	if err != nil {
-		return nil, fmt.Errorf("dial guacd: %w", err)
+		return failConnect("dial guacd: %w", err)
 	}
 	stream := guac.NewStream(conn, guac.SocketTimeout)
 	if err := stream.Handshake(config); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("guacd handshake: %w", err)
+		return failConnect("guacd handshake: %w", err)
 	}
 	base := guac.NewSimpleTunnel(stream)
 	rt := &recordingTunnel{Tunnel: base, srv: s, sessionID: sessionID}
@@ -335,6 +340,33 @@ func (s *Server) closeSession(ctx context.Context, sessionID string) {
 	} else {
 		log.Printf("rdp-proxy: session %s closed", sessionID)
 	}
+}
+
+func (s *Server) failSession(ctx context.Context, sessionID, reason, detail string) {
+	s.mu.Lock()
+	if _, ok := s.tunnels[sessionID]; ok {
+		delete(s.tunnels, sessionID)
+	}
+	s.mu.Unlock()
+
+	_, _ = s.DB.ExecContext(ctx, `
+		UPDATE sessions
+		   SET ended_at = ?, ended_reason = ?
+		 WHERE id = ? AND ended_at IS NULL`,
+		db.Now(), reason, sessionID)
+	_, _ = s.DB.ExecContext(ctx, `
+		INSERT INTO audit_events(ts, actor, kind, target, detail, severity)
+		VALUES(?,?,?,?,?,?)`,
+		db.Now(), "rdp-proxy", "session.connect.failed", sessionID, detail, "warn")
+
+	_ = s.Vault.DeleteSecret(ctx, rdp.SessionSecretName(sessionID))
+	if raw, err := s.Vault.GetSecret(ctx, sshlaunch.SessionSecretName(sessionID)); err == nil {
+		if creds, perr := sshlaunch.ParseSessionCreds(raw); perr == nil && creds.Token != "" {
+			_ = s.Vault.DeleteSecret(ctx, sshlaunch.BrowserTokenVaultKey(creds.Token))
+		}
+	}
+	_ = s.Vault.DeleteSecret(ctx, sshlaunch.SessionSecretName(sessionID))
+	log.Printf("rdp-proxy: session %s failed before connect: %s", sessionID, detail)
 }
 
 func (s *Server) findRecording(sessionID string) string {
