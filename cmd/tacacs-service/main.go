@@ -6,7 +6,7 @@
 //   aaa group server tacacs+ PAM
 //    server-private 10.20.30.40 key STRONG-SECRET
 //   aaa authentication login default group PAM local
-//   aaa authorization commands 15 default group PAM if-authenticated
+//   aaa authorization commands 15 default group PAM none
 //   aaa accounting commands 15 default start-stop group PAM
 package main
 
@@ -21,6 +21,7 @@ import (
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
+	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/policy"
 	"github.com/example/pam-platform/internal/tacacs"
 )
@@ -43,6 +44,7 @@ func main() {
 		Secret: secret,
 		DB:     d,
 		Policy: &policy.Engine{DB: d},
+		Groups: &groups.Service{DB: d},
 		Bus:    events.New(),
 		Auth:   authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
 	}

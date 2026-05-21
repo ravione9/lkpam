@@ -185,11 +185,12 @@ func splitCSV(s string) []string {
 
 // CommandAllowed returns true if cmd passes the allow/deny lists.
 // Deny wins over allow. Patterns are simple prefix matches for now;
-// real OPA can do regex / glob.
+// real OPA can do regex / glob. Matching is case-insensitive.
 func CommandAllowed(cmd string, allow, deny []string) bool {
-	cmd = strings.TrimSpace(cmd)
+	cmd = strings.ToLower(strings.TrimSpace(cmd))
 	for _, d := range deny {
-		if strings.HasPrefix(cmd, d) {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d != "" && strings.HasPrefix(cmd, d) {
 			return false
 		}
 	}
@@ -197,11 +198,28 @@ func CommandAllowed(cmd string, allow, deny []string) bool {
 		return true // permissive default if no allow list
 	}
 	for _, a := range allow {
-		if strings.HasPrefix(cmd, a) {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a != "" && strings.HasPrefix(cmd, a) {
 			return true
 		}
 	}
 	return false
+}
+
+// FullCommand joins a TACACS cmd= value with cmd-arg= pieces into one line.
+func FullCommand(cmd string, args []string) string {
+	cmd = strings.TrimSpace(cmd)
+	parts := make([]string, 0, 1+len(args))
+	if cmd != "" {
+		parts = append(parts, cmd)
+	}
+	for _, a := range args {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			parts = append(parts, a)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // Rule is a row from the policies table.

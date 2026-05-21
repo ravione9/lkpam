@@ -610,7 +610,9 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 			defer termCancel()
 			go s.watchTermination(termCtx, sessionID, sconn, upClient)
 		}
-		go s.pipeSession(newChan, upClient, rec, sessionID, user, targetName, buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode))
+		go s.pipeSession(newChan, upClient, rec, sessionID, user, targetName, buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode),
+			parseCSV(sconn.Permissions.Extensions["allow-csv"]),
+			parseCSV(sconn.Permissions.Extensions["deny-csv"]))
 	}
 
 	// Mark session closed (browser sessions are ended by rdp-proxy when guacd disconnects).
@@ -678,7 +680,7 @@ func buildSessionBanner(name, kind, host, port, tier, downUser, authMode string)
 	return header + body + footer
 }
 
-func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string, banner string) {
+func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string, banner string, allowCmds, denyCmds []string) {
 	downCh, downReqs, err := newChan.Accept()
 	if err != nil {
 		log.Printf("accept down chan: %v", err)
@@ -714,7 +716,11 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 	// downstream (user)  ───►   recorder (input)  ───►   upstream (target)
 	go func() {
 		defer wg.Done()
-		tee := io.MultiWriter(upCh, &prefixedWriter{w: rec, prefix: "IN  "})
+		up := io.Writer(upCh)
+		if gate := newCmdGate(upCh, downCh, allowCmds, denyCmds); gate != nil {
+			up = gate
+		}
+		tee := io.MultiWriter(up, &prefixedWriter{w: rec, prefix: "IN  "})
 		_, _ = io.Copy(tee, downCh)
 		upCh.CloseWrite()
 	}()
@@ -950,6 +956,21 @@ func joinCSV(in []string) string {
 			out += ","
 		}
 		out += s
+	}
+	return out
+}
+
+func parseCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
 	}
 	return out
 }

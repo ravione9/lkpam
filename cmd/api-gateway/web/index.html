@@ -3204,7 +3204,7 @@ aaa group server tacacs+ PAM
 aaa authentication login PAM-AUTH group PAM local
 aaa authentication enable default group PAM enable
 aaa authorization exec PAM-EXEC group PAM local if-authenticated
-aaa authorization commands 15 PAM-CMD group PAM local if-authenticated
+aaa authorization commands 15 PAM-CMD group PAM none
 aaa accounting exec PAM-ACCT start-stop group PAM
 aaa accounting commands 15 PAM-CMD start-stop group PAM
 !
@@ -3403,7 +3403,7 @@ test authentication authentication-profile PAM-AUTH username <user> password <pw
 
   "fortinet-fortigate": {
     label: "Fortinet FortiGate (CLI + GUI)",
-    intro: "FortiOS authenticates admins against the PAM TACACS+ server and maps remote group members to an admin profile.",
+    intro: "FortiOS authenticates admins against the PAM TACACS+ server and maps remote group members to an admin profile. FortiGate does not send per-command TACACS authorization — use a read-only <code>accprofile</code> on the firewall for command restrictions. PAM denied-command policies apply to Cisco/Arista-style <code>aaa authorization commands</code> devices and to SSH proxy sessions.",
     prereqs: [
       "FortiOS 6.4 or later",
       "Mgmt path to <code>{{HOST}}</code>:<code>{{TAC_PORT}}</code>",

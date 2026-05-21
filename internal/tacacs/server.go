@@ -13,6 +13,7 @@ import (
 	"github.com/example/pam-platform/internal/cryptox"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
+	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/policy"
 )
 
@@ -22,6 +23,7 @@ type Server struct {
 	Secret []byte // shared secret with every device (use per-device in prod)
 	DB     *db.DB
 	Policy *policy.Engine
+	Groups *groups.Service
 	Bus    events.Publisher
 	// Auth, when set, delegates AAA password checks to auth-service so AD/LDAP
 	// users authenticate the same way they do everywhere else. Falls back to
@@ -186,29 +188,33 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 
 	cmd, args := extractCommand(req.Args)
 	svc := extractArg(req.Args, "service")
+	fullCmd := policy.FullCommand(cmd, args)
+	deviceIP := deviceIPFromAuthor(req, clientIP)
 	var allow bool
 	var role string
 	var replyArgs []string
 
-	if cmd == "" && isAdminAuthService(svc) {
+	if fullCmd == "" && isAdminAuthService(svc) {
 		// FortiGate / firewall admin login — not per-command authorization.
 		allow, role = s.authorizeAdmin(req.User)
 		if allow {
 			replyArgs = []string{"priv-lvl=15", "service=" + svc}
 		}
 	} else {
-		allow, role = s.authorize(req.User, clientIP, cmd, args)
+		allow, role = s.authorize(req.User, deviceIP, fullCmd)
 	}
 
 	status := AuthorStatusFail
 	if allow {
 		status = AuthorStatusPassAdd
 	}
+	log.Printf("tacacs author user=%q device=%q svc=%q cmd=%q allow=%v role=%q",
+		req.User, deviceIP, svc, fullCmd, allow, role)
 	s.Bus.Publish(events.Event{
 		Source: "tacacs", Kind: "authorize", Severity: severity(allow),
-		Actor: req.User, Target: clientIP,
+		Actor: req.User, Target: deviceIP,
 		Detail: map[string]string{
-			"cmd":     fmt.Sprintf("%s %s", cmd, strings.Join(args, " ")),
+			"cmd":     fullCmd,
 			"role":    role,
 			"service": svc,
 		},
@@ -235,11 +241,22 @@ func (s *Server) authorizeAdmin(user string) (bool, string) {
 	return true, role
 }
 
-func (s *Server) authorize(user, deviceIP, cmd string, args []string) (bool, string) {
-	var role string
-	err := s.DB.QueryRow(`SELECT role FROM users WHERE username = ? AND disabled = 0`, user).Scan(&role)
+func (s *Server) authorize(user, deviceIP, fullCmd string) (bool, string) {
+	var (
+		userID int64
+		role   string
+	)
+	err := s.DB.QueryRow(`
+		SELECT id, role FROM users WHERE lower(username)=lower(?) AND disabled = 0`, user).
+		Scan(&userID, &role)
 	if err != nil {
 		return false, ""
+	}
+	roles := []string{role}
+	if s.Groups != nil && userID > 0 {
+		if eff, err := s.Groups.EffectiveRoles(context.Background(), userID, role); err == nil && len(eff) > 0 {
+			roles = eff
+		}
 	}
 	// Map the device IP to a target row to pull its kind/tier.
 	var (
@@ -247,19 +264,25 @@ func (s *Server) authorize(user, deviceIP, cmd string, args []string) (bool, str
 		kind string
 		tier int
 	)
-	err = s.DB.QueryRow(`SELECT id, kind, tier FROM targets WHERE host = ?`,
-		hostPart(deviceIP)).Scan(&tid, &kind, &tier)
+	host := hostPart(deviceIP)
+	err = s.DB.QueryRow(`SELECT id, kind, tier FROM targets WHERE host = ? OR host = ?`,
+		host, deviceIP).Scan(&tid, &kind, &tier)
 	if err != nil {
-		// Unknown device; deny conservatively.
+		log.Printf("tacacs author: unknown device %q for user=%q cmd=%q", deviceIP, user, fullCmd)
 		return false, role
 	}
 	dec, err := s.Policy.Decide(context.Background(), policy.Input{
-		Role: role, TargetID: tid, TargetKind: kind, TargetTier: tier, Action: "exec",
+		UserID: userID, Role: role, Roles: roles,
+		TargetID: tid, TargetKind: kind, TargetTier: tier, Action: "exec",
 	})
 	if err != nil || !dec.Allow {
 		return false, role
 	}
-	return policy.CommandAllowed(cmd, dec.AllowedCmds, dec.DeniedCmds), role
+	// Empty command = session/shell authorization (Cisco sends service=shell with no cmd= at login).
+	if strings.TrimSpace(fullCmd) == "" {
+		return true, role
+	}
+	return policy.CommandAllowed(fullCmd, dec.AllowedCmds, dec.DeniedCmds), role
 }
 
 // ---- Accounting ----
@@ -313,10 +336,17 @@ func extractArg(args []string, key string) string {
 func isAdminAuthService(svc string) bool {
 	svc = strings.ToLower(strings.TrimSpace(svc))
 	switch svc {
-	case "shell", "system", "administration", "admin", "fortigate", "fortinet", "ftm", "exec":
+	case "administration", "admin", "fortigate", "fortinet", "ftm":
 		return true
 	}
-	return strings.Contains(svc, "forti") || strings.Contains(svc, "admin")
+	return strings.Contains(svc, "forti")
+}
+
+func deviceIPFromAuthor(req *AuthorRequest, clientIP string) string {
+	if ip := strings.TrimSpace(req.RemAddr); ip != "" {
+		return ip
+	}
+	return hostPart(clientIP)
 }
 
 func severity(ok bool) string {
