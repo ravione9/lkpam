@@ -1005,6 +1005,16 @@ function buildSshCommand(username, target) {
   return `ssh -p ${SSH_PROXY_PORT} -o PreferredAuthentications=keyboard-interactive,password -o StrictHostKeyChecking=accept-new "${dest}"`;
 }
 
+// openPamViewer opens a recorded session using the same host as the portal (not PAM_PORTAL_URL).
+function openPamViewer(viewerPage, sessionId) {
+  if (!token) { toast("Not signed in", "err"); return false; }
+  const u = new URL("/" + viewerPage, location.origin);
+  u.searchParams.set("session", sessionId);
+  u.searchParams.set("token", token);
+  window.open(u.toString(), "_blank", "noopener");
+  return true;
+}
+
 async function persistToken(tok) {
   token = tok;
   if (tok) sessionStorage.setItem(TOKEN_KEY, tok);
@@ -1764,13 +1774,9 @@ window.launchTarget = async id => {
         method: "POST",
         body: JSON.stringify({ reason }),
       });
-      if (!res.browser_url) {
-        toast("Set PAM_PORTAL_URL in deploy/docker/.env and rebuild", "err");
-        return;
+      if (openPamViewer("ssh-viewer.html", res.session_id)) {
+        toast("SSH terminal opened in browser (recorded)", "ok");
       }
-      const url = res.browser_url + (res.browser_url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
-      window.open(url, "_blank", "noopener");
-      toast("SSH terminal opened in browser (recorded)", "ok");
     } catch (e) {
       if (e.message && e.message.includes("approved")) {
         toast("Access not approved yet — submit Request access first", "err");
@@ -1799,6 +1805,9 @@ window.launchTarget = async id => {
         method: "POST",
         body: JSON.stringify({ reason }),
       });
+      if (openPamViewer("rdp-viewer.html", res.session_id)) {
+        toast("RDP session opened in browser (recorded)", "ok");
+      }
       showRdpLaunchModal(t, res);
     } catch (e) {
       if (e.message && e.message.includes("privileged account")) {
@@ -1826,13 +1835,10 @@ function downloadTextFile(filename, content, mime) {
 function showRdpLaunchModal(target, res) {
   const modal = document.createElement("div");
   modal.className = "modal-backdrop show";
-  const browserBtn = res.browser_url
-    ? `<button class="primary" id="rdpBrowserBtn">Open in browser (recorded)</button>`
-    : "";
   modal.innerHTML = `
     <div class="modal" style="max-width:640px">
       <h3>RDP launch — ${esc(target.name)}</h3>
-      <p class="muted">${esc(res.instructions)}</p>
+      <p class="muted">Browser session opened in a new tab (recorded). Use the buttons below if you need native mstsc instead.</p>
       <div class="form-grid" style="margin:12px 0">
         <label>Privileged user</label><input value="${esc(res.username)}" readonly/>
         <label>Target</label><input value="${esc(res.host)}:${res.port}" readonly/>
@@ -1840,7 +1846,7 @@ function showRdpLaunchModal(target, res) {
         <label>Session ID</label><input value="${esc(res.session_id)}" readonly/>
       </div>
       <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
-        ${browserBtn}
+        <button class="primary" id="rdpBrowserBtn">Re-open in browser</button>
         <button class="ghost" id="rdpDlBoth">Download .rdp + .ps1 (native)</button>
         <button class="ghost" id="rdpReturnBtn">Mark returned</button>
         <button class="ghost" onclick="this.closest('.modal-backdrop').remove()">Close</button>
@@ -1848,14 +1854,11 @@ function showRdpLaunchModal(target, res) {
       <p class="muted" style="font-size:11px;margin-top:10px">Browser sessions are recorded as .guac files — view in Sessions tab after disconnect.</p>
     </div>`;
   document.body.appendChild(modal);
-  const browserEl = modal.querySelector("#rdpBrowserBtn");
-  if (browserEl) {
-    browserEl.onclick = () => {
-      const url = res.browser_url + (res.browser_url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
-      window.open(url, "_blank", "noopener");
+  modal.querySelector("#rdpBrowserBtn").onclick = () => {
+    if (openPamViewer("rdp-viewer.html", res.session_id)) {
       toast("RDP session opened — recording in progress", "ok");
-    };
-  }
+    }
+  };
   modal.querySelector("#rdpDlBoth").onclick = () => {
     downloadTextFile(res.rdp_filename, res.rdp_file, "application/x-rdp");
     setTimeout(() => downloadTextFile("Launch-RDP.ps1", res.launch_script, "text/plain"), 300);

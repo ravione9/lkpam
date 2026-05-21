@@ -110,7 +110,13 @@ func main() {
 	rdpURL := mustURL(config.Get("PAM_RDP_PROXY_URL", "http://localhost:8086"))
 	mux.Handle("/api/rdp/", http.StripPrefix("/api/rdp", reverse(rdpURL)))
 
-	// Static UI
+	// Session viewer pages must never fall back to index.html (that shows the login UI).
+	for _, page := range []string{"rdp-viewer.html", "ssh-viewer.html"} {
+		name := page
+		mux.HandleFunc("GET /"+name, serveWebFile(name))
+	}
+
+	// Static UI (SPA fallback only for non-file routes).
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			http.NotFound(w, r)
@@ -122,6 +128,11 @@ func main() {
 		}
 		b, err := webFS.ReadFile("web/" + path)
 		if err != nil {
+			// Do not serve the admin login shell for missing static assets.
+			if strings.Contains(path, ".") {
+				http.NotFound(w, r)
+				return
+			}
 			b, err = webFS.ReadFile("web/index.html")
 			if err != nil {
 				http.NotFound(w, r)
@@ -215,6 +226,18 @@ func verifyToken(ctx context.Context, authBase *url.URL, tok string) (*claims, i
 		return nil, http.StatusBadGateway, err
 	}
 	return &c, http.StatusOK, nil
+}
+
+func serveWebFile(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		b, err := webFS.ReadFile("web/" + name)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(b)
+	}
 }
 
 func mustURL(s string) *url.URL {
