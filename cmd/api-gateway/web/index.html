@@ -655,6 +655,60 @@
   #targetsTable th.sortable.sort-asc .sort-ind::before  { content: "▲"; color: var(--accent); }
   #targetsTable th.sortable.sort-desc .sort-ind::before { content: "▼"; color: var(--accent); }
   #targetsTable th.sortable:not(.sort-asc):not(.sort-desc) .sort-ind::before { content: "↕"; opacity: 0.35; }
+  #targetsTable th.col-hidden,
+  #targetsTable td.col-hidden { display: none; }
+  #targetsTable thead th { position: relative; }
+  #targetsTable .th-inner {
+    display: flex; align-items: center; justify-content: space-between; gap: 4px;
+    min-width: 0;
+  }
+  #targetsTable .th-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #targetsTable .col-menu-btn {
+    flex-shrink: 0;
+    width: 18px; height: 18px;
+    padding: 0; border: none; background: transparent;
+    color: var(--muted-2); cursor: pointer; border-radius: 3px;
+    font-size: 12px; line-height: 1; opacity: 0;
+    transition: opacity var(--t-fast), background var(--t-fast);
+  }
+  #targetsTable thead th:hover .col-menu-btn { opacity: 1; }
+  #targetsTable .col-menu-btn:hover { background: var(--border); color: var(--fg); }
+  #targetsTable .col-resize-handle {
+    position: absolute; right: 0; top: 0; bottom: 0;
+    width: 5px; cursor: col-resize; z-index: 2;
+  }
+  #targetsTable .col-resize-handle:hover,
+  #targetsTable .col-resize-handle.active { background: var(--accent); opacity: 0.45; }
+  #targetsTable th.col-resizing { user-select: none; }
+  .col-picker-wrap { position: relative; }
+  .col-picker {
+    position: absolute; top: calc(100% + 4px); right: 0; z-index: 40;
+    min-width: 180px;
+    background: #fff; border: 1px solid var(--border);
+    border-radius: var(--r); box-shadow: var(--shadow-md);
+    padding: 8px 0; font-size: 12px;
+  }
+  .col-picker-title {
+    padding: 4px 12px 8px; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    border-bottom: 1px solid var(--divider); margin-bottom: 4px;
+  }
+  .col-picker label {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px; cursor: pointer; color: var(--fg-soft);
+  }
+  .col-picker label:hover { background: var(--surface-2); }
+  .col-picker label input { width: auto; margin: 0; }
+  .col-picker label.disabled { opacity: 0.45; cursor: not-allowed; }
+  .col-picker-actions {
+    border-top: 1px solid var(--divider); margin-top: 4px; padding-top: 4px;
+  }
+  .col-picker-actions button {
+    display: block; width: 100%; text-align: left;
+    padding: 6px 12px; border: none; background: transparent;
+    font-size: 12px; color: var(--fg-soft); cursor: pointer;
+  }
+  .col-picker-actions button:hover { background: var(--surface-2); color: var(--accent); }
   #targetsTable tbody td {
     padding: 4px 8px;
     border-bottom: 1px solid var(--divider);
@@ -1029,31 +1083,17 @@
               <option value="https-api">API</option>
             </select>
           </label>
+          <div class="col-picker-wrap">
+            <button type="button" class="ghost" id="targetColumnsBtn" title="Show or hide columns">Columns ▾</button>
+            <div class="col-picker" id="targetColPicker" style="display:none"></div>
+          </div>
           <div class="machines-stats" id="targetStats"></div>
         </div>
         <div class="table-wrap">
           <div class="table-scroll">
             <table id="targetsTable">
-              <colgroup>
-                <col style="width:19%">
-                <col style="width:20%">
-                <col style="width:8%">
-                <col style="width:15%">
-                <col style="width:9%">
-                <col style="width:8%">
-                <col style="width:21%">
-              </colgroup>
-              <thead>
-                <tr>
-                  <th class="sortable" data-sort="name">Name <span class="sort-ind"></span></th>
-                  <th class="sortable" data-sort="platform">Platform <span class="sort-ind"></span></th>
-                  <th class="sortable" data-sort="connection">Conn <span class="sort-ind"></span></th>
-                  <th class="sortable" data-sort="address">Address <span class="sort-ind"></span></th>
-                  <th class="sortable" data-sort="tier">Tier <span class="sort-ind"></span></th>
-                  <th class="sortable" data-sort="tags">Tags <span class="sort-ind"></span></th>
-                  <th style="text-align:right;width:21%">Actions</th>
-                </tr>
-              </thead>
+              <colgroup id="targetsColgroup"></colgroup>
+              <thead id="targetsThead"></thead>
               <tbody id="targetRows"><tr><td colspan="7" class="muted" style="padding:24px;text-align:center">Loading…</td></tr></tbody>
             </table>
           </div>
@@ -2781,6 +2821,220 @@ const targetsState = {
   conn: "",
 };
 
+const TARGETS_COL_DEF = [
+  { id: "name",       label: "Name",     sort: "name",       width: 19, min: 10, hideable: false },
+  { id: "platform",   label: "Platform", sort: "platform",   width: 20, min: 10, hideable: true },
+  { id: "connection", label: "Conn",     sort: "connection", width: 8,  min: 6,  hideable: true },
+  { id: "address",    label: "Address",  sort: "address",    width: 15, min: 10, hideable: true },
+  { id: "tier",       label: "Tier",     sort: "tier",       width: 9,  min: 6,  hideable: true },
+  { id: "tags",       label: "Tags",     sort: "tags",       width: 8,  min: 6,  hideable: true },
+  { id: "actions",    label: "Actions",  sort: null,         width: 21, min: 14, hideable: false, align: "right" },
+];
+const TARGETS_COL_STORAGE = "pam.targets.columns";
+
+function loadTargetColPrefs() {
+  try {
+    const raw = localStorage.getItem(TARGETS_COL_STORAGE);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+function saveTargetColPrefs() {
+  localStorage.setItem(TARGETS_COL_STORAGE, JSON.stringify(targetsColPrefs));
+}
+
+const targetsColPrefs = (() => {
+  const saved = loadTargetColPrefs();
+  const visibility = {};
+  const widths = {};
+  TARGETS_COL_DEF.forEach(c => {
+    visibility[c.id] = saved?.visibility?.[c.id] !== false;
+    widths[c.id] = saved?.widths?.[c.id] ?? c.width;
+  });
+  return { visibility, widths };
+})();
+
+function visibleTargetsColCount() {
+  return TARGETS_COL_DEF.filter(c => targetsColPrefs.visibility[c.id] !== false).length;
+}
+
+function normalizeTargetColWidths() {
+  const visible = TARGETS_COL_DEF.filter(c => targetsColPrefs.visibility[c.id] !== false);
+  const total = visible.reduce((s, c) => s + (targetsColPrefs.widths[c.id] || c.width), 0) || 1;
+  visible.forEach(c => {
+    targetsColPrefs.widths[c.id] = Math.round(((targetsColPrefs.widths[c.id] || c.width) / total) * 1000) / 10;
+  });
+}
+
+function buildTargetsTableHead() {
+  const cg = $("#targetsColgroup");
+  const thead = $("#targetsThead");
+  if (!cg || !thead) return;
+  normalizeTargetColWidths();
+  cg.innerHTML = TARGETS_COL_DEF.map(c => {
+    const hidden = targetsColPrefs.visibility[c.id] === false;
+    const w = hidden ? 0 : (targetsColPrefs.widths[c.id] || c.width);
+    return `<col data-col="${c.id}" style="width:${w}%">`;
+  }).join("");
+  thead.innerHTML = `<tr>${TARGETS_COL_DEF.map(c => {
+    const hidden = targetsColPrefs.visibility[c.id] === false;
+    const sortCls = c.sort ? "sortable" : "";
+    const align = c.align ? ` style="text-align:${c.align}"` : "";
+    const sortInd = c.sort ? ' <span class="sort-ind"></span>' : "";
+    const menuBtn = c.hideable
+      ? `<button type="button" class="col-menu-btn" data-col-menu="${c.id}" title="Column options">⋮</button>`
+      : "";
+    const resize = c.id !== "actions"
+      ? `<div class="col-resize-handle" data-col-resize="${c.id}"></div>`
+      : "";
+    return `<th class="${sortCls}${hidden ? " col-hidden" : ""}" data-col="${c.id}"${c.sort ? ` data-sort="${c.sort}"` : ""}${align}>
+      <div class="th-inner"><span class="th-label">${esc(c.label)}${sortInd}</span>${menuBtn}</div>${resize}
+    </th>`;
+  }).join("")}</tr>`;
+  renderTargetSortHeaders();
+  wireTargetsTableHead();
+}
+
+function applyTargetColumnVisibility() {
+  TARGETS_COL_DEF.forEach(c => {
+    const hidden = targetsColPrefs.visibility[c.id] === false;
+    document.querySelectorAll(`#targetsTable [data-col="${c.id}"]`).forEach(el => {
+      el.classList.toggle("col-hidden", hidden);
+    });
+    const col = document.querySelector(`#targetsColgroup col[data-col="${c.id}"]`);
+    if (col) {
+      col.style.width = hidden ? "0" : `${targetsColPrefs.widths[c.id] || c.width}%`;
+    }
+  });
+  saveTargetColPrefs();
+}
+
+function renderTargetColPicker() {
+  const picker = $("#targetColPicker");
+  if (!picker) return;
+  const checks = TARGETS_COL_DEF.filter(c => c.hideable).map(c => {
+    const checked = targetsColPrefs.visibility[c.id] !== false;
+    return `<label><input type="checkbox" data-col-toggle="${c.id}" ${checked ? "checked" : ""}/> ${esc(c.label)}</label>`;
+  }).join("");
+  picker.innerHTML = `
+    <div class="col-picker-title">Show columns</div>
+    ${checks}
+    <div class="col-picker-actions">
+      <button type="button" id="targetColReset">Reset columns & widths</button>
+    </div>`;
+  picker.querySelectorAll("[data-col-toggle]").forEach(inp => {
+    inp.addEventListener("change", e => {
+      const id = e.target.dataset.colToggle;
+      targetsColPrefs.visibility[id] = e.target.checked;
+      normalizeTargetColWidths();
+      buildTargetsTableHead();
+      applyTargetColumnVisibility();
+    });
+  });
+  picker.querySelector("#targetColReset")?.addEventListener("click", () => {
+    TARGETS_COL_DEF.forEach(c => {
+      targetsColPrefs.visibility[c.id] = true;
+      targetsColPrefs.widths[c.id] = c.width;
+    });
+    saveTargetColPrefs();
+    buildTargetsTableHead();
+    applyTargetColumnVisibility();
+    renderTargetColPicker();
+    toast("Column layout reset", "ok");
+  });
+}
+
+function wireTargetsTableHead() {
+  document.querySelectorAll("#targetsTable th.sortable").forEach(th => {
+    th.onclick = e => {
+      if (e.target.closest(".col-menu-btn") || e.target.closest(".col-resize-handle")) return;
+      const key = th.dataset.sort;
+      if (targetsState.sort.key === key) {
+        targetsState.sort.dir = targetsState.sort.dir === "asc" ? "desc" : "asc";
+      } else {
+        targetsState.sort.key = key;
+        targetsState.sort.dir = "asc";
+      }
+      targetsState.page = 1;
+      renderTargetSortHeaders();
+      renderTargetsPage();
+    };
+  });
+  document.querySelectorAll(".col-menu-btn[data-col-menu]").forEach(btn => {
+    btn.onclick = e => {
+      e.stopPropagation();
+      const id = btn.dataset.colMenu;
+      targetsColPrefs.visibility[id] = false;
+      normalizeTargetColWidths();
+      buildTargetsTableHead();
+      applyTargetColumnVisibility();
+      renderTargetColPicker();
+    };
+  });
+  document.querySelectorAll(".col-resize-handle[data-col-resize]").forEach(handle => {
+    handle.onmousedown = e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const colId = handle.dataset.colResize;
+      const table = $("#targetsTable");
+      const th = handle.closest("th");
+      if (!table || !th) return;
+      const startX = e.clientX;
+      const startW = th.offsetWidth;
+      const tableW = table.offsetWidth;
+      th.classList.add("col-resizing");
+      handle.classList.add("active");
+      const onMove = ev => {
+        const delta = ev.clientX - startX;
+        const newPx = Math.max(40, startW + delta);
+        const min = TARGETS_COL_DEF.find(c => c.id === colId)?.min || 5;
+        const pct = Math.max(min, (newPx / tableW) * 100);
+        targetsColPrefs.widths[colId] = Math.round(pct * 10) / 10;
+        const col = document.querySelector(`#targetsColgroup col[data-col="${colId}"]`);
+        if (col) col.style.width = `${targetsColPrefs.widths[colId]}%`;
+      };
+      const onUp = () => {
+        th.classList.remove("col-resizing");
+        handle.classList.remove("active");
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        normalizeTargetColWidths();
+        TARGETS_COL_DEF.forEach(c => {
+          const col = document.querySelector(`#targetsColgroup col[data-col="${c.id}"]`);
+          if (col && targetsColPrefs.visibility[c.id] !== false) {
+            col.style.width = `${targetsColPrefs.widths[c.id]}%`;
+          }
+        });
+        saveTargetColPrefs();
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    };
+  });
+}
+
+$("#targetColumnsBtn")?.addEventListener("click", e => {
+  e.stopPropagation();
+  const picker = $("#targetColPicker");
+  if (!picker) return;
+  const open = picker.style.display !== "none";
+  if (open) {
+    picker.style.display = "none";
+  } else {
+    renderTargetColPicker();
+    picker.style.display = "block";
+  }
+});
+document.addEventListener("click", e => {
+  if (!e.target.closest(".col-picker-wrap")) {
+    const picker = $("#targetColPicker");
+    if (picker) picker.style.display = "none";
+  }
+});
+
+buildTargetsTableHead();
+
 const ICON_EDIT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>';
 const ICON_TRASH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>';
 
@@ -2848,9 +3102,10 @@ function fmtNum(n) { try { return Number(n).toLocaleString(); } catch { return S
 
 function renderTargetRowsEmpty(filteredCount) {
   const tbody = $("#targetRows");
+  const cols = visibleTargetsColCount();
   const total = (cache.targets || []).length;
   if (filteredCount === 0 && total > 0) {
-    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state">
+    tbody.innerHTML = `<tr><td colspan="${cols}"><div class="empty-state">
       <div class="empty-icon">⌕</div>
       <h4>No machines match your filters</h4>
       <p>Try a different search term or clear the tier / protocol filter.</p>
@@ -2861,7 +3116,7 @@ function renderTargetRowsEmpty(filteredCount) {
   const adminHint = isAdmin()
     ? `<button class="primary" onclick="document.getElementById('targetAddBtn').click()">+ Add Machine</button>`
     : `<span class="muted">Ask an administrator to register machines you need.</span>`;
-  tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state">
+  tbody.innerHTML = `<tr><td colspan="${cols}"><div class="empty-state">
     <div class="empty-icon">▢</div>
     <h4>No machines registered yet</h4>
     <p>Add servers, network devices, firewalls, and consoles so users can request JIT access and launch sessions.</p>
@@ -2913,16 +3168,17 @@ function renderTargetRowsSlice(slice) {
     const meta = [t.vendor, t.os_version].filter(Boolean).join(" · ");
     const tip = esc(t.name + (meta ? " · " + meta : ""));
     html[i] = `<tr>
-      <td title="${tip}"><span class="cell-ellipsis cell-name">${esc(t.name)}</span></td>
-      <td title="${esc(platform)}"><span class="cell-ellipsis cell-platform">${esc(platform)}</span></td>
-      <td>${targetConnCell(t)}</td>
-      <td>${targetAddressCell(t)}</td>
-      <td class="cell-tier">${tierPill(t.tier)}</td>
-      <td class="cell-tags" title="${esc(t.tags || "")}">${esc(t.tags) || "—"}</td>
-      <td class="act-cell">${targetActBar(t, admin)}</td>
+      <td data-col="name" title="${tip}"><span class="cell-ellipsis cell-name">${esc(t.name)}</span></td>
+      <td data-col="platform" title="${esc(platform)}"><span class="cell-ellipsis cell-platform">${esc(platform)}</span></td>
+      <td data-col="connection">${targetConnCell(t)}</td>
+      <td data-col="address">${targetAddressCell(t)}</td>
+      <td data-col="tier" class="cell-tier">${tierPill(t.tier)}</td>
+      <td data-col="tags" class="cell-tags" title="${esc(t.tags || "")}">${esc(t.tags) || "—"}</td>
+      <td data-col="actions" class="act-cell">${targetActBar(t, admin)}</td>
     </tr>`;
   }
   $("#targetRows").innerHTML = html.join("");
+  applyTargetColumnVisibility();
 }
 
 function renderTargetPagination(meta) {
@@ -2989,7 +3245,7 @@ async function loadTargets() {
     cache.targets = await api("/policy/targets") || [];
     renderTargetsPage();
   } catch (e) {
-    $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted" style="padding:24px;text-align:center">${esc(e.message)}</td></tr>`;
+    $("#targetRows").innerHTML = `<tr><td colspan="${visibleTargetsColCount()}" class="muted" style="padding:24px;text-align:center">${esc(e.message)}</td></tr>`;
     if ($("#targetStats")) $("#targetStats").innerHTML = "";
     if ($("#targetPagination")) $("#targetPagination").style.display = "none";
   }
@@ -3231,22 +3487,6 @@ $("#pagFirst")?.addEventListener("click", () => { targetsState.page = 1; renderT
 $("#pagPrev")?.addEventListener("click", () => { targetsState.page = Math.max(1, targetsState.page - 1); renderTargetsPage(); });
 $("#pagNext")?.addEventListener("click", () => { targetsState.page = targetsState.page + 1; renderTargetsPage(); });
 $("#pagLast")?.addEventListener("click", () => { targetsState.page = 1e9; renderTargetsPage(); });
-
-// Click a sortable header to toggle sort. Same column → flip direction.
-document.querySelectorAll("#targetsTable th.sortable").forEach(th => {
-  th.addEventListener("click", () => {
-    const key = th.dataset.sort;
-    if (!key) return;
-    if (targetsState.sort.key === key) {
-      targetsState.sort.dir = targetsState.sort.dir === "asc" ? "desc" : "asc";
-    } else {
-      targetsState.sort.key = key;
-      targetsState.sort.dir = "asc";
-    }
-    targetsState.page = 1;
-    renderTargetsPage();
-  });
-});
 window.editTarget = id => {
   const t = cache.targets.find(x => x.id === id); if (!t) return;
   $("#targetId").value = t.id;
