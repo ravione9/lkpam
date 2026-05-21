@@ -39,6 +39,7 @@ type session struct {
 	RecordingPath string `json:"recording_path"`
 	ClientIP      string `json:"client_ip"`
 	EndedReason   string `json:"ended_reason"`
+	Protocol      string `json:"protocol,omitempty"`
 }
 
 func main() {
@@ -193,7 +194,8 @@ func main() {
 		}
 		rows, err := d.QueryContext(context.Background(), `
 			SELECT id, user_id, target_id, started_at, ended_at,
-			       COALESCE(recording_path,''), COALESCE(client_ip,''), COALESCE(ended_reason,'')
+			       COALESCE(recording_path,''), COALESCE(client_ip,''), COALESCE(ended_reason,''),
+			       COALESCE(protocol,'ssh')
 			FROM sessions ORDER BY started_at DESC LIMIT ?`, limit)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
@@ -205,7 +207,7 @@ func main() {
 			var s session
 			var ended sql.NullInt64
 			if err := rows.Scan(&s.ID, &s.UserID, &s.TargetID, &s.StartedAt, &ended,
-				&s.RecordingPath, &s.ClientIP, &s.EndedReason); err == nil {
+				&s.RecordingPath, &s.ClientIP, &s.EndedReason, &s.Protocol); err == nil {
 				if ended.Valid {
 					s.EndedAt = &ended.Int64
 				}

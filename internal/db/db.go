@@ -271,6 +271,8 @@ func (d *DB) migrate() error {
 		`ALTER TABLE targets ADD COLUMN web_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE targets ADD COLUMN vendor TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE targets ADD COLUMN os_version TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN protocol TEXT NOT NULL DEFAULT 'ssh'`,
+		`ALTER TABLE sessions ADD COLUMN account_id INTEGER REFERENCES privileged_accounts(id)`,
 	} {
 		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
 	}

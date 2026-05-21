@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/example/pam-platform/internal/accounts"
+	"github.com/example/pam-platform/internal/approval"
 	"github.com/example/pam-platform/internal/auth"
 	"github.com/example/pam-platform/internal/ccp"
 	"github.com/example/pam-platform/internal/config"
@@ -25,6 +26,8 @@ import (
 	"github.com/example/pam-platform/internal/httpx"
 	ldappkg "github.com/example/pam-platform/internal/ldap"
 	"github.com/example/pam-platform/internal/mfa"
+	"github.com/example/pam-platform/internal/policy"
+	"github.com/example/pam-platform/internal/rdp"
 	"github.com/example/pam-platform/internal/reports"
 	"github.com/example/pam-platform/internal/roles"
 	"github.com/example/pam-platform/internal/safes"
@@ -71,6 +74,12 @@ func main() {
 	threatSvc := &threat.Service{DB: d}
 	reportsSvc := &reports.Service{DB: d}
 	settingsStore := &settings.Store{DB: d}
+	policyEng := &policy.Engine{DB: d}
+	approvalSvc := &approval.Service{DB: d}
+	rdpSvc := &rdp.Service{
+		DB: d, Policy: policyEng, Approval: approvalSvc,
+		Accounts: accountSvc, Groups: groupSvc,
+	}
 	bus := events.New()
 
 	bootstrap(svc, groupSvc, roleSvc, safeSvc)
@@ -681,6 +690,49 @@ func main() {
 			return
 		}
 		httpx.JSON(w, http.StatusOK, out)
+	})
+
+	// --- RDP launch (CyberArk-style PSM-lite) ---
+	mux.HandleFunc("POST /targets/{id}/rdp-launch", func(w http.ResponseWriter, r *http.Request) {
+		targetID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		role := r.Header.Get("X-PAM-Role")
+		user := r.Header.Get("X-PAM-User")
+		var in struct {
+			Reason string `json:"reason"`
+		}
+		_ = httpx.ReadJSON(r, &in)
+		clientIP := r.Header.Get("X-Forwarded-For")
+		if clientIP == "" {
+			clientIP = r.RemoteAddr
+		}
+		res, err := rdpSvc.Launch(r.Context(), targetID, uid, role, in.Reason, clientIP)
+		if err != nil {
+			switch {
+			case errors.Is(err, rdp.ErrTargetNotFound):
+				httpx.Error(w, http.StatusNotFound, err)
+			case errors.Is(err, rdp.ErrNotRDP):
+				httpx.Error(w, http.StatusBadRequest, err)
+			case errors.Is(err, rdp.ErrPolicyDenied):
+				httpx.Error(w, http.StatusForbidden, err)
+			case errors.Is(err, rdp.ErrApprovalRequired), errors.Is(err, rdp.ErrDualControl):
+				httpx.Error(w, http.StatusForbidden, err)
+			case errors.Is(err, accounts.ErrNoAccountForTarget):
+				httpx.Error(w, http.StatusPreconditionFailed, err)
+			default:
+				httpx.Error(w, http.StatusBadRequest, err)
+			}
+			return
+		}
+		bus.Publish(events.Event{
+			Source: "auth", Kind: "rdp.launch", Severity: "info",
+			Actor: user, Target: strconv.FormatInt(targetID, 10),
+			Detail: map[string]string{
+				"session_id": res.SessionID, "account": res.AccountName,
+				"checkout_id": strconv.FormatInt(res.CheckoutID, 10),
+			},
+		})
+		httpx.JSON(w, http.StatusOK, res)
 	})
 
 	// --- App credentials (CCP) ---

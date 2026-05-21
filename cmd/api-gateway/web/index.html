@@ -99,7 +99,10 @@
   .modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.5); display: none; align-items: center; justify-content: center; z-index: 50; }
   .modal-backdrop.show { display: flex; }
   .modal { background: #fff; border-radius: 10px; padding: 24px; max-width: 520px; width: 90%; max-height: 80vh; overflow: auto; }
+  .modal.modal-lg { max-width: 640px; }
+  .modal.modal-lg .form-grid input, .modal.modal-lg .form-grid select { max-width: none; }
   .modal h3 { margin-top: 0; }
+  .form-grid .tf-hidden { display: none !important; }
 
   /* Mini sparkline chart */
   .chart { display: block; width: 100%; height: 80px; }
@@ -233,56 +236,29 @@
           <h3 style="margin:0">Managed Machines</h3>
           <button class="primary" id="targetAddBtn">+ Add Machine</button>
         </div>
-        <p class="desc">Register servers, network devices, firewalls, hypervisors, web admin consoles, and more. Choose the right <b>connection type</b> per device. Users request JIT access then click <b>Launch</b> to connect (SSH command / .rdp download / browser tab / telnet command).</p>
+        <p class="desc">Register servers, network devices, firewalls, hypervisors, web admin consoles, and more. Choose the right <b>connection type</b> per device. Users request JIT access then click <b>Launch</b> to connect (SSH command / RDP bundle / browser tab / telnet command).</p>
         <table>
           <thead><tr><th>Name</th><th>Platform</th><th>Connection</th><th>Address</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
           <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="targetForm">
-          <h4 id="targetFormTitle">Add machine</h4>
-          <input type="hidden" id="targetId"/>
-          <div class="form-grid">
-            <label>Name</label><input id="targetName" placeholder="core-sw-01 / dc01 / fw-prod"/>
-            <label>Connection type</label>
-            <select id="targetConn">
-              <option value="ssh">SSH (CLI)</option>
-              <option value="rdp">RDP (Windows desktop)</option>
-              <option value="web">Web GUI (HTTPS console)</option>
-              <option value="telnet">Telnet (legacy CLI)</option>
-              <option value="https-api">HTTPS API</option>
-            </select>
-            <label>Platform / OEM</label>
-            <select id="targetKind"></select>
-            <label>Vendor</label><input id="targetVendor" placeholder="Cisco / Fortinet / Microsoft …"/>
-            <label>OS / firmware version</label><input id="targetOSVersion" placeholder="IOS 16.9.5 / FortiOS 7.2 / Windows 2022"/>
-            <div id="targetHostFields">
-              <div class="form-grid">
-                <label>Host / IP</label><input id="targetHost" placeholder="192.168.1.1"/>
-                <label>Port</label><input id="targetPort" type="number" value="22"/>
-              </div>
-            </div>
-            <div id="targetWebFields" style="display:none">
-              <div class="form-grid">
-                <label>Web URL</label><input id="targetWebURL" placeholder="https://fw01.corp.local/login"/>
-              </div>
-            </div>
-            <label>Tier</label>
-            <select id="targetTier">
-              <option value="0">Tier 0 · critical</option><option value="1">Tier 1 · production</option>
-              <option value="2" selected>Tier 2 · staging</option><option value="3">Tier 3 · dev</option>
-            </select>
-            <label>Tags</label><input id="targetTags" placeholder="optional"/>
-          </div>
-          <div class="row" style="margin-top:12px">
-            <button class="primary" id="targetSaveBtn">Save</button>
-            <button class="ghost" id="targetCancelBtn">Cancel</button>
-          </div>
-        </div>
         <div class="form-panel" id="targetConnectGuide" style="margin-top:16px">
-          <h4>Connect to a machine</h4>
-          <p class="muted">After access is approved, run from your workstation (replace <code>user</code>, <code>machine-name</code>, and proxy host):</p>
-          <pre id="targetSshCmd">ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password user@machine-name@localhost</pre>
-          <p class="muted" style="font-size:12px">Tip: click <b>Request access</b> on a machine row, wait for admin approval, then connect.</p>
+          <h4>How access works</h4>
+          <div id="targetConnectSsh">
+            <p class="muted">SSH machines: after access is approved, run from your workstation:</p>
+            <pre id="targetSshCmd">ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password user@machine-name@localhost</pre>
+          </div>
+          <div id="targetConnectRdp" style="display:none">
+            <p class="desc" style="margin:0 0 10px"><b>RDP (CyberArk-style)</b> — PAM does <em>not</em> create a Windows user for each portal login. Instead:</p>
+            <ol class="desc" style="margin:0;padding-left:20px;line-height:1.8">
+              <li>Admin registers the Windows server here (connection type <b>RDP</b>).</li>
+              <li>Admin creates a <b>privileged account</b> in Safes → Privileged Accounts linked to this machine (e.g. <code>Administrator</code> or <code>_PAM_RDP</code>). CPM rotates the password.</li>
+              <li>User submits <b>Request access</b> → approver grants JIT access.</li>
+              <li>User clicks <b>Launch</b> → PAM checks out the privileged credential and downloads a <code>.rdp</code> file + <code>Launch-RDP.ps1</code> helper.</li>
+              <li>On a Windows PC, run the script — it injects credentials and opens Remote Desktop. Delete the script when done.</li>
+            </ol>
+            <p class="muted" style="font-size:12px;margin-top:8px">See <b>Device Setup → Windows Server</b> for the one-time onboarding script to create the PAM-managed local account on the target.</p>
+          </div>
+          <p class="muted" style="font-size:12px;margin-top:10px">Tip: click <b>Request access</b> on a machine row, wait for admin approval, then connect.</p>
         </div>
       </section>
 
@@ -531,10 +507,10 @@
 
       <!-- Sessions -->
       <section class="card tab" id="tab-sessions" style="display:none">
-        <h3>SSH Sessions</h3>
-        <p class="desc">Active sessions can be terminated by admins. The ssh-proxy polls for kill orders every 5 seconds.</p>
+        <h3>Live Sessions</h3>
+        <p class="desc">SSH sessions are recorded by the ssh-proxy (terminable). RDP sessions are audited at launch with credential checkout — full PSM recording is a future enhancement.</p>
         <table>
-          <thead><tr><th>Started</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th><th></th></tr></thead>
+          <thead><tr><th>Started</th><th>Protocol</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th><th></th></tr></thead>
           <tbody id="sessionRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
       </section>
@@ -810,6 +786,41 @@
 </div>
 
 <!-- Group members modal -->
+<div class="modal-backdrop" id="targetModal">
+  <div class="modal modal-lg">
+    <h3 id="targetFormTitle">Add machine</h3>
+    <input type="hidden" id="targetId"/>
+    <div class="form-grid">
+      <label>Name</label><input id="targetName" placeholder="core-sw-01 / dc01 / fw-prod"/>
+      <label>Connection type</label>
+      <select id="targetConn">
+        <option value="ssh">SSH (CLI)</option>
+        <option value="rdp">RDP (Windows desktop)</option>
+        <option value="web">Web GUI (HTTPS console)</option>
+        <option value="telnet">Telnet (legacy CLI)</option>
+        <option value="https-api">HTTPS API</option>
+      </select>
+      <label>Platform / OEM</label>
+      <select id="targetKind"></select>
+      <label>Vendor</label><input id="targetVendor" placeholder="Cisco / Fortinet / Microsoft …"/>
+      <label>OS / firmware version</label><input id="targetOSVersion" placeholder="IOS 16.9.5 / FortiOS 7.2 / Windows 2022"/>
+      <label class="tf-host">Host / IP</label><input class="tf-host" id="targetHost" placeholder="192.168.1.1"/>
+      <label class="tf-port">Port</label><input class="tf-port" id="targetPort" type="number" value="22"/>
+      <label class="tf-web tf-hidden">Web URL</label><input class="tf-web tf-hidden" id="targetWebURL" placeholder="https://fw01.corp.local/login"/>
+      <label>Tier</label>
+      <select id="targetTier">
+        <option value="0">Tier 0 · critical</option><option value="1">Tier 1 · production</option>
+        <option value="2" selected>Tier 2 · staging</option><option value="3">Tier 3 · dev</option>
+      </select>
+      <label>Tags</label><input id="targetTags" placeholder="optional"/>
+    </div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button class="ghost" id="targetCancelBtn">Cancel</button>
+      <button class="primary" id="targetSaveBtn">Save</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="groupMembersModal">
   <div class="modal">
     <h3 id="gmTitle">Group members</h3>
@@ -1487,10 +1498,32 @@ const DEFAULT_PORTS = { ssh: 22, rdp: 3389, telnet: 23, web: 443, "https-api": 4
 function applyConnectionTypeUI() {
   const ct = $("#targetConn").value;
   const isWeb = ct === "web" || ct === "https-api";
-  $("#targetHostFields").style.display = isWeb ? "none" : "";
-  $("#targetWebFields").style.display = isWeb ? "" : "none";
+  document.querySelectorAll("#targetModal .tf-host, #targetModal .tf-port").forEach(el => {
+    el.classList.toggle("tf-hidden", isWeb);
+  });
+  document.querySelectorAll("#targetModal .tf-web").forEach(el => {
+    el.classList.toggle("tf-hidden", !isWeb);
+  });
   $("#targetPort").value = DEFAULT_PORTS[ct] || 22;
   fillTargetKindSelect($("#targetKind"), $("#targetKind").value, {includeAny: false, forPolicy: false});
+  updateConnectGuide();
+}
+
+function openTargetModal(title) {
+  $("#targetFormTitle").textContent = title;
+  $("#targetModal").classList.add("show");
+}
+
+function closeTargetModal() {
+  $("#targetModal").classList.remove("show");
+}
+
+function updateConnectGuide() {
+  const hasRdp = (cache.targets || []).some(t => (t.connection_type||"") === "rdp");
+  const formRdp = $("#targetConn") && $("#targetConn").value === "rdp";
+  const showRdp = hasRdp || formRdp;
+  $("#targetConnectRdp").style.display = showRdp ? "" : "none";
+  $("#targetConnectSsh").style.display = showRdp ? "none" : "";
 }
 
 function connectionBadge(t) {
@@ -1537,6 +1570,7 @@ async function loadTargets() {
       if (t0 && t0.connection_type !== "web" && t0.connection_type !== "https-api") {
         $("#targetSshCmd").textContent = `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${currentUser.username}@${t0.name}@localhost`;
       }
+      updateConnectGuide();
     }
   } catch (e) { $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
 }
@@ -1564,44 +1598,92 @@ window.launchTarget = async id => {
     return;
   }
   if (ct === "rdp") {
-    // Fetch the .rdp file as a blob and trigger download.
+    const reason = prompt("Reason for RDP session (required for audit):", "Approved maintenance");
+    if (reason === null) return;
     try {
-      const params = new URLSearchParams({
-        host: t.host, port: String(t.port||3389),
-        username: currentUser.username, name: t.name,
+      const res = await api(`/auth/targets/${t.id}/rdp-launch`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
       });
-      const r = await fetch("/api/vault/rdp-file?" + params.toString(), {
-        headers: { Authorization: "Bearer " + token },
-      });
-      if (!r.ok) throw new Error(await r.text() || "rdp-file failed");
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = t.name + ".rdp";
-      document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
-      toast("RDP file downloaded — open with mstsc / Remote Desktop", "ok");
-    } catch (e) { toast(e.message, "err"); }
+      showRdpLaunchModal(t, res);
+    } catch (e) {
+      if (e.message && e.message.includes("privileged account")) {
+        toast("No Windows account linked — admin must add one in Safes → Privileged Accounts", "err");
+      } else if (e.message && e.message.includes("approved")) {
+        toast("Access not approved yet — submit Request access first", "err");
+      } else {
+        toast(e.message, "err");
+      }
+    }
     return;
   }
   toast("Unknown connection type: " + ct, "err");
 };
 
-function resetTargetForm() {
+function downloadTextFile(filename, content, mime) {
+  const blob = new Blob([content], { type: mime || "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function showRdpLaunchModal(target, res) {
+  const modal = document.createElement("div");
+  modal.className = "modal-backdrop show";
+  modal.innerHTML = `
+    <div class="modal" style="max-width:640px">
+      <h3>RDP launch — ${esc(target.name)}</h3>
+      <p class="muted">${esc(res.instructions)}</p>
+      <div class="form-grid" style="margin:12px 0">
+        <label>Privileged user</label><input value="${esc(res.username)}" readonly/>
+        <label>Target</label><input value="${esc(res.host)}:${res.port}" readonly/>
+        <label>Account</label><input value="${esc(res.account_name)}" readonly/>
+      </div>
+      <ol class="desc" style="margin:0;padding-left:20px;line-height:1.8">
+        <li>Save both files to the <b>same folder</b> on your Windows PC.</li>
+        <li>Right-click <code>Launch-RDP.ps1</code> → <b>Run with PowerShell</b>.</li>
+        <li>Remote Desktop opens with injected credentials. Delete the .ps1 when done.</li>
+      </ol>
+      <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
+        <button class="primary" id="rdpDlBoth">Download .rdp + .ps1</button>
+        <button class="ghost" id="rdpReturnBtn">Mark session returned</button>
+        <button class="ghost" onclick="this.closest('.modal-backdrop').remove()">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector("#rdpDlBoth").onclick = () => {
+    downloadTextFile(res.rdp_filename, res.rdp_file, "application/x-rdp");
+    setTimeout(() => downloadTextFile("Launch-RDP.ps1", res.launch_script, "text/plain"), 300);
+    toast("Files downloaded — run Launch-RDP.ps1 on Windows", "ok");
+  };
+  modal.querySelector("#rdpReturnBtn").onclick = async (ev) => {
+    try {
+      await api(`/auth/checkouts/${res.checkout_id}/return`, { method: "POST" });
+      toast("Checkout marked returned", "ok");
+      ev.target.closest(".modal-backdrop").remove();
+    } catch (e) { toast(e.message, "err"); }
+  };
+}
+
+function resetTargetForm(closeModal) {
   ["targetId","targetName","targetHost","targetTags","targetVendor","targetOSVersion","targetWebURL"].forEach(id => $("#"+id).value = "");
   $("#targetConn").value = "ssh";
   $("#targetPort").value = "22"; $("#targetTier").value = "2";
   $("#targetName").disabled = false;
   applyConnectionTypeUI();
-  $("#targetForm").classList.add("hidden");
+  if (closeModal !== false) closeTargetModal();
 }
 $("#targetAddBtn").onclick = () => {
-  resetTargetForm();
+  resetTargetForm(false);
   fillTargetKindSelect($("#targetKind"), "cisco-ios", {includeAny: false, forPolicy: false});
-  $("#targetFormTitle").textContent = "Add machine";
-  $("#targetForm").classList.remove("hidden");
+  openTargetModal("Add machine");
 };
 $("#targetCancelBtn").onclick = resetTargetForm;
+$("#targetModal").addEventListener("click", e => {
+  if (e.target === $("#targetModal")) resetTargetForm();
+});
 $("#targetConn").addEventListener("change", applyConnectionTypeUI);
 window.editTarget = id => {
   const t = cache.targets.find(x => x.id === id); if (!t) return;
@@ -1615,7 +1697,7 @@ window.editTarget = id => {
   $("#targetWebURL").value = t.web_url || "";
   $("#targetTier").value = t.tier; $("#targetTags").value = t.tags || "";
   applyConnectionTypeUI();
-  $("#targetFormTitle").textContent = "Edit machine"; $("#targetForm").classList.remove("hidden");
+  openTargetModal("Edit machine");
 };
 $("#targetSaveBtn").onclick = async () => {
   const body = {
@@ -2043,11 +2125,13 @@ async function loadSessions() {
     if (!(rows||[]).length) { $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">No sessions yet.</td></tr>`; return; }
     $("#sessionRows").innerHTML = rows.map(s => {
       const active = !s.ended_at;
-      const terminateBtn = (active && isAdmin())
+      const terminateBtn = (active && isAdmin() && (s.protocol||"ssh") === "ssh")
         ? `<button class="ghost danger" onclick="terminateSession(${JSON.stringify(s.id)})">Terminate</button>`
         : "";
+      const proto = (s.protocol || "ssh").toUpperCase();
       return `<tr>
         <td>${fmtTime(s.started_at)}</td>
+        <td><span class="pill ${proto==='RDP'?'warn':''}">${esc(proto)}</span></td>
         <td>${esc(um[s.user_id] || s.user_id)}</td>
         <td>${esc(tm[s.target_id] || s.target_id)}</td>
         <td class="muted">${esc(s.client_ip) || '—'}</td>
@@ -2845,7 +2929,7 @@ diagnose test authserver tacacs+ PAM-TAC <user> <password>` },
 
   "windows-server": {
     label: "Windows Server (RDP + OpenSSH)",
-    intro: "Windows targets run the built-in OpenSSH Server and trust the PAM SSH CA the same way Linux does. RDP can be tunnelled over the same SSH session.",
+    intro: "Windows targets use a CyberArk-style model: one PAM-managed privileged account per server (stored in a Safe, rotated by CPM). Portal users checkout that account at RDP launch — they are never created as Windows users.",
     prereqs: [
       "Windows Server 2019 or later (or Windows 10/11)",
       "Local Administrator to enable OpenSSH",
@@ -2908,19 +2992,40 @@ net localgroup "Remote Desktop Users" CORP\\jdoe /add` },
 # Then verify Windows Firewall:
 #   Control Panel  ->  Windows Defender Firewall  ->  Allowed apps
 #   Make sure "Remote Desktop" is enabled for Domain + Private networks.` },
-      { title: "7. Register in PAM (RDP)",
+      { title: "7. Create the PAM-managed privileged account (one-time)",
         code:
-`# In the PAM console:
-#   Machines -> + Add Machine
+`# CyberArk model: ONE shared privileged account per server, stored in a PAM Safe.
+# Portal users are NEVER created on Windows — they borrow this account via checkout.
+#
+# Run elevated PowerShell on the target ONCE:
+
+$User = "_PAM_RDP"
+$Pass = Read-Host "Initial password (CPM will rotate this)" -AsSecureString
+New-LocalUser -Name $User -Password $Pass -PasswordNeverExpires -UserMayNotChangePassword
+Add-LocalGroupMember -Group "Remote Desktop Users" -Member $User
+Add-LocalGroupMember -Group "Administrators" -Member $User   # or least-privilege group
+
+Write-Host "Created $User — add this account in PAM Safes -> Privileged Accounts"` },
+      { title: "8. Register in PAM (machine + account)",
+        code:
+`# Step A — Machines -> + Add Machine
 #   Name:            dc01
 #   Connection type: RDP (Windows desktop)
 #   Platform:        Windows Server (2016+)
 #   Host:            <server IP or FQDN>
-#   Port:            3389 (default)
-#   Tier:            1 (production)
+#   Port:            3389
 #
-# Users will click Launch -> a tailored .rdp file is downloaded with the
-# correct host + username. Open it with mstsc / Remote Desktop client.` },
+# Step B — Safes -> create or pick a safe (enable CPM for auto-rotation)
+#   Privileged Accounts -> + Add Account
+#   Name:      rdp@dc01
+#   Username:  _PAM_RDP          (or Administrator)
+#   Platform:  windows
+#   Target:    dc01              (link to the machine above)
+#   Password:  <initial password from step 7>
+#
+# Step C — Policies: allow your role + require approval for windows/rdp targets
+#
+# Users: Request access -> approved -> Launch -> download .rdp + Launch-RDP.ps1` },
     ],
   },
 
@@ -3738,16 +3843,19 @@ slappasswd -s <password>   # paste into slapd.conf -> rootpw` },
 
   "generic-rdp": {
     label: "Generic RDP host",
-    intro: "Any Windows host with RDP enabled. PAM generates the .rdp file when the user clicks Launch.",
-    prereqs: ["RDP enabled on the target"],
+    intro: "Any Windows host with RDP enabled. PAM uses a CyberArk-style model: one privileged account per server in a Safe; users checkout credentials at launch time.",
+    prereqs: ["RDP enabled on the target", "PAM-managed privileged account created on the server"],
     steps: [
-      { title: "1. Register",
+      { title: "1. Create privileged account on Windows",
         code:
-`# Machines -> + Add Machine
-#   Connection: RDP
-#   Host: <hostname or IP>
-#   Port: 3389
-# Users click Launch -> .rdp file downloads with hostname + username pre-filled.` },
+`# One-time on the target (elevated PowerShell):
+New-LocalUser -Name "_PAM_RDP" -Password (Read-Host -AsSecureString) -PasswordNeverExpires
+Add-LocalGroupMember -Group "Remote Desktop Users" -Member "_PAM_RDP"` },
+      { title: "2. Register machine + account in PAM",
+        code:
+`# Machines -> RDP connection, Host + Port 3389
+# Safes -> Privileged Accounts -> link account to machine, platform=windows
+# Users: Request access -> Launch -> run Launch-RDP.ps1 on Windows PC` },
     ],
   },
 
