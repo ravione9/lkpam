@@ -58,6 +58,7 @@ func (s *Server) Run(ctx context.Context) error {
 	cfg := &ssh.ServerConfig{
 		PasswordCallback:            s.passwordAuth,
 		KeyboardInteractiveCallback: s.keyboardInteractiveAuth,
+		MaxAuthTries:                3,
 	}
 	cfg.AddHostKey(s.HostKey)
 
@@ -370,28 +371,27 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	}
 
 	targetID := mustAtoi(sconn.Permissions.Extensions["target-id"])
-	downUser, downPassword, authMode := "", "", ""
-	if u, pw, ok := s.lookupPrivilegedAccount(targetID); ok {
-		downUser, downPassword, authMode = u, pw, "priv-account"
-	} else if pw := sconn.Permissions.Extensions["pt-password"]; pw != "" {
-		// Passthrough: use the clean portal username (not the "user@#id" proxy string).
-		downUser, downPassword, authMode = portalUsername, pw, "passthrough"
+	ptPassword := sconn.Permissions.Extensions["pt-password"]
+	privUser, privPassword, hasPriv := s.lookupPrivilegedAccount(targetID)
+
+	// Build ordered downstream login attempts:
+	//   1. Privileged account (PSM vault credentials)
+	//   2. Passthrough (portal password — works when Linux has the same user)
+	//   3. Ephemeral SSH cert (only when target trusts PAM CA)
+	type loginPlan struct {
+		user, password, mode string
+	}
+	var plans []loginPlan
+	if hasPriv {
+		plans = append(plans, loginPlan{privUser, privPassword, "priv-account"})
+	}
+	if ptPassword != "" {
+		plans = append(plans, loginPlan{portalUsername, ptPassword, "passthrough"})
 	}
 
+	downUser, authMode := portalUsername, ""
 	var authMethods []ssh.AuthMethod
-	if downPassword != "" {
-		pw := downPassword
-		authMethods = append(authMethods,
-			ssh.Password(pw),
-			ssh.KeyboardInteractive(func(_, _ string, qs []string, _ []bool) ([]string, error) {
-				out := make([]string, len(qs))
-				for i := range qs {
-					out[i] = pw
-				}
-				return out, nil
-			}),
-		)
-	} else {
+	if len(plans) == 0 {
 		downUser = "pam-user"
 		authMode = "ssh-cert"
 		principals := []string{sconn.Permissions.Extensions["role"], "pam-user"}
@@ -407,54 +407,56 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 			return
 		}
 		authMethods = []ssh.AuthMethod{ssh.PublicKeys(upSigner)}
+		plans = []loginPlan{{downUser, "", "ssh-cert"}}
 	}
-
-	s.Bus.Publish(events.Event{
-		Source: "ssh-proxy", Kind: "session.open", Severity: "info",
-		Actor: portalUsername, Target: targetName,
-		Detail: map[string]string{
-			"session_id":  sessionID,
-			"client":      nc.RemoteAddr().String(),
-			"auth_mode":   authMode,
-			"device_user": downUser,
-			"portal_user": portalUsername,
-		},
-	})
 
 	// Dial the target in parallel with accepting the user's session channel.
 	// Blocking on ssh.Dial before reading from chans deadlocks the SSH
 	// connection: the client cannot open a session until the server reads
 	// chans, so dial failures never reach the user and OpenSSH retries auth.
 	targetAddr := fmt.Sprintf("%s:%s", host, port)
-	clientCfg := &ssh.ClientConfig{
-		User:            downUser,
-		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // dev mode; replace with HostKeys table in prod
-		Timeout:         10 * time.Second,
-	}
 	type dialOutcome struct {
-		client *ssh.Client
-		err    error
+		client   *ssh.Client
+		err      error
+		user     string
+		authMode string
 	}
 	dialCh := make(chan dialOutcome, 1)
 	go func() {
-		log.Printf("ssh-proxy: dialing target %s as %q (mode=%s)", targetAddr, downUser, authMode)
-		c, err := ssh.Dial("tcp", targetAddr, clientCfg)
-		dialCh <- dialOutcome{client: c, err: err}
+		var last dialOutcome
+		for i, plan := range plans {
+			cfg := s.buildDownstreamConfig(plan.user, plan.password, authMethods)
+			log.Printf("ssh-proxy: dialing target %s as %q (mode=%s, attempt %d/%d)", targetAddr, plan.user, plan.mode, i+1, len(plans))
+			c, err := ssh.Dial("tcp", targetAddr, cfg)
+			if err == nil {
+				dialCh <- dialOutcome{client: c, user: plan.user, authMode: plan.mode}
+				return
+			}
+			last = dialOutcome{err: err, user: plan.user, authMode: plan.mode}
+			log.Printf("ssh-proxy: dial failed for %s as %q (mode=%s): %v", targetAddr, plan.user, plan.mode, err)
+			// Only fall back to passthrough when the privileged account was rejected.
+			if plan.mode == "priv-account" && i+1 < len(plans) && isDownstreamAuthFailure(err) {
+				log.Printf("ssh-proxy: privileged account rejected — trying passthrough as %q", plans[i+1].user)
+				continue
+			}
+			break
+		}
+		dialCh <- last
 	}()
 
-	dialErrMsg := func(err error) string {
-		switch authMode {
+	dialErrMsg := func(out dialOutcome) string {
+		switch out.authMode {
 		case "priv-account":
-			return fmt.Sprintf("PAM: could not log in to %s as %s.\r\nCheck the privileged account password in Privileged Accounts.\r\nUnderlying error: %v\r\n", host, downUser, err)
+			return fmt.Sprintf("PAM: could not log in to %s as %s (privileged account).\r\nCheck the password in Privileged Accounts, or remove the account to use your portal credentials.\r\nUnderlying error: %v\r\n", host, out.user, out.err)
 		case "passthrough":
-			return fmt.Sprintf("PAM: could not log in to %s as %s using your portal credentials.\r\nAdd a privileged account for this target (Privileged Accounts tab) with the actual device username + password.\r\nUnderlying error: %v\r\n", host, downUser, err)
+			return fmt.Sprintf("PAM: could not log in to %s as %s using your portal credentials.\r\nFor Linux: ensure user %s exists on the server, PasswordAuthentication is enabled in sshd_config, and the password matches your PAM login.\r\nOr add a Privileged Account with the device username + password.\r\nUnderlying error: %v\r\n", host, out.user, out.user, out.err)
 		default:
-			return fmt.Sprintf("PAM: could not connect to %s.\r\nAdd a privileged account for this target in the Privileged Accounts tab so PAM can log in for you.\r\nUnderlying error: %v\r\n", host, err)
+			return fmt.Sprintf("PAM: could not connect to %s.\r\nAdd a privileged account for this target in the Privileged Accounts tab so PAM can log in for you.\r\nUnderlying error: %v\r\n", host, out.err)
 		}
 	}
 
 	var upClient *ssh.Client
+	var activeMode string
 
 	// Open recording file (browser sessions are recorded by guacd; skip duplicate tee).
 	var rec *os.File
@@ -463,6 +465,7 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		rec, err = os.OpenFile(recPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			log.Printf("open recording: %v", err)
+			s.sendShellError(chans, fmt.Sprintf("PAM: internal error — could not start session recording.\r\nUnderlying error: %v\r\n", err))
 			return
 		}
 		defer rec.Close()
@@ -483,6 +486,13 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		}
 	}
 
+	failSession := func(reason string) {
+		if browserSess == "" {
+			_, _ = s.DB.Exec(`UPDATE sessions SET ended_at = ?, ended_reason = ? WHERE id = ?`,
+				time.Now().Unix(), reason, sessionID)
+		}
+	}
+
 	// Each downstream channel from the user is mirrored to the target.
 	for newChan := range chans {
 		if newChan.ChannelType() != "session" {
@@ -492,11 +502,13 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		if upClient == nil {
 			out := <-dialCh
 			if out.err != nil {
-				log.Printf("dial target %s as %q (mode=%s): %v", targetAddr, downUser, authMode, out.err)
-				s.replyChannelError(newChan, dialErrMsg(out.err))
+				log.Printf("dial target %s as %q (mode=%s): %v", targetAddr, out.user, out.authMode, out.err)
+				failSession("failed")
+				msg := dialErrMsg(out)
+				s.replyChannelError(newChan, msg)
 				for extra := range chans {
 					if extra.ChannelType() == "session" {
-						s.replyChannelError(extra, dialErrMsg(out.err))
+						s.replyChannelError(extra, msg)
 					} else {
 						extra.Reject(ssh.UnknownChannelType, "only session channels supported")
 					}
@@ -504,7 +516,22 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 				return
 			}
 			upClient = out.client
+			activeMode = out.authMode
+			downUser = out.user
 			defer upClient.Close()
+			log.Printf("ssh-proxy: connected to %s as %q (mode=%s)", targetAddr, downUser, activeMode)
+
+			s.Bus.Publish(events.Event{
+				Source: "ssh-proxy", Kind: "session.open", Severity: "info",
+				Actor: portalUsername, Target: targetName,
+				Detail: map[string]string{
+					"session_id":  sessionID,
+					"client":      nc.RemoteAddr().String(),
+					"auth_mode":   activeMode,
+					"device_user": downUser,
+					"portal_user": portalUsername,
+				},
+			})
 
 			// Background watcher: poll session_terminations every 5s and tear down
 			// this connection if an admin requested termination.
@@ -569,6 +596,8 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 	upCh, upReqs, err := upClient.OpenChannel("session", nil)
 	if err != nil {
 		log.Printf("open up chan: %v", err)
+		writeUserChannelMessage(downCh, downReqs,
+			fmt.Sprintf("PAM: connected to target but could not open a shell session.\r\nUnderlying error: %v\r\n", err))
 		return
 	}
 	defer upCh.Close()
@@ -666,16 +695,92 @@ func (s *Server) replyChannelError(nc ssh.NewChannel, msg string) {
 		log.Printf("accept error chan: %v", err)
 		return
 	}
+	writeUserChannelMessage(ch, reqs, msg)
+}
+
+// writeUserChannelMessage waits for the client to request a shell/PTY (as
+// OpenSSH does) before writing text. Writing immediately after Accept() races
+// the client and the message is often never displayed — which looks like a
+// silent hang after a successful PAM login.
+func writeUserChannelMessage(ch ssh.Channel, reqs <-chan *ssh.Request, msg string) {
+	done := make(chan struct{})
 	go func() {
-		for r := range reqs {
-			if r.WantReply {
-				_ = r.Reply(true, nil)
+		defer close(done)
+		shellStarted := false
+		for req := range reqs {
+			switch req.Type {
+			case "pty-req", "env", "subsystem":
+				if req.WantReply {
+					_ = req.Reply(true, nil)
+				}
+			case "shell", "exec":
+				if req.WantReply {
+					_ = req.Reply(true, nil)
+				}
+				if !shellStarted {
+					shellStarted = true
+					_, _ = ch.Write([]byte(msg))
+					_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 1}))
+					_ = ch.Close()
+					return
+				}
+			default:
+				if req.WantReply {
+					_ = req.Reply(false, nil)
+				}
 			}
 		}
+		if !shellStarted {
+			_, _ = ch.Write([]byte(msg))
+			_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 1}))
+			_ = ch.Close()
+		}
 	}()
-	_, _ = ch.Write([]byte(msg))
-	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 1}))
-	_ = ch.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		_, _ = ch.Write([]byte(msg))
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 1}))
+		_ = ch.Close()
+	}
+}
+
+// buildDownstreamConfig returns an ssh.ClientConfig for logging into the target.
+func (s *Server) buildDownstreamConfig(user, password string, certMethods []ssh.AuthMethod) *ssh.ClientConfig {
+	if password == "" && len(certMethods) > 0 {
+		return &ssh.ClientConfig{
+			User:            user,
+			Auth:            certMethods,
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         10 * time.Second,
+		}
+	}
+	pw := password
+	return &ssh.ClientConfig{
+		User: user,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(pw),
+			ssh.KeyboardInteractive(func(_, _ string, qs []string, _ []bool) ([]string, error) {
+				out := make([]string, len(qs))
+				for i := range qs {
+					out[i] = pw
+				}
+				return out, nil
+			}),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
+	}
+}
+
+func isDownstreamAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unable to authenticate") ||
+		strings.Contains(msg, "no supported methods") ||
+		strings.Contains(msg, "permission denied")
 }
 
 // forwardRequests forwards out-of-band ssh requests between sides.
