@@ -119,7 +119,10 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 
 	if !allowSeen {
 		final.Allow = false
-		final.Reasons = []string{"no matching policy for any effective role/tier"}
+		final.Reasons = []string{fmt.Sprintf(
+			"no policy permits roles=%v on kind=%q (family=%q) at tier=%d",
+			roles, exactKind, family, in.TargetTier,
+		)}
 		return final, nil
 	}
 	final.Allow = true

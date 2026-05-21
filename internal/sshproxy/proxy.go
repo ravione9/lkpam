@@ -310,6 +310,8 @@ func (s *Server) evaluateAccess(ctx context.Context, userID int64, primaryRole s
 		return dec, err
 	}
 	if !dec.Allow {
+		log.Printf("ssh-proxy: policy deny user=%d primary_role=%q effective=%v target=#%d kind=%q tier=%d reasons=%v",
+			userID, primaryRole, roles, targetID, kind, tier, dec.Reasons)
 		return dec, fmt.Errorf("denied by policy: %v", dec.Reasons)
 	}
 	if dec.RequireApproval && s.Approval != nil {
