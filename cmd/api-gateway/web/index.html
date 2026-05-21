@@ -1101,10 +1101,27 @@ function esc(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// sshTargetRef returns a proxy-safe machine identifier (#id avoids spaces in names).
+// sshTargetRef returns a proxy-safe machine identifier. It prefers a
+// human-readable slug of the machine name (e.g. "linux-server") so the
+// connection string makes it obvious which device the session will hit, and
+// falls back to "#id" when the name contains characters that ssh cannot pass
+// through (spaces, @, etc.). Both forms resolve to the same target.
 function sshTargetRef(target) {
-  const id = typeof target === "object" ? target.id : target;
-  return "#" + id;
+  if (typeof target !== "object" || target === null) {
+    return "#" + target;
+  }
+  const slug = sshTargetSlug(target.name);
+  if (slug) return slug;
+  return "#" + target.id;
+}
+
+function sshTargetSlug(name) {
+  if (!name) return "";
+  const trimmed = String(name).trim();
+  if (!trimmed) return "";
+  // Allow only ASCII letters, digits, dot, underscore, hyphen — anything that
+  // round-trips cleanly through ssh user@target parsing on any client.
+  return /^[A-Za-z0-9._-]+$/.test(trimmed) ? trimmed : "";
 }
 
 function sshProxyHost() {

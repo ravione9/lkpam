@@ -127,7 +127,17 @@ func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInte
 	if !ok {
 		return nil, errors.New("login must be user@target")
 	}
-	answers, err := ch(user, "Authenticating to PAM Platform — AD or local credentials accepted.",
+	// Resolve the target up front so the user sees a clear "PAM → <NAME>
+	// (<HOST>:<PORT>)" banner during the password/MFA prompt. This eliminates
+	// the previous ambiguity where '#id' refs gave no hint which machine you
+	// were about to log into.
+	resolvedHint := target
+	if tid, name, kind, host, port, _, rerr := s.resolveTarget(target); rerr == nil {
+		resolvedHint = fmt.Sprintf("%s [%s] %s:%d (id %d)", name, kind, host, port, tid)
+	} else {
+		resolvedHint = target + " — unknown machine (will fail authorization)"
+	}
+	answers, err := ch(user, fmt.Sprintf("PAM Platform → %s\r\nAuthenticate with your portal credentials (AD or local). MFA is requested if enrolled.", resolvedHint),
 		[]string{"Password: ", "MFA code (blank if not enrolled): "},
 		[]bool{false, true})
 	if err != nil {
@@ -286,6 +296,7 @@ func (s *Server) tryBrowserToken(loginUser, targetRef, token string) (*ssh.Permi
 			"kind":               kind,
 			"host":               host,
 			"port":               fmt.Sprintf("%d", port),
+			"tier":               fmt.Sprintf("%d", tier),
 			"allow-csv":          joinCSV(dec.AllowedCmds),
 			"deny-csv":           joinCSV(dec.DeniedCmds),
 			"browser-session-id": creds.SessionID,
@@ -339,6 +350,7 @@ func (s *Server) authorizeAndStash(u *authedUser, target string) (*ssh.Permissio
 	if err != nil {
 		return nil, err
 	}
+	// Pass tier through in permissions so the handler can build a helpful banner.
 	return &ssh.Permissions{
 		Extensions: map[string]string{
 			"user-id":   fmt.Sprintf("%d", u.ID),
@@ -348,6 +360,7 @@ func (s *Server) authorizeAndStash(u *authedUser, target string) (*ssh.Permissio
 			"kind":      kind,
 			"host":      host,
 			"port":      fmt.Sprintf("%d", port),
+			"tier":      fmt.Sprintf("%d", tier),
 			"allow-csv": joinCSV(dec.AllowedCmds),
 			"deny-csv":  joinCSV(dec.DeniedCmds),
 		},
@@ -368,6 +381,8 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	host := sconn.Permissions.Extensions["host"]
 	port := sconn.Permissions.Extensions["port"]
 	targetName := sconn.Permissions.Extensions["target"]
+	targetKind := sconn.Permissions.Extensions["kind"]
+	targetTier := sconn.Permissions.Extensions["tier"]
 	user := sconn.User()
 	browserSess := sconn.Permissions.Extensions["browser-session-id"]
 	sessionID := browserSess
@@ -565,7 +580,7 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 			defer termCancel()
 			go s.watchTermination(termCtx, sessionID, sconn, upClient)
 		}
-		go s.pipeSession(newChan, upClient, rec, sessionID, user, targetName)
+		go s.pipeSession(newChan, upClient, rec, sessionID, user, targetName, buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode))
 	}
 
 	// Mark session closed (browser sessions are ended by rdp-proxy when guacd disconnects).
@@ -611,7 +626,29 @@ func (s *Server) watchTermination(ctx context.Context, sessionID string,
 	}
 }
 
-func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string) {
+// buildSessionBanner returns the bold "Connected to NAME (HOST:PORT)" lines
+// shown in the user's terminal before any output from the target so a
+// mis-typed target ID is obvious immediately.
+func buildSessionBanner(name, kind, host, port, tier, downUser, authMode string) string {
+	if name == "" {
+		return ""
+	}
+	tierLabel := "T?"
+	if tier != "" {
+		tierLabel = "T" + tier
+	}
+	header := "\r\n\x1b[1;36m── PAM session ──────────────────────────────────────\x1b[0m\r\n"
+	body := fmt.Sprintf(
+		"  \x1b[1mMachine:\x1b[0m   %s  (%s, %s)\r\n"+
+			"  \x1b[1mDevice:\x1b[0m    %s:%s as %s\r\n"+
+			"  \x1b[1mAuth mode:\x1b[0m %s\r\n",
+		name, kind, tierLabel, host, port, downUser, authMode,
+	)
+	footer := "\x1b[1;36m─────────────────────────────────────────────────────\x1b[0m\r\n\r\n"
+	return header + body + footer
+}
+
+func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string, banner string) {
 	downCh, downReqs, err := newChan.Accept()
 	if err != nil {
 		log.Printf("accept down chan: %v", err)
@@ -627,6 +664,14 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 		return
 	}
 	defer upCh.Close()
+
+	// Show a one-line confirmation of WHERE the user just landed so a
+	// mis-typed target ID is immediately obvious. The banner is written into
+	// the user-facing stream only (not forwarded upstream, not recorded as
+	// keystroke input).
+	if banner != "" {
+		_, _ = downCh.Write([]byte(banner))
+	}
 
 	// Forward channel requests both ways (pty-req, shell, env, exec, window-change).
 	go forwardRequests(downReqs, upCh, "->up")
