@@ -1903,14 +1903,33 @@ window.launchTarget = async id => {
       toast("No Web URL set for this target — admin must edit it", "err");
       return;
     }
-    let url = t.web_url;
-    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
-    const win = window.open(url, "_blank", "noopener");
-    if (!win) {
-      copyToClipboard(url);
-      toast("Pop-up blocked — URL copied to clipboard", "err");
-    } else {
-      toast("Web console opened — check out credentials from Privileged Accounts if needed", "ok");
+    try {
+      const res = await api(`/auth/targets/${t.id}/web-launch`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "Web console session via PAM" }),
+      });
+      const viewerU = new URL(res.viewer_url || "/web-viewer.html", location.origin);
+      viewerU.searchParams.set("session", res.session_id);
+      if (token) viewerU.searchParams.set("token", token);
+      const win = window.open(viewerU.toString(), "_blank",
+        "noopener,width=1280,height=820");
+      if (!win) {
+        copyToClipboard(viewerU.toString());
+        toast("Pop-up blocked — viewer URL copied to clipboard", "err");
+      } else {
+        toast(`Web console opening — session recorded (${res.has_account ? "credentials injected" : "no account linked"})`, "ok");
+      }
+    } catch (e) {
+      const m = (e.message || "").toLowerCase();
+      if (m.includes("approved") || m.includes("approval")) {
+        toast("Access not approved yet — submit Request access first", "err");
+      } else {
+        // Fallback: open directly if launch API fails (e.g. no policy yet)
+        let url = t.web_url;
+        if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+        window.open(url, "_blank", "noopener");
+        toast("Opened directly (PAM web-launch failed: " + e.message + ")", "err");
+      }
     }
     return;
   }

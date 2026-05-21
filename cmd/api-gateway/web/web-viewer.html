@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>PAM — Web Console (Recorded)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; height: 100vh; display: flex; flex-direction: column; }
+    header { padding: 8px 16px; background: #020617; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #334155; flex-shrink: 0; }
+    header h1 { font-size: 14px; font-weight: 600; }
+    .muted { font-size: 12px; color: #94a3b8; }
+    .pill { display:inline-block; padding:2px 10px; border-radius:10px; font-size:11px; background:#1e293b; border:1px solid #334155; color:#94a3b8; }
+    .pill.ok { color:#4ade80; border-color:#4ade80; background:#052e16; }
+    .pill.warn { color:#fb923c; border-color:#fb923c; background:#431407; }
+    .cred-box { display:none; background:#1e293b; border:1px solid #334155; border-radius:6px; padding:8px 12px; margin-top:4px; font-size:12px; font-family: monospace; }
+    iframe { flex: 1; border: none; width: 100%; display: block; }
+    #no-frame { flex:1; display:none; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:32px; }
+    #no-frame p { font-size:13px; color:#94a3b8; max-width:480px; text-align:center; line-height:1.6; }
+    button { font-family: inherit; cursor: pointer; }
+    .btn { background: #2563eb; color: #fff; border: none; padding: 7px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; }
+    .btn.ghost { background: transparent; border: 1px solid #334155; color: #e2e8f0; }
+    .btn.danger { background: #991b1b; }
+    .row { display:flex; align-items:center; gap:10px; }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>PAM Web Console — <span id="targetName">Loading…</span></h1>
+    <div class="row" style="margin-top:3px;gap:8px">
+      <span class="muted" id="sessionLabel"></span>
+      <span class="pill ok" id="statusPill">active</span>
+    </div>
+  </div>
+  <div class="row">
+    <button class="btn ghost" id="showCredsBtn" style="display:none">Show credentials</button>
+    <button class="btn ghost" id="openDirectBtn">Open directly ↗</button>
+    <button class="btn danger" id="endBtn">End Session</button>
+  </div>
+</header>
+<div id="credBar" class="cred-box" style="margin:0 16px 6px"></div>
+<iframe id="frame" sandbox="allow-forms allow-scripts allow-same-origin allow-popups allow-modals allow-downloads" allowfullscreen></iframe>
+<div id="no-frame" style="display:none">
+  <p id="noFrameMsg">The web console could not be loaded in the proxy. This happens with applications that block embedding. Use the <b>Open directly</b> button above to open the target in a new tab — your credentials have been shown in the panel below.</p>
+  <button class="btn ghost" id="openDirectBtn2">Open in new tab</button>
+</div>
+
+<script>
+  const params = new URLSearchParams(location.search);
+  const sessionId = params.get("session");
+  const token     = params.get("token") || localStorage.getItem("pam_token");
+  const headers   = token ? { Authorization: "Bearer " + token } : {};
+
+  const nameEl    = document.getElementById("targetName");
+  const labelEl   = document.getElementById("sessionLabel");
+  const statusEl  = document.getElementById("statusPill");
+  const credBar   = document.getElementById("credBar");
+  const frame     = document.getElementById("frame");
+  const noFrame   = document.getElementById("no-frame");
+  const showCreds = document.getElementById("showCredsBtn");
+  const openDirect = document.getElementById("openDirectBtn");
+  const openDirect2 = document.getElementById("openDirectBtn2");
+
+  let targetURL = "";
+
+  if (!sessionId) {
+    nameEl.textContent = "Missing session — launch from the PAM portal.";
+    statusEl.textContent = "error";
+    statusEl.className = "pill warn";
+  } else {
+    labelEl.textContent = "Session: " + sessionId;
+
+    fetch("/api/auth/web-session/" + encodeURIComponent(sessionId), { headers })
+      .then(r => r.ok ? r.json() : Promise.reject(r))
+      .then(info => {
+        nameEl.textContent   = info.target_name || sessionId;
+        targetURL            = info.web_url     || "";
+        const proxyURL       = "/web/" + encodeURIComponent(sessionId) + "/";
+
+        openDirect.onclick  = () => window.open(targetURL, "_blank", "noopener");
+        openDirect2.onclick = () => window.open(targetURL, "_blank", "noopener");
+
+        if (info.username) {
+          showCreds.style.display = "";
+          credBar.innerHTML = `
+            <b>Auto-login credentials injected by PAM:</b>
+            Username: <b>${esc(info.username)}</b>
+            &nbsp;·&nbsp;
+            Password: <span id="pwSpan" style="filter:blur(4px);cursor:pointer" title="click to reveal">${esc(info.password || "••••••••")}</span>
+            <button class="btn ghost" style="font-size:11px;padding:2px 8px;margin-left:6px" id="copyPwBtn">Copy</button>`;
+          document.getElementById("pwSpan").onclick = function() { this.style.filter = ""; };
+          if (info.password) {
+            document.getElementById("copyPwBtn").onclick = () => {
+              navigator.clipboard.writeText(info.password).then(() => alert("Copied!"));
+            };
+          }
+        }
+
+        showCreds.onclick = () => {
+          credBar.style.display = credBar.style.display === "none" ? "block" : "none";
+        };
+
+        // Try loading in proxy iframe first.
+        frame.src = proxyURL;
+        frame.onload = () => {
+          try {
+            // Check same-origin access — if the page blocked framing we detect a blank doc.
+            const doc = frame.contentDocument;
+            if (!doc || doc.URL === "about:blank") throw new Error("blank");
+          } catch {
+            showFallback();
+          }
+        };
+        frame.onerror = showFallback;
+
+        // Fallback: some devices send X-Frame-Options: DENY even after we strip headers.
+        // Give the proxy 4s to render; if iframe is still blank switch to fallback.
+        setTimeout(() => {
+          try {
+            const doc = frame.contentDocument;
+            if (!doc || doc.body === null || doc.body.innerHTML.trim() === "") {
+              showFallback();
+            }
+          } catch { showFallback(); }
+        }, 4000);
+      })
+      .catch(() => {
+        nameEl.textContent = "Session not found or expired.";
+        statusEl.textContent = "error";
+        statusEl.className = "pill warn";
+      });
+  }
+
+  function showFallback() {
+    frame.style.display = "none";
+    noFrame.style.display = "flex";
+    credBar.style.display = "block";
+    if (targetURL) openDirect.onclick = () => window.open(targetURL, "_blank", "noopener");
+  }
+
+  function esc(s) {
+    return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  document.getElementById("endBtn").onclick = async () => {
+    if (!sessionId || !token) return;
+    try {
+      await fetch("/api/audit/sessions/" + encodeURIComponent(sessionId) + "/terminate", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "User ended web session" }),
+      });
+    } catch {}
+    statusEl.textContent = "ended";
+    statusEl.className = "pill";
+    frame.src = "about:blank";
+    noFrame.style.display = "none";
+    frame.style.display = "none";
+    document.getElementById("endBtn").disabled = true;
+    setTimeout(() => window.close(), 1500);
+  };
+</script>
+</body>
+</html>

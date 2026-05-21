@@ -10,7 +10,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -24,7 +26,10 @@ import (
 
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/httpx"
+	"github.com/example/pam-platform/internal/weblaunch"
 )
+
+type tlsConfig = tls.Config
 
 //go:embed web/*
 var webFS embed.FS
@@ -80,6 +85,9 @@ var adminWriteMatchers = []struct {
 	{"POST", "/api/audit/sessions/"}, // terminate
 }
 
+// weblaunch is imported for the SessionCreds type used in the web proxy.
+var _ = weblaunch.SessionCreds{}
+
 func main() {
 	authURL := mustURL(config.Get("PAM_AUTH_URL", "http://localhost:8081"))
 	vaultURL := mustURL(config.Get("PAM_VAULT_URL", "http://localhost:8082"))
@@ -111,10 +119,18 @@ func main() {
 	mux.Handle("/api/rdp/", http.StripPrefix("/api/rdp", reverse(rdpURL)))
 
 	// Session viewer pages must never fall back to index.html (that shows the login UI).
-	for _, page := range []string{"rdp-viewer.html", "ssh-viewer.html"} {
+	for _, page := range []string{"rdp-viewer.html", "ssh-viewer.html", "web-viewer.html"} {
 		name := page
 		mux.HandleFunc("GET /"+name, serveWebFile(name))
 	}
+
+	// Web console reverse-proxy: /web/{sessionID}/{*path}
+	// Validates the portal JWT, loads session credentials from vault (via auth-service),
+	// and transparently proxies the browser to the target web console.
+	vaultSvc := mustURL(config.Get("PAM_VAULT_URL", "http://localhost:8082"))
+	mux.Handle("/web/", gated(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		webConsoleProxy(w, r, authURL, vaultSvc)
+	}), authURL))
 
 	// Static UI (SPA fallback only for non-file routes).
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -247,6 +263,159 @@ func mustURL(s string) *url.URL {
 	}
 	return u
 }
+
+// webConsoleProxy reverse-proxies a browser to a web-console target.
+// URL format:  /web/{sessionID}/{*rest}
+// On first load the session token is validated. The vault is queried for the
+// stored credentials; they are injected as a Basic Auth header on every request
+// to the target. All relative links work as-is because the browser path prefix
+// /web/{sessionID}/ acts as the session namespace.
+func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase *url.URL) {
+	// Parse /web/{sessionID}/{*rest}
+	path := strings.TrimPrefix(r.URL.Path, "/web/")
+	slash := strings.IndexByte(path, '/')
+	var sessionID, rest string
+	if slash < 0 {
+		sessionID = path
+		rest = "/"
+	} else {
+		sessionID = path[:slash]
+		rest = path[slash:]
+	}
+	if sessionID == "" {
+		http.Error(w, "missing session ID", http.StatusBadRequest)
+		return
+	}
+
+	// Load session credentials from vault via internal vault-service.
+	credsURL := vaultBase.String() + "/internal/web-session/" + sessionID
+	req, _ := http.NewRequestWithContext(r.Context(), "GET", credsURL, nil)
+	// Forward the user's identity headers so the vault service can check ownership.
+	req.Header.Set("X-PAM-UID", r.Header.Get("X-PAM-UID"))
+	req.Header.Set("X-PAM-Role", r.Header.Get("X-PAM-Role"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		http.Error(w, "session not found or expired", http.StatusNotFound)
+		return
+	}
+	var creds weblaunch.SessionCreds
+	if err := json.NewDecoder(resp.Body).Decode(&creds); err != nil {
+		resp.Body.Close()
+		http.Error(w, "invalid session credentials", http.StatusInternalServerError)
+		return
+	}
+	resp.Body.Close()
+
+	if creds.TargetURL == "" {
+		http.Error(w, "session has no target URL", http.StatusBadRequest)
+		return
+	}
+
+	targetURL, err := url.Parse(creds.TargetURL)
+	if err != nil {
+		http.Error(w, "invalid target URL", http.StatusBadRequest)
+		return
+	}
+
+	// Build the upstream request.
+	upstream, _ := http.NewRequestWithContext(r.Context(), r.Method,
+		targetURL.Scheme+"://"+targetURL.Host+rest+"?"+r.URL.RawQuery, r.Body)
+	upstream.Header = r.Header.Clone()
+	upstream.Header.Del("X-PAM-UID")
+	upstream.Header.Del("X-PAM-Role")
+	upstream.Header.Del("X-PAM-User")
+	upstream.Header.Del("Authorization")
+	upstream.Host = targetURL.Host
+
+	if creds.Username != "" && creds.Password != "" {
+		upstream.SetBasicAuth(creds.Username, creds.Password)
+	}
+
+	// Skip TLS verification for self-signed appliance certs (common on firewalls/switches).
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tlsConfig{InsecureSkipVerify: true},
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // let browser follow redirects
+		},
+	}
+
+	upResp, err := httpClient.Do(upstream)
+	if err != nil {
+		http.Error(w, "proxy error: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer upResp.Body.Close()
+
+	// Copy response headers, rewriting Location redirects to go through proxy.
+	for k, vs := range upResp.Header {
+		if strings.EqualFold(k, "Location") {
+			for _, v := range vs {
+				v = rewriteLocation(v, targetURL, sessionID)
+				w.Header().Add(k, v)
+			}
+			continue
+		}
+		// Strip security headers that block iframe embedding in our viewer.
+		if strings.EqualFold(k, "X-Frame-Options") ||
+			strings.EqualFold(k, "Content-Security-Policy") {
+			continue
+		}
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+
+	// Rewrite HTML bodies to make absolute target URLs go through the proxy.
+	ct := upResp.Header.Get("Content-Type")
+	if strings.Contains(ct, "text/html") {
+		body, _ := io.ReadAll(upResp.Body)
+		body = rewriteHTML(body, targetURL, sessionID)
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(upResp.StatusCode)
+		w.Write(body)
+	} else {
+		w.WriteHeader(upResp.StatusCode)
+		io.Copy(w, upResp.Body)
+	}
+}
+
+func rewriteLocation(loc string, target *url.URL, sessionID string) string {
+	if strings.HasPrefix(loc, "http://"+target.Host) ||
+		strings.HasPrefix(loc, "https://"+target.Host) {
+		u, err := url.Parse(loc)
+		if err == nil {
+			return "/web/" + sessionID + u.RequestURI()
+		}
+	}
+	if strings.HasPrefix(loc, "/") {
+		return "/web/" + sessionID + loc
+	}
+	return loc
+}
+
+func rewriteHTML(body []byte, target *url.URL, sessionID string) []byte {
+	pfx := "/web/" + sessionID
+	// Inject a <base> tag so relative links resolve through the proxy automatically.
+	baseTag := []byte(`<base href="` + pfx + `/">`)
+	if idx := bytes.Index(body, []byte("<head>")); idx >= 0 {
+		body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
+	} else if idx := bytes.Index(body, []byte("<HEAD>")); idx >= 0 {
+		body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
+	}
+	// Rewrite absolute target URLs.
+	for _, scheme := range []string{"https://", "http://"} {
+		old := []byte(scheme + target.Host)
+		repl := []byte(pfx)
+		body = bytes.ReplaceAll(body, old, repl)
+	}
+	return body
+}
+
 
 // forwardTo proxies a request to target host, rewriting the path to dstPath.
 func forwardTo(target *url.URL, dstPath string) http.Handler {

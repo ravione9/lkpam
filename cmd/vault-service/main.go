@@ -18,6 +18,7 @@ import (
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/httpx"
 	"github.com/example/pam-platform/internal/vault"
+	"github.com/example/pam-platform/internal/weblaunch"
 )
 
 func main() {
@@ -180,6 +181,17 @@ func main() {
 		w.Header().Set("Content-Type", "application/x-rdp")
 		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.rdp"`)
 		w.Write(b)
+	})
+
+	// --- Internal web-session credentials endpoint (used by api-gateway proxy) ---
+	mux.HandleFunc("GET /internal/web-session/{id}", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("id")
+		creds, err := weblaunch.LoadSessionCreds(r.Context(), v, sessionID)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, newErr("web session not found or expired"))
+			return
+		}
+		httpx.JSON(w, http.StatusOK, creds)
 	})
 
 	// --- Central Credential Provider (app-to-app) ---

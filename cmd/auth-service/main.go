@@ -32,6 +32,7 @@ import (
 	"github.com/example/pam-platform/internal/roles"
 	"github.com/example/pam-platform/internal/safes"
 	"github.com/example/pam-platform/internal/sshlaunch"
+	"github.com/example/pam-platform/internal/weblaunch"
 	samlpkg "github.com/example/pam-platform/internal/saml"
 	"github.com/example/pam-platform/internal/settings"
 	"github.com/example/pam-platform/internal/threat"
@@ -89,6 +90,10 @@ func main() {
 		DB: d, Policy: policyEng, Approval: approvalSvc, Groups: groupSvc,
 		Vault: v, RecordingDir: config.Get("PAM_REC_DIR", "/recordings"),
 		BrowserBase: config.Get("PAM_PORTAL_URL", ""),
+	}
+	webLaunchSvc := &weblaunch.Service{
+		DB: d, Policy: policyEng, Approval: approvalSvc, Groups: groupSvc,
+		Vault: v, BrowserBase: config.Get("PAM_PORTAL_URL", ""),
 	}
 	bus := events.New()
 
@@ -868,6 +873,79 @@ func main() {
 			Source: "auth", Kind: "ssh.launch", Severity: "info",
 			Actor: user, Target: strconv.FormatInt(targetID, 10),
 			Detail: map[string]string{"session_id": res.SessionID, "target": res.TargetName},
+		})
+		httpx.JSON(w, http.StatusOK, res)
+	})
+
+	// --- Web session info (used by web-viewer.html to show target name + creds) ---
+	mux.HandleFunc("GET /web-session/{id}", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("id")
+		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		var (
+			userID   int64
+			targetID int64
+			tName    string
+			webURL   string
+			ended    interface{}
+		)
+		err := d.QueryRowContext(r.Context(), `
+			SELECT s.user_id, s.target_id, t.name, COALESCE(t.web_url,''), s.ended_at
+			FROM sessions s JOIN targets t ON t.id = s.target_id
+			WHERE s.id = ?`, sessionID).
+			Scan(&userID, &targetID, &tName, &webURL, &ended)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, errors.New("session not found"))
+			return
+		}
+		if uid > 0 && userID != uid {
+			httpx.Error(w, http.StatusForbidden, errors.New("session belongs to another user"))
+			return
+		}
+		creds, _ := weblaunch.LoadSessionCreds(r.Context(), v, sessionID)
+		httpx.JSON(w, http.StatusOK, map[string]interface{}{
+			"session_id":  sessionID,
+			"target_name": tName,
+			"web_url":     webURL,
+			"username":    creds.Username,
+			"password":    creds.Password,
+			"active":      ended == nil,
+		})
+	})
+
+	// --- Web launch (recorded browser-proxy session for web consoles) ---
+	mux.HandleFunc("POST /targets/{id}/web-launch", func(w http.ResponseWriter, r *http.Request) {
+		targetID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		role := r.Header.Get("X-PAM-Role")
+		user := r.Header.Get("X-PAM-User")
+		var in struct {
+			Reason string `json:"reason"`
+		}
+		_ = httpx.ReadJSON(r, &in)
+		clientIP := r.Header.Get("X-Forwarded-For")
+		if clientIP == "" {
+			clientIP = r.RemoteAddr
+		}
+		res, err := webLaunchSvc.Launch(r.Context(), targetID, uid, role, in.Reason, clientIP)
+		if err != nil {
+			switch {
+			case errors.Is(err, weblaunch.ErrTargetNotFound):
+				httpx.Error(w, http.StatusNotFound, err)
+			case errors.Is(err, weblaunch.ErrNotWeb):
+				httpx.Error(w, http.StatusBadRequest, err)
+			case errors.Is(err, weblaunch.ErrPolicyDenied):
+				httpx.Error(w, http.StatusForbidden, err)
+			case errors.Is(err, weblaunch.ErrApprovalRequired):
+				httpx.Error(w, http.StatusForbidden, err)
+			default:
+				httpx.Error(w, http.StatusBadRequest, err)
+			}
+			return
+		}
+		bus.Publish(events.Event{
+			Source: "auth", Kind: "web.launch", Severity: "info",
+			Actor: user, Target: strconv.FormatInt(targetID, 10),
+			Detail: map[string]string{"session_id": res.SessionID, "target": res.TargetName, "url": res.WebURL},
 		})
 		httpx.JSON(w, http.StatusOK, res)
 	})
