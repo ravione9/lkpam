@@ -136,10 +136,12 @@ func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInte
 	}
 	authedUser, err := s.authenticate(user, pw, otp)
 	if err != nil {
+		log.Printf("ssh-proxy: portal auth failed for %q: %v", user, err)
 		return nil, err
 	}
 	perms, err := s.authorizeAndStash(authedUser, target)
 	if err != nil {
+		log.Printf("ssh-proxy: access denied for %q → %q: %v", user, target, err)
 		return nil, err
 	}
 	s.stashPassthrough(perms, pw)
@@ -411,35 +413,48 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		Source: "ssh-proxy", Kind: "session.open", Severity: "info",
 		Actor: portalUsername, Target: targetName,
 		Detail: map[string]string{
-			"session_id":   sessionID,
-			"client":       nc.RemoteAddr().String(),
-			"auth_mode":    authMode,
-			"device_user":  downUser,
-			"portal_user":  portalUsername,
+			"session_id":  sessionID,
+			"client":      nc.RemoteAddr().String(),
+			"auth_mode":   authMode,
+			"device_user": downUser,
+			"portal_user": portalUsername,
 		},
 	})
 
-	target := fmt.Sprintf("%s:%s", host, port)
-	log.Printf("ssh-proxy: dialing target %s as %q (mode=%s)", target, downUser, authMode)
-	upClient, err := ssh.Dial("tcp", target, &ssh.ClientConfig{
+	// Dial the target in parallel with accepting the user's session channel.
+	// Blocking on ssh.Dial before reading from chans deadlocks the SSH
+	// connection: the client cannot open a session until the server reads
+	// chans, so dial failures never reach the user and OpenSSH retries auth.
+	targetAddr := fmt.Sprintf("%s:%s", host, port)
+	clientCfg := &ssh.ClientConfig{
 		User:            downUser,
 		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // dev mode; replace with HostKeys table in prod
 		Timeout:         10 * time.Second,
-	})
-	if err != nil {
-		log.Printf("dial target %s as %q (mode=%s): %v", target, downUser, authMode, err)
+	}
+	type dialOutcome struct {
+		client *ssh.Client
+		err    error
+	}
+	dialCh := make(chan dialOutcome, 1)
+	go func() {
+		log.Printf("ssh-proxy: dialing target %s as %q (mode=%s)", targetAddr, downUser, authMode)
+		c, err := ssh.Dial("tcp", targetAddr, clientCfg)
+		dialCh <- dialOutcome{client: c, err: err}
+	}()
+
+	dialErrMsg := func(err error) string {
 		switch authMode {
 		case "priv-account":
-			s.sendShellError(chans, fmt.Sprintf("PAM: could not log in to %s as %s.\r\nCheck the privileged account password in Privileged Accounts.\r\nUnderlying error: %v\r\n", host, downUser, err))
+			return fmt.Sprintf("PAM: could not log in to %s as %s.\r\nCheck the privileged account password in Privileged Accounts.\r\nUnderlying error: %v\r\n", host, downUser, err)
 		case "passthrough":
-			s.sendShellError(chans, fmt.Sprintf("PAM: could not log in to %s as %s using your portal credentials.\r\nAdd a privileged account for this target (Privileged Accounts tab) with the actual device username + password.\r\nUnderlying error: %v\r\n", host, downUser, err))
+			return fmt.Sprintf("PAM: could not log in to %s as %s using your portal credentials.\r\nAdd a privileged account for this target (Privileged Accounts tab) with the actual device username + password.\r\nUnderlying error: %v\r\n", host, downUser, err)
 		default:
-			s.sendShellError(chans, fmt.Sprintf("PAM: could not connect to %s.\r\nAdd a privileged account for this target in the Privileged Accounts tab so PAM can log in for you.\r\nUnderlying error: %v\r\n", host, err))
+			return fmt.Sprintf("PAM: could not connect to %s.\r\nAdd a privileged account for this target in the Privileged Accounts tab so PAM can log in for you.\r\nUnderlying error: %v\r\n", host, err)
 		}
-		return
 	}
-	defer upClient.Close()
+
+	var upClient *ssh.Client
 
 	// Open recording file (browser sessions are recorded by guacd; skip duplicate tee).
 	var rec *os.File
@@ -468,17 +483,34 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		}
 	}
 
-	// Background watcher: poll session_terminations every 5s and tear down
-	// this connection if an admin requested termination.
-	termCtx, termCancel := context.WithCancel(context.Background())
-	defer termCancel()
-	go s.watchTermination(termCtx, sessionID, sconn, upClient)
-
 	// Each downstream channel from the user is mirrored to the target.
 	for newChan := range chans {
 		if newChan.ChannelType() != "session" {
 			newChan.Reject(ssh.UnknownChannelType, "only session channels supported")
 			continue
+		}
+		if upClient == nil {
+			out := <-dialCh
+			if out.err != nil {
+				log.Printf("dial target %s as %q (mode=%s): %v", targetAddr, downUser, authMode, out.err)
+				s.replyChannelError(newChan, dialErrMsg(out.err))
+				for extra := range chans {
+					if extra.ChannelType() == "session" {
+						s.replyChannelError(extra, dialErrMsg(out.err))
+					} else {
+						extra.Reject(ssh.UnknownChannelType, "only session channels supported")
+					}
+				}
+				return
+			}
+			upClient = out.client
+			defer upClient.Close()
+
+			// Background watcher: poll session_terminations every 5s and tear down
+			// this connection if an admin requested termination.
+			termCtx, termCancel := context.WithCancel(context.Background())
+			defer termCancel()
+			go s.watchTermination(termCtx, sessionID, sconn, upClient)
 		}
 		go s.pipeSession(newChan, upClient, rec, sessionID, user, targetName)
 	}
@@ -618,25 +650,32 @@ func (s *Server) sendShellError(chans <-chan ssh.NewChannel, msg string) {
 				_ = nc.Reject(ssh.UnknownChannelType, "session channels only")
 				continue
 			}
-			ch, reqs, err := nc.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				for r := range reqs {
-					if r.WantReply {
-						_ = r.Reply(true, nil)
-					}
-				}
-			}()
-			_, _ = ch.Write([]byte(msg))
-			_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 1}))
-			_ = ch.Close()
+			s.replyChannelError(nc, msg)
 			return
 		case <-deadline:
 			return
 		}
 	}
+}
+
+// replyChannelError accepts one session channel and writes msg to the user's
+// terminal before closing with a non-zero exit status.
+func (s *Server) replyChannelError(nc ssh.NewChannel, msg string) {
+	ch, reqs, err := nc.Accept()
+	if err != nil {
+		log.Printf("accept error chan: %v", err)
+		return
+	}
+	go func() {
+		for r := range reqs {
+			if r.WantReply {
+				_ = r.Reply(true, nil)
+			}
+		}
+	}()
+	_, _ = ch.Write([]byte(msg))
+	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 1}))
+	_ = ch.Close()
 }
 
 // forwardRequests forwards out-of-band ssh requests between sides.
