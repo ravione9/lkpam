@@ -1,18 +1,463 @@
-# Minimal Kubernetes manifests. Production would add PDBs, NetworkPolicies,
-# HPAs, PodSecurity, Vault-CSI for secrets, etc.
+# PAM Platform — Kubernetes manifests (mirrors deploy/docker/docker-compose.yml).
+#
+# Apply:
+#   kubectl apply -f deploy/k8s/pam.yaml
+#
+# Production additions to consider: PDBs, NetworkPolicies, HPAs, PodSecurity,
+# Vault-CSI for secrets, Ingress with TLS, external storage class for PVCs.
+
 apiVersion: v1
 kind: Namespace
 metadata:
   name: pam
 ---
+# --- Secrets (replace before deploying to production) ---
 apiVersion: v1
 kind: Secret
-metadata: { name: pam-secrets, namespace: pam }
+metadata:
+  name: pam-secrets
+  namespace: pam
 type: Opaque
 stringData:
   PAM_JWT_SECRET: "change-me-in-real-deployment"
-  PAM_MASTER_KEY: ""   # set to a base64'd 32-byte key once HSM is wired in
+  PAM_MASTER_KEY: ""                    # base64 32-byte vault key; leave blank to auto-create on first boot
+  PAM_TACACS_SECRET: "change-me"        # TACACS+ shared secret
+  PAM_ADMIN_PASS: "admin"               # bootstrap admin password (first run only)
 ---
+# --- Shared config ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pam-config
+  namespace: pam
+data:
+  PAM_DB: "file:/data/pam.db?cache=shared&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
+  PAM_AUDIT_JSONL: "/data/audit.jsonl"
+  PAM_REC_DIR: "/recordings"
+  PAM_ADMIN_USER: "admin"
+  PAM_AUTH_URL: "http://auth:8081"
+  PAM_VAULT_URL: "http://vault:8082"
+  PAM_POLICY_URL: "http://policy:8083"
+  PAM_APPROVAL_URL: "http://approval:8084"
+  PAM_AUDIT_URL: "http://audit:8085"
+  PAM_RDP_PROXY_URL: "http://rdp-proxy:8086"
+  PAM_GUACD_ADDR: "guacd:4822"
+  PAM_SSH_PROXY_DIAL_ADDR: "ssh-proxy:2222"
+  PAM_PORTAL_URL: "http://pam.example.local:8080"
+---
+# --- Shared persistent storage (SQLite DB + audit log + session recordings) ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pam-data
+  namespace: pam
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pam-rec
+  namespace: pam
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 50Gi
+---
+# =========================================================================
+# auth-service
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: auth, namespace: pam }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: auth } }
+  template:
+    metadata: { labels: { app: auth } }
+    spec:
+      containers:
+        - name: auth
+          image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/app/auth-service"]
+          ports: [{ name: http, containerPort: 8081 }]
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
+          env:
+            - { name: PAM_AUTH_ADDR, value: ":8081" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: rec,  mountPath: /recordings }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: pam-data } }
+        - { name: rec,  persistentVolumeClaim: { claimName: pam-rec } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: auth, namespace: pam }
+spec:
+  type: ClusterIP
+  selector: { app: auth }
+  ports: [{ port: 8081, targetPort: 8081 }]
+---
+# =========================================================================
+# vault-service
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: vault, namespace: pam }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: vault } }
+  template:
+    metadata: { labels: { app: vault } }
+    spec:
+      containers:
+        - name: vault
+          image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/app/vault-service"]
+          ports: [{ name: http, containerPort: 8082 }]
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
+          env:
+            - { name: PAM_VAULT_ADDR, value: ":8082" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: pam-data } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: vault, namespace: pam }
+spec:
+  type: ClusterIP
+  selector: { app: vault }
+  ports: [{ port: 8082, targetPort: 8082 }]
+---
+# =========================================================================
+# policy-service
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: policy, namespace: pam }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: policy } }
+  template:
+    metadata: { labels: { app: policy } }
+    spec:
+      containers:
+        - name: policy
+          image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/app/policy-service"]
+          ports: [{ name: http, containerPort: 8083 }]
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
+          env:
+            - { name: PAM_POLICY_ADDR, value: ":8083" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: pam-data } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: policy, namespace: pam }
+spec:
+  type: ClusterIP
+  selector: { app: policy }
+  ports: [{ port: 8083, targetPort: 8083 }]
+---
+# =========================================================================
+# approval-service
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: approval, namespace: pam }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: approval } }
+  template:
+    metadata: { labels: { app: approval } }
+    spec:
+      containers:
+        - name: approval
+          image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/app/approval-service"]
+          ports: [{ name: http, containerPort: 8084 }]
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
+          env:
+            - { name: PAM_APPROVAL_ADDR, value: ":8084" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: pam-data } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: approval, namespace: pam }
+spec:
+  type: ClusterIP
+  selector: { app: approval }
+  ports: [{ port: 8084, targetPort: 8084 }]
+---
+# =========================================================================
+# audit-service
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: audit, namespace: pam }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: audit } }
+  template:
+    metadata: { labels: { app: audit } }
+    spec:
+      containers:
+        - name: audit
+          image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/app/audit-service"]
+          ports: [{ name: http, containerPort: 8085 }]
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
+          env:
+            - { name: PAM_AUDIT_ADDR, value: ":8085" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: rec,  mountPath: /recordings }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: pam-data } }
+        - { name: rec,  persistentVolumeClaim: { claimName: pam-rec } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: audit, namespace: pam }
+spec:
+  type: ClusterIP
+  selector: { app: audit }
+  ports: [{ port: 8085, targetPort: 8085 }]
+---
+# =========================================================================
+# guacd (Apache Guacamole proxy daemon — terminates RDP/SSH for browser viewers)
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: guacd, namespace: pam }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: guacd } }
+  template:
+    metadata: { labels: { app: guacd } }
+    spec:
+      containers:
+        - name: guacd
+          image: guacamole/guacd:1.5.5
+          ports: [{ name: guac, containerPort: 4822 }]
+          volumeMounts:
+            - { name: rec, mountPath: /recordings }
+      volumes:
+        - { name: rec, persistentVolumeClaim: { claimName: pam-rec } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: guacd, namespace: pam }
+spec:
+  type: ClusterIP
+  selector: { app: guacd }
+  ports: [{ port: 4822, targetPort: 4822 }]
+---
+# =========================================================================
+# rdp-proxy (browser WebSocket → guacd; also brokers recorded browser SSH)
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: rdp-proxy, namespace: pam }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: rdp-proxy } }
+  template:
+    metadata: { labels: { app: rdp-proxy } }
+    spec:
+      containers:
+        - name: rdp-proxy
+          image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/app/rdp-proxy"]
+          ports: [{ name: http, containerPort: 8086 }]
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
+          env:
+            - { name: PAM_RDP_PROXY_ADDR, value: ":8086" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: rec,  mountPath: /recordings }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: pam-data } }
+        - { name: rec,  persistentVolumeClaim: { claimName: pam-rec } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: rdp-proxy, namespace: pam }
+spec:
+  type: ClusterIP
+  selector: { app: rdp-proxy }
+  ports: [{ port: 8086, targetPort: 8086 }]
+---
+# =========================================================================
+# ssh-proxy (privileged SSH data plane, port 2222 — exposed externally)
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: ssh-proxy, namespace: pam }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: ssh-proxy } }
+  template:
+    metadata: { labels: { app: ssh-proxy } }
+    spec:
+      containers:
+        - name: ssh-proxy
+          image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/app/ssh-proxy"]
+          ports: [{ name: ssh, containerPort: 2222 }]
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
+          env:
+            - { name: PAM_SSH_PROXY_ADDR, value: ":2222" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: rec,  mountPath: /recordings }
+          readinessProbe:
+            tcpSocket: { port: ssh }
+            periodSeconds: 15
+          livenessProbe:
+            tcpSocket: { port: ssh }
+            periodSeconds: 30
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: pam-data } }
+        - { name: rec,  persistentVolumeClaim: { claimName: pam-rec } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: ssh-proxy, namespace: pam }
+spec:
+  type: LoadBalancer
+  selector: { app: ssh-proxy }
+  ports:
+    - name: ssh
+      port: 2222
+      targetPort: 2222
+---
+# =========================================================================
+# tacacs-service (TACACS+ AAA for network devices — listens on 1049 in the
+# container; exposed externally on port 49 via LoadBalancer)
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: tacacs, namespace: pam }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: tacacs } }
+  template:
+    metadata: { labels: { app: tacacs } }
+    spec:
+      containers:
+        - name: tacacs
+          image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/app/tacacs-service"]
+          ports: [{ name: tacacs, containerPort: 1049 }]
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
+          env:
+            - { name: PAM_TACACS_ADDR, value: ":1049" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            tcpSocket: { port: tacacs }
+            periodSeconds: 15
+          livenessProbe:
+            tcpSocket: { port: tacacs }
+            periodSeconds: 30
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: pam-data } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: tacacs, namespace: pam }
+spec:
+  type: LoadBalancer
+  selector: { app: tacacs }
+  ports:
+    - name: tacacs
+      port: 49
+      targetPort: 1049
+---
+# =========================================================================
+# api-gateway (admin UI + REST API, port 8080 — exposed externally)
+# =========================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: gateway, namespace: pam }
@@ -25,24 +470,28 @@ spec:
       containers:
         - name: gateway
           image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
           args: ["/app/api-gateway"]
-          ports: [{ containerPort: 8080 }]
-          envFrom: [{ secretRef: { name: pam-secrets } }]
+          ports: [{ name: http, containerPort: 8080 }]
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
           env:
-            - { name: PAM_AUTH_URL,     value: "http://auth:8081" }
-            - { name: PAM_VAULT_URL,    value: "http://vault:8082" }
-            - { name: PAM_POLICY_URL,   value: "http://policy:8083" }
-            - { name: PAM_APPROVAL_URL, value: "http://approval:8084" }
-            - { name: PAM_AUDIT_URL,    value: "http://audit:8085" }
+            - { name: PAM_GATEWAY_ADDR, value: ":8080" }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
 ---
 apiVersion: v1
 kind: Service
 metadata: { name: gateway, namespace: pam }
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector: { app: gateway }
-  ports: [{ port: 8080, targetPort: 8080 }]
----
-# (Repeat Deployment+Service for auth/vault/policy/approval/audit/ssh-proxy
-#  with matching args, ports, and replicas. ssh-proxy is exposed via a
-#  separate LoadBalancer service on port 2222.)
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
