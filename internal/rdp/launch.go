@@ -28,16 +28,22 @@ type LaunchResult struct {
 	RDPFile      string `json:"rdp_file"`
 	LaunchScript string `json:"launch_script"`
 	RDPFilename  string `json:"rdp_filename"`
+	BrowserURL   string `json:"browser_url"`
+	Recorded     bool   `json:"recorded"`
 	Instructions string `json:"instructions"`
 }
 
 // Service wires policy, approval, accounts, and session audit for RDP.
 type Service struct {
-	DB       *db.DB
-	Policy   *policy.Engine
-	Approval *approval.Service
-	Accounts *accounts.Service
-	Groups   *groups.Service
+	DB           *db.DB
+	Policy       *policy.Engine
+	Approval     *approval.Service
+	Accounts     *accounts.Service
+	Groups       *groups.Service
+	Vault        SessionVault
+	RecordingDir string
+	// BrowserBase is the public portal root, e.g. https://pam.corp.local
+	BrowserBase string
 }
 
 var (
@@ -118,11 +124,20 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 	}
 
 	sessionID := fmt.Sprintf("rdp-%d-%d", time.Now().UnixNano(), targetID)
+	recDir := RecordingDirForSession(s.RecordingDir, sessionID)
+	if s.Vault != nil {
+		if err := s.Vault.PutSessionSecret(SessionSecretName(sessionID), []byte(co.Password)); err != nil {
+			return nil, fmt.Errorf("store session credentials: %w", err)
+		}
+	}
 	_, err = s.DB.ExecContext(ctx, `
-		INSERT INTO sessions(id, user_id, target_id, started_at, client_ip, protocol, account_id)
-		VALUES(?,?,?,?,?,?,?)`,
-		sessionID, userID, targetID, db.Now(), clientIP, "rdp", acct.ID)
+		INSERT INTO sessions(id, user_id, target_id, started_at, client_ip, protocol, account_id, recording_path)
+		VALUES(?,?,?,?,?,?,?,?)`,
+		sessionID, userID, targetID, db.Now(), clientIP, "rdp", acct.ID, recDir)
 	if err != nil {
+		if s.Vault != nil {
+			_ = s.Vault.DeleteSessionSecret(SessionSecretName(sessionID))
+		}
 		return nil, err
 	}
 
@@ -132,6 +147,11 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 	rdpFilename := name + ".rdp"
 	rdpBytes := BuildRDPFile(params)
 	script := BuildLaunchScript(params, co.Password, rdpFilename)
+
+	browserURL := ""
+	if s.BrowserBase != "" {
+		browserURL = fmt.Sprintf("%s/rdp-viewer.html?session=%s", stringsTrimRightSlash(s.BrowserBase), sessionID)
+	}
 
 	return &LaunchResult{
 		SessionID:    sessionID,
@@ -144,8 +164,16 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		RDPFile:      string(rdpBytes),
 		LaunchScript: script,
 		RDPFilename:  rdpFilename,
-		Instructions: "CyberArk-style RDP: (1) Save both files to the same folder on your Windows PC. " +
-			"(2) Right-click Launch-RDP.ps1 → Run with PowerShell — credentials are injected automatically. " +
-			"(3) Delete the .ps1 file when done. The privileged password is rotated by CPM; portal users are never created on the server.",
+		BrowserURL:   browserURL,
+		Recorded:     true,
+		Instructions: "Recommended (recorded): click Open in browser — session is proxied through PAM and saved as a .guac recording. " +
+			"Alternative: download .rdp + Launch-RDP.ps1 for native mstsc (not recorded by PAM).",
 	}, nil
+}
+
+func stringsTrimRightSlash(s string) string {
+	for len(s) > 0 && s[len(s)-1] == '/' {
+		s = s[:len(s)-1]
+	}
+	return s
 }

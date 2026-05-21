@@ -497,7 +497,7 @@
       <!-- Sessions -->
       <section class="card tab" id="tab-sessions" style="display:none">
         <h3>Live Sessions</h3>
-        <p class="desc">SSH sessions are recorded by the ssh-proxy (terminable). RDP sessions are audited at launch with credential checkout — full PSM recording is a future enhancement.</p>
+        <p class="desc">SSH and RDP sessions are recorded. SSH uses keystroke logs; RDP uses Guacamole .guac recordings via the browser launcher. Admins can terminate active sessions.</p>
         <table>
           <thead><tr><th>Started</th><th>Protocol</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th><th></th></tr></thead>
           <tbody id="sessionRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
@@ -1640,6 +1640,9 @@ function downloadTextFile(filename, content, mime) {
 function showRdpLaunchModal(target, res) {
   const modal = document.createElement("div");
   modal.className = "modal-backdrop show";
+  const browserBtn = res.browser_url
+    ? `<button class="primary" id="rdpBrowserBtn">Open in browser (recorded)</button>`
+    : "";
   modal.innerHTML = `
     <div class="modal" style="max-width:640px">
       <h3>RDP launch — ${esc(target.name)}</h3>
@@ -1648,19 +1651,25 @@ function showRdpLaunchModal(target, res) {
         <label>Privileged user</label><input value="${esc(res.username)}" readonly/>
         <label>Target</label><input value="${esc(res.host)}:${res.port}" readonly/>
         <label>Account</label><input value="${esc(res.account_name)}" readonly/>
+        <label>Session ID</label><input value="${esc(res.session_id)}" readonly/>
       </div>
-      <ol class="desc" style="margin:0;padding-left:20px;line-height:1.8">
-        <li>Save both files to the <b>same folder</b> on your Windows PC.</li>
-        <li>Right-click <code>Launch-RDP.ps1</code> → <b>Run with PowerShell</b>.</li>
-        <li>Remote Desktop opens with injected credentials. Delete the .ps1 when done.</li>
-      </ol>
       <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
-        <button class="primary" id="rdpDlBoth">Download .rdp + .ps1</button>
-        <button class="ghost" id="rdpReturnBtn">Mark session returned</button>
+        ${browserBtn}
+        <button class="ghost" id="rdpDlBoth">Download .rdp + .ps1 (native)</button>
+        <button class="ghost" id="rdpReturnBtn">Mark returned</button>
         <button class="ghost" onclick="this.closest('.modal-backdrop').remove()">Close</button>
       </div>
+      <p class="muted" style="font-size:11px;margin-top:10px">Browser sessions are recorded as .guac files — view in Sessions tab after disconnect.</p>
     </div>`;
   document.body.appendChild(modal);
+  const browserEl = modal.querySelector("#rdpBrowserBtn");
+  if (browserEl) {
+    browserEl.onclick = () => {
+      const url = res.browser_url + (res.browser_url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
+      window.open(url, "_blank", "noopener");
+      toast("RDP session opened — recording in progress", "ok");
+    };
+  }
   modal.querySelector("#rdpDlBoth").onclick = () => {
     downloadTextFile(res.rdp_filename, res.rdp_file, "application/x-rdp");
     setTimeout(() => downloadTextFile("Launch-RDP.ps1", res.launch_script, "text/plain"), 300);
@@ -2133,10 +2142,13 @@ async function loadSessions() {
     if (!(rows||[]).length) { $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">No sessions yet.</td></tr>`; return; }
     $("#sessionRows").innerHTML = rows.map(s => {
       const active = !s.ended_at;
-      const terminateBtn = (active && isAdmin() && (s.protocol||"ssh") === "ssh")
+      const proto = (s.protocol || "ssh").toUpperCase();
+      const terminateBtn = (active && isAdmin())
         ? `<button class="ghost danger" onclick="terminateSession(${JSON.stringify(s.id)})">Terminate</button>`
         : "";
-      const proto = (s.protocol || "ssh").toUpperCase();
+      const recBtn = !active && (s.protocol === "rdp") && s.recording_path
+        ? `<button class="ghost" onclick="downloadRecording(${JSON.stringify(s.id)})">Recording</button>`
+        : (active && proto === "RDP" ? `<span class="muted" style="font-size:11px">recording…</span>` : "");
       return `<tr>
         <td>${fmtTime(s.started_at)}</td>
         <td><span class="pill ${proto==='RDP'?'warn':''}">${esc(proto)}</span></td>
@@ -2145,11 +2157,27 @@ async function loadSessions() {
         <td class="muted">${esc(s.client_ip) || '—'}</td>
         <td>${active ? '<span class="pill ok">active</span>' : `<span class="pill">${esc(s.ended_reason || 'ended')}</span>`}</td>
         <td class="muted" style="font-size:11px">${esc(s.recording_path) || '—'}</td>
-        <td class="actions">${terminateBtn}</td>
+        <td class="actions">${terminateBtn} ${recBtn}</td>
       </tr>`;
     }).join("");
-  } catch (e) { $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">${esc(e.message)}</td></tr>`; }
+  } catch (e) { $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
 }
+
+window.downloadRecording = async sid => {
+  try {
+    const r = await fetch("/api/audit/sessions/" + encodeURIComponent(sid) + "/recording", {
+      headers: { Authorization: "Bearer " + token },
+    });
+    if (!r.ok) throw new Error(await r.text() || "download failed");
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = sid + ".guac";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    toast("Recording downloaded — replay with Apache Guacamole player", "ok");
+  } catch (e) { toast(e.message, "err"); }
+};
 
 window.terminateSession = async sid => {
   const reason = prompt("Reason for terminating this session:", "");

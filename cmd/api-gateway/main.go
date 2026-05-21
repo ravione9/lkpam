@@ -106,6 +106,9 @@ func main() {
 	mux.Handle("/api/policy/", gated(http.StripPrefix("/api/policy", reverse(policyURL)), authURL))
 	mux.Handle("/api/approval/", gated(http.StripPrefix("/api/approval", reverse(approvalURL)), authURL))
 	mux.Handle("/api/audit/", gated(http.StripPrefix("/api/audit", reverse(auditURL)), authURL))
+	// RDP proxy validates JWT via token query param on WebSocket connect.
+	rdpURL := mustURL(config.Get("PAM_RDP_PROXY_URL", "http://localhost:8086"))
+	mux.Handle("/api/rdp/", http.StripPrefix("/api/rdp", reverse(rdpURL)))
 
 	// Static UI
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

@@ -1,7 +1,7 @@
 .PHONY: all build clean test run-auth run-vault run-policy run-approval run-audit run-ssh-proxy run-gateway tidy \
        docker-build docker-up docker-down docker-logs docker-ps docker-reset
 
-SERVICES := auth-service vault-service policy-service approval-service audit-service ssh-proxy api-gateway tacacs-service pam-cli
+SERVICES := auth-service vault-service policy-service approval-service audit-service ssh-proxy rdp-proxy api-gateway tacacs-service pam-cli
 BIN := bin
 
 all: build

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -98,4 +99,35 @@ func (c *Client) Login(ctx context.Context, username, password, otp string) (*Lo
 		}
 		return nil, errors.New(e.Error)
 	}
+}
+
+// TokenClaims is the verified JWT payload from auth-service /verify.
+type TokenClaims struct {
+	UID  int64  `json:"uid"`
+	User string `json:"u"`
+	Role string `json:"r"`
+}
+
+// Verify checks a portal JWT and returns the caller identity.
+func (c *Client) Verify(ctx context.Context, token string) (*TokenClaims, error) {
+	body, _ := json.Marshal(map[string]string{"Token": token})
+	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/verify", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("authclient: post /verify: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, errors.New(strings.TrimSpace(string(raw)))
+	}
+	var claims TokenClaims
+	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
+		return nil, err
+	}
+	return &claims, nil
 }

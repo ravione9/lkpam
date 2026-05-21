@@ -10,6 +10,8 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/example/pam-platform/internal/audit"
@@ -95,9 +97,7 @@ func main() {
 		httpx.JSON(w, http.StatusOK, out)
 	})
 
-	// POST /sessions/{id}/terminate — admin requests that the SSH proxy
-	// terminate an active session. The proxy polls session_terminations and
-	// closes the matching transport.
+	// POST /sessions/{id}/terminate — admin requests termination (SSH proxy or RDP proxy polls).
 	mux.HandleFunc("POST /sessions/{id}/terminate", func(w http.ResponseWriter, r *http.Request) {
 		uidStr := r.Header.Get("X-PAM-UID")
 		role := r.Header.Get("X-PAM-Role")
@@ -215,6 +215,48 @@ func main() {
 			}
 		}
 		httpx.JSON(w, http.StatusOK, out)
+	})
+
+	mux.HandleFunc("GET /sessions/{id}/recording", func(w http.ResponseWriter, r *http.Request) {
+		sid := r.PathValue("id")
+		var recPath string
+		err := d.QueryRowContext(r.Context(),
+			`SELECT COALESCE(recording_path,'') FROM sessions WHERE id = ?`, sid).Scan(&recPath)
+		if err == sql.ErrNoRows {
+			httpx.Error(w, http.StatusNotFound, errStr("session not found"))
+			return
+		}
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		if recPath == "" {
+			httpx.Error(w, http.StatusNotFound, errStr("no recording for this session"))
+			return
+		}
+		// recording_path may be a directory (pending) or .guac file (complete).
+		info, err := os.Stat(recPath)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, errStr("recording file not found on disk"))
+			return
+		}
+		file := recPath
+		if info.IsDir() {
+			entries, _ := os.ReadDir(recPath)
+			for _, e := range entries {
+				if !e.IsDir() && filepath.Ext(e.Name()) == ".guac" {
+					file = filepath.Join(recPath, e.Name())
+					break
+				}
+			}
+		}
+		if filepath.Ext(file) != ".guac" {
+			httpx.Error(w, http.StatusNotFound, errStr("recording not ready yet — session may still be active"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(file)+`"`)
+		http.ServeFile(w, r, file)
 	})
 
 	addr := config.Get("PAM_AUDIT_ADDR", ":8085")

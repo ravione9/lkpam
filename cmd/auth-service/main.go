@@ -79,6 +79,9 @@ func main() {
 	rdpSvc := &rdp.Service{
 		DB: d, Policy: policyEng, Approval: approvalSvc,
 		Accounts: accountSvc, Groups: groupSvc,
+		Vault:        &rdp.VaultAdapter{V: v},
+		RecordingDir: config.Get("PAM_REC_DIR", "/recordings"),
+		BrowserBase:  config.Get("PAM_PORTAL_URL", ""),
 	}
 	bus := events.New()
 

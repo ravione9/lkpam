@@ -42,6 +42,7 @@ services:
     environment:
       <<: *common-env
       PAM_AUTH_ADDR: ":8081"
+      PAM_PORTAL_URL: "${PAM_PORTAL_URL:-http://localhost:8080}"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/health"]
       <<: *http-health
@@ -123,6 +124,34 @@ services:
       retries: 5
       start_period: 30s
 
+  guacd:
+    image: guacamole/guacd:1.5.5
+    container_name: pam-guacd
+    restart: unless-stopped
+    networks: [pam-net]
+    volumes:
+      - pam-rec:/recordings
+
+  rdp-proxy:
+    <<: *common
+    container_name: pam-rdp-proxy
+    command: ["/app/rdp-proxy"]
+    environment:
+      <<: *common-env
+      PAM_RDP_PROXY_ADDR: ":8086"
+      PAM_GUACD_ADDR: "guacd:4822"
+      PAM_AUTH_URL: "http://auth:8081"
+    depends_on:
+      guacd:
+        condition: service_started
+      auth:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8086/health"]
+      <<: *http-health
+
   gateway:
     <<: *common
     container_name: pam-gateway
@@ -135,6 +164,8 @@ services:
       PAM_POLICY_URL: "http://policy:8083"
       PAM_APPROVAL_URL: "http://approval:8084"
       PAM_AUDIT_URL: "http://audit:8085"
+      PAM_RDP_PROXY_URL: "http://rdp-proxy:8086"
+      PAM_PORTAL_URL: "${PAM_PORTAL_URL:-http://localhost:8080}"
     depends_on:
       auth:
         condition: service_healthy
@@ -145,6 +176,8 @@ services:
       approval:
         condition: service_healthy
       audit:
+        condition: service_healthy
+      rdp-proxy:
         condition: service_healthy
     ports:
       - "${PAM_HTTP_PORT:-8080}:8080"
