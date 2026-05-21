@@ -52,7 +52,8 @@ func (d *DB) migrate() error {
 			external_dn TEXT,
 			last_login INTEGER,
 			created_at INTEGER NOT NULL,
-			disabled INTEGER NOT NULL DEFAULT 0
+			disabled INTEGER NOT NULL DEFAULT 0,
+			role_locked INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS targets (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -275,6 +276,7 @@ func (d *DB) migrate() error {
 		`ALTER TABLE sessions ADD COLUMN protocol TEXT NOT NULL DEFAULT 'ssh'`,
 		`ALTER TABLE sessions ADD COLUMN account_id INTEGER REFERENCES privileged_accounts(id)`,
 		`ALTER TABLE approval_matrix ADD COLUMN requester_group_ids TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN role_locked INTEGER NOT NULL DEFAULT 0`,
 	} {
 		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
 	}

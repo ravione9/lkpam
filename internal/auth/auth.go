@@ -25,6 +25,7 @@ type User struct {
 	Disabled   bool   `json:"disabled"`
 	Source     string `json:"source"`
 	MFAEnabled bool   `json:"mfa_enabled"`
+	RoleLocked bool   `json:"role_locked"`
 	LastLogin  int64  `json:"last_login,omitempty"`
 }
 
@@ -94,17 +95,19 @@ func (s *Service) FindByUsername(ctx context.Context, username string) (*User, e
 func (s *Service) loadUser(ctx context.Context, username string) (*User, string, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT id, username, COALESCE(email,''), password_hash, role, disabled,
-		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0)
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
+		       COALESCE(role_locked,0)
 		FROM users WHERE username = ?`, username)
 	var u User
 	var pwHash string
-	var disabled, mfa int
+	var disabled, mfa, roleLocked int
 	if err := row.Scan(&u.ID, &u.Username, &u.Email, &pwHash, &u.Role, &disabled,
-		&u.Source, &mfa, &u.LastLogin); err != nil {
+		&u.Source, &mfa, &u.LastLogin, &roleLocked); err != nil {
 		return nil, "", err
 	}
 	u.Disabled = disabled != 0
 	u.MFAEnabled = mfa != 0
+	u.RoleLocked = roleLocked != 0
 	return &u, pwHash, nil
 }
 
@@ -134,7 +137,7 @@ func (s *Service) upsertExternalUser(ctx context.Context, source, username, emai
 		VALUES(?,?,?,?,?,?,?)
 		ON CONFLICT(username) DO UPDATE SET
 		  email=excluded.email,
-		  role=excluded.role,
+		  role=CASE WHEN COALESCE(users.role_locked,0)=1 THEN users.role ELSE excluded.role END,
 		  source=excluded.source,
 		  external_dn=excluded.external_dn`,
 		username, email, "", role, source, externalID, db.Now())
@@ -216,7 +219,8 @@ func (s *Service) VerifyToken(raw string) (*Claims, error) {
 func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT id, username, COALESCE(email,''), role, disabled,
-		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0)
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
+		       COALESCE(role_locked,0)
 		FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
@@ -225,13 +229,14 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		var disabled, mfa int
+		var disabled, mfa, roleLocked int
 		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled,
-			&u.Source, &mfa, &u.LastLogin); err != nil {
+			&u.Source, &mfa, &u.LastLogin, &roleLocked); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
 		u.MFAEnabled = mfa != 0
+		u.RoleLocked = roleLocked != 0
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -254,8 +259,13 @@ func (s *Service) UpdateUser(ctx context.Context, id int64, in UpdateUserInput) 
 	if in.Email != "" {
 		u.Email = in.Email
 	}
-	if in.Role != "" {
+	roleLocked := 0
+	if u.RoleLocked {
+		roleLocked = 1
+	}
+	if in.Role != "" && in.Role != u.Role {
 		u.Role = in.Role
+		roleLocked = 1
 	}
 	disabled := 0
 	if u.Disabled {
@@ -268,35 +278,40 @@ func (s *Service) UpdateUser(ctx context.Context, id int64, in UpdateUserInput) 
 			disabled = 0
 		}
 	}
-	pwHash := ""
+	// LDAP/SAML users authenticate via IdP — local password is not used.
+	if in.Password != "" && u.Source != "local" {
+		in.Password = ""
+	}
 	if in.Password != "" {
-		pwHash, err = cryptox.PasswordHash(in.Password)
+		pwHash, err := cryptox.PasswordHash(in.Password)
 		if err != nil {
 			return fmt.Errorf("auth: hash: %w", err)
 		}
 		_, err = s.DB.ExecContext(ctx,
-			`UPDATE users SET email=?, role=?, disabled=?, password_hash=? WHERE id=?`,
-			u.Email, u.Role, disabled, pwHash, id)
+			`UPDATE users SET email=?, role=?, disabled=?, role_locked=?, password_hash=? WHERE id=?`,
+			u.Email, u.Role, disabled, roleLocked, pwHash, id)
 		return err
 	}
 	_, err = s.DB.ExecContext(ctx,
-		`UPDATE users SET email=?, role=?, disabled=? WHERE id=?`,
-		u.Email, u.Role, disabled, id)
+		`UPDATE users SET email=?, role=?, disabled=?, role_locked=? WHERE id=?`,
+		u.Email, u.Role, disabled, roleLocked, id)
 	return err
 }
 
 func (s *Service) getUserByID(ctx context.Context, id int64) (*User, error) {
 	row := s.DB.QueryRowContext(ctx,
 		`SELECT id, username, COALESCE(email,''), role, disabled,
-		        COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0)
+		        COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
+		        COALESCE(role_locked,0)
 		 FROM users WHERE id = ?`, id)
 	var u User
-	var disabled, mfa int
+	var disabled, mfa, roleLocked int
 	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled,
-		&u.Source, &mfa, &u.LastLogin); err != nil {
+		&u.Source, &mfa, &u.LastLogin, &roleLocked); err != nil {
 		return nil, errors.New("user not found")
 	}
 	u.Disabled = disabled != 0
 	u.MFAEnabled = mfa != 0
+	u.RoleLocked = roleLocked != 0
 	return &u, nil
 }

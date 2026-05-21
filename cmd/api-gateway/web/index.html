@@ -351,6 +351,7 @@
             <label>Role</label>
             <select id="userRole"></select>
             <label>Password</label><input id="userPassword" type="password"/>
+            <p class="muted" id="userPasswordHint" style="font-size:12px;margin-top:4px"></p>
             <label>Disabled</label><div><input type="checkbox" id="userDisabled" style="width:auto"/></div>
             <label>Groups</label>
             <div id="userGroupChecks" class="muted" style="font-size:13px">Loading groups…</div>
@@ -2166,7 +2167,7 @@ async function loadUsers() {
       <tr>
         <td><b>${esc(u.username)}</b></td>
         <td>${esc(u.email)}</td>
-        <td><span class="pill">${esc(u.role)}</span></td>
+        <td><span class="pill">${esc(u.role)}</span>${u.role_locked ? ' <span class="pill accent" title="Role pinned by admin — AD login will not overwrite">pinned</span>' : ''}</td>
         <td><span class="pill ${u.source==='ldap'?'accent':''}">${esc(u.source||'local')}</span></td>
         <td>${u.mfa_enabled ? '<span class="pill ok">enabled</span>' : '<span class="pill">off</span>'}</td>
         <td>${u.disabled ? '<span class="pill err">disabled</span>' : '<span class="pill ok">active</span>'}</td>
@@ -2181,7 +2182,10 @@ async function loadUsers() {
 function resetUserForm() {
   ["userId","userName","userEmail","userPassword"].forEach(id => $("#"+id).value = "");
   $("#userName").disabled = false; $("#userRole").value = "user"; $("#userDisabled").checked = false;
-  $("#userPassword").placeholder = "password"; $("#userForm").classList.add("hidden");
+  $("#userPassword").placeholder = "password";
+  $("#userPassword").disabled = false;
+  $("#userPasswordHint").textContent = "";
+  $("#userForm").classList.add("hidden");
   $("#userGroupChecks").innerHTML = '<span class="muted">Save user first, then edit to assign groups.</span>';
 }
 async function renderUserGroupChecks(userId, memberGroupIds) {
@@ -2212,7 +2216,17 @@ window.editUser = async id => {
   await ensureRoles(); fillRoleSelect($("#userRole"), u.role);
   $("#userId").value = u.id; $("#userName").value = u.username; $("#userName").disabled = true;
   $("#userEmail").value = u.email || "";
-  $("#userPassword").value = ""; $("#userPassword").placeholder = "new password (blank to keep)";
+  $("#userPassword").value = "";
+  const extAuth = u.source === "ldap" || u.source === "saml";
+  if (extAuth) {
+    $("#userPassword").disabled = true;
+    $("#userPassword").placeholder = "N/A — use AD/SSO password to sign in";
+    $("#userPasswordHint").textContent = "LDAP/SSO users sign in with their directory password, not a local portal password.";
+  } else {
+    $("#userPassword").disabled = false;
+    $("#userPassword").placeholder = "new password (blank to keep)";
+    $("#userPasswordHint").textContent = "";
+  }
   $("#userDisabled").checked = !!u.disabled; $("#userFormTitle").textContent = "Edit user";
   try {
     const grps = await api("/auth/users/"+id+"/groups");

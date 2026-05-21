@@ -1092,6 +1092,11 @@ func loginHandler(
 			httpx.Error(w, http.StatusUnauthorized, errors.New("invalid credentials"))
 			return
 		}
+		if u.Disabled {
+			bus.Publish(events.Event{Source: "auth", Kind: "login.failed", Severity: "warn", Actor: req.Username, Detail: map[string]string{"error": "account disabled"}})
+			httpx.Error(w, http.StatusUnauthorized, errors.New("account disabled"))
+			return
+		}
 
 		mfaPolicy, _ := settingsStore.Get(ctx, settingsKeyMFAPolicy)
 		mfaRequired := u.MFAEnabled || mfaPolicy == "required"
@@ -1188,7 +1193,7 @@ func tryLDAP(
 		return nil, err
 	}
 	if len(matchedGroupIDs) > 0 {
-		_ = groupSvc.ReplaceMemberships(ctx, u.ID, matchedGroupIDs)
+		_ = groupSvc.MergeMemberships(ctx, u.ID, matchedGroupIDs)
 	}
 	return u, nil
 }
@@ -1291,7 +1296,7 @@ func samlACSHandler(
 		return
 	}
 	if len(matchedGroupIDs) > 0 {
-		_ = groupSvc.ReplaceMemberships(r.Context(), u.ID, matchedGroupIDs)
+		_ = groupSvc.MergeMemberships(r.Context(), u.ID, matchedGroupIDs)
 	}
 	_ = svc.RecordLogin(r.Context(), u.ID)
 	tok, err := svc.IssueToken(u)

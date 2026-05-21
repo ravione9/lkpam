@@ -290,7 +290,7 @@ func (s *Service) FindByLDAPDN(ctx context.Context, dn string) (*Group, error) {
 }
 
 // ReplaceMemberships sets the user's groups to exactly the given list.
-// Used during LDAP sync.
+// Used during explicit AD sync runs.
 func (s *Service) ReplaceMemberships(ctx context.Context, userID int64, groupIDs []int64) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -308,4 +308,17 @@ func (s *Service) ReplaceMemberships(ctx context.Context, userID int64, groupIDs
 		}
 	}
 	return tx.Commit()
+}
+
+// MergeMemberships adds LDAP/AD-mapped groups without removing memberships
+// assigned manually in the admin UI.
+func (s *Service) MergeMemberships(ctx context.Context, userID int64, groupIDs []int64) error {
+	for _, gid := range groupIDs {
+		if _, err := s.DB.ExecContext(ctx,
+			`INSERT OR IGNORE INTO user_groups(user_id,group_id,added_at) VALUES(?,?,?)`,
+			userID, gid, db.Now()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
