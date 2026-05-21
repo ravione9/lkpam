@@ -598,7 +598,7 @@
     background-repeat: no-repeat;
     pointer-events: none;
   }
-  .machines-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+  .machines-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; align-items: center; }
   .machines-stat {
     font-size: 12px; color: var(--muted);
     background: #fff;
@@ -608,6 +608,16 @@
     box-shadow: var(--shadow-xs);
   }
   .machines-stat b { color: var(--fg); font-weight: 600; }
+  .machines-filter {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--muted);
+  }
+  .machines-filter select {
+    width: auto; min-width: 90px;
+    padding: 6px 28px 6px 10px;
+    font-size: 12px;
+    height: 32px;
+  }
 
   .table-wrap {
     border: 1px solid var(--border);
@@ -616,10 +626,96 @@
     background: #fff;
     box-shadow: var(--shadow-xs);
   }
+  .table-scroll { max-height: calc(100vh - 360px); min-height: 320px; overflow: auto; }
+  .table-pro { font-size: 13px; }
+  .table-pro thead { position: sticky; top: 0; z-index: 5; }
   .table-pro th { background: var(--surface-2); }
-  .table-pro td.name-cell { font-weight: 500; }
-  .table-pro .machine-meta { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
-  .table-pro .actions { white-space: nowrap; display: flex; gap: 6px; justify-content: flex-end; }
+  .table-pro th.sortable { cursor: pointer; user-select: none; transition: background var(--t-fast), color var(--t-fast); }
+  .table-pro th.sortable:hover { background: var(--bg); color: var(--fg); }
+  .table-pro th.sortable .sort-ind {
+    display: inline-block;
+    width: 10px; margin-left: 4px;
+    color: var(--muted-2);
+    font-size: 10px;
+    transition: color var(--t-fast);
+  }
+  .table-pro th.sortable.sort-asc .sort-ind::before  { content: "▲"; color: var(--accent); }
+  .table-pro th.sortable.sort-desc .sort-ind::before { content: "▼"; color: var(--accent); }
+  .table-pro th.sortable:not(.sort-asc):not(.sort-desc) .sort-ind::before { content: "↕"; opacity: 0.4; }
+  .table-pro tbody td { padding: 8px 16px; border-bottom: 1px solid var(--divider); }
+  .table-pro tbody tr { height: 44px; }
+  .table-pro td.name-cell { font-weight: 500; max-width: 240px; }
+  .table-pro td.name-cell .name-text {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-weight: 600;
+  }
+  .table-pro .machine-meta {
+    font-size: 11px; color: var(--muted); margin-top: 1px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .table-pro td.addr-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .table-pro td.addr-cell .muted { font-family: var(--font-mono); font-size: 12px; }
+  .table-pro td.tags-cell { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .table-pro .actions { white-space: nowrap; display: flex; gap: 4px; justify-content: flex-end; align-items: center; }
+
+  /* Compact action buttons */
+  .btn-mini {
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--fg-soft);
+    cursor: pointer;
+    line-height: 1.4;
+    transition: all var(--t-fast);
+    white-space: nowrap;
+  }
+  .btn-mini:hover { border-color: var(--border-strong); background: var(--surface-2); color: var(--fg); }
+  .btn-mini.primary { background: var(--accent); color: #fff; border-color: transparent; box-shadow: var(--shadow-xs); }
+  .btn-mini.primary:hover { background: var(--accent-hover); color: #fff; }
+  .icon-btn {
+    width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: all var(--t-fast);
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--fg); border-color: var(--border); }
+  .icon-btn.danger:hover { background: var(--err-soft); color: var(--err); border-color: #fecaca; }
+  .icon-btn svg { display: block; }
+
+  /* Pagination */
+  .pagination {
+    display: flex; align-items: center; flex-wrap: wrap;
+    gap: 14px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--surface-2);
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .pagination-info b { color: var(--fg); font-weight: 600; }
+  .pagination-spacer { flex: 1; }
+  .pagination-size, .pagination-controls { display: inline-flex; align-items: center; gap: 6px; }
+  .pagination-size select { width: auto; padding: 5px 26px 5px 10px; font-size: 12px; height: 30px; }
+  .pagination-controls .icon-btn { width: 30px; height: 30px; border: 1px solid var(--border); color: var(--fg-soft); background: #fff; font-size: 14px; }
+  .pagination-controls .icon-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  .pagination-controls .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; background: #fff; color: var(--muted-2); border-color: var(--border); }
+  .pagination-current { padding: 0 6px; font-size: 12.5px; color: var(--fg-soft); }
+  .pagination-current b { color: var(--fg); font-weight: 600; }
+
+  @media (max-width: 720px) {
+    .machines-stats { margin-left: 0; }
+    .table-pro td.name-cell { max-width: 160px; }
+    .pagination { gap: 8px; }
+    .pagination-spacer { display: none; }
+  }
 
   .empty-state { text-align: center; padding: 56px 24px; }
   .empty-state .empty-icon {
@@ -879,13 +975,64 @@
           <div class="search-wrap">
             <input type="search" id="targetSearch" placeholder="Search by name, host, platform, tags…" autocomplete="off"/>
           </div>
+          <label class="machines-filter">Tier
+            <select id="targetTierFilter">
+              <option value="">All</option>
+              <option value="0">Tier 0</option>
+              <option value="1">Tier 1</option>
+              <option value="2">Tier 2</option>
+              <option value="3">Tier 3</option>
+            </select>
+          </label>
+          <label class="machines-filter">Protocol
+            <select id="targetConnFilter">
+              <option value="">All</option>
+              <option value="ssh">SSH</option>
+              <option value="rdp">RDP</option>
+              <option value="web">Web</option>
+              <option value="telnet">Telnet</option>
+              <option value="https-api">API</option>
+            </select>
+          </label>
           <div class="machines-stats" id="targetStats"></div>
         </div>
         <div class="table-wrap">
-          <table class="table-pro">
-            <thead><tr><th>Name</th><th>Platform</th><th>Connection</th><th>Address</th><th>Tier</th><th>Tags</th><th>Actions</th></tr></thead>
-            <tbody id="targetRows"><tr><td colspan="7" class="muted" style="padding:24px;text-align:center">Loading…</td></tr></tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="table-pro" id="targetsTable">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="name">Name <span class="sort-ind"></span></th>
+                  <th class="sortable" data-sort="platform">Platform <span class="sort-ind"></span></th>
+                  <th class="sortable" data-sort="connection">Connection <span class="sort-ind"></span></th>
+                  <th class="sortable" data-sort="address">Address <span class="sort-ind"></span></th>
+                  <th class="sortable" data-sort="tier">Tier <span class="sort-ind"></span></th>
+                  <th class="sortable" data-sort="tags">Tags <span class="sort-ind"></span></th>
+                  <th style="text-align:right">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="targetRows"><tr><td colspan="7" class="muted" style="padding:24px;text-align:center">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <div class="pagination" id="targetPagination" style="display:none">
+            <div class="pagination-info"><span id="pagInfo">—</span></div>
+            <div class="pagination-spacer"></div>
+            <div class="pagination-size">
+              <span>Rows per page</span>
+              <select id="targetPageSize">
+                <option value="25">25</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+              </select>
+            </div>
+            <div class="pagination-controls">
+              <button class="icon-btn" id="pagFirst" title="First page" aria-label="First">&laquo;</button>
+              <button class="icon-btn" id="pagPrev" title="Previous page" aria-label="Previous">&lsaquo;</button>
+              <span class="pagination-current">Page <b id="pagCurrent">1</b> of <b id="pagTotal">1</b></span>
+              <button class="icon-btn" id="pagNext" title="Next page" aria-label="Next">&rsaquo;</button>
+              <button class="icon-btn" id="pagLast" title="Last page" aria-label="Last">&raquo;</button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -2530,85 +2677,209 @@ function tierPill(tier) {
   return `<span class="pill ${cls}">${esc(tierLabel(t))}</span>`;
 }
 
-function filterTargets(query) {
-  const q = (query || "").trim().toLowerCase();
-  const all = cache.targets || [];
-  if (!q) return all;
-  return all.filter(t => {
-    const hay = [
-      t.name, t.host, t.web_url, t.tags, t.vendor, t.os_version,
-      kindLabel(t.kind), t.connection_type,
-    ].filter(Boolean).join(" ").toLowerCase();
-    return hay.includes(q);
+// State for the Machines list — designed for thousands of devices: filter +
+// sort happen client-side over the cached list, and only the current page
+// (default 50 rows) is rendered into the DOM.
+const targetsState = {
+  page: 1,
+  pageSize: 50,
+  sort: { key: "name", dir: "asc" },
+  tier: "",
+  conn: "",
+};
+
+const ICON_EDIT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>';
+const ICON_TRASH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>';
+
+function targetSortAccessor(key) {
+  switch (key) {
+    case "name":       return t => (t.name || "").toLowerCase();
+    case "platform":   return t => kindLabel(t.kind).toLowerCase();
+    case "connection": return t => (t.connection_type || "ssh").toLowerCase();
+    case "address":    return t => (t.host || t.web_url || "").toLowerCase();
+    case "tier":       return t => Number(t.tier);
+    case "tags":       return t => (t.tags || "").toLowerCase();
+    default:           return t => (t.name || "").toLowerCase();
+  }
+}
+
+function getFilteredSortedTargets() {
+  const q = ($("#targetSearch")?.value || "").trim().toLowerCase();
+  const tier = targetsState.tier;
+  const conn = targetsState.conn;
+  let rows = (cache.targets || []).slice();
+  if (tier !== "") rows = rows.filter(t => Number(t.tier) === Number(tier));
+  if (conn !== "") rows = rows.filter(t => (t.connection_type || "ssh") === conn);
+  if (q) {
+    rows = rows.filter(t => {
+      const hay = [
+        t.name, t.host, t.web_url, t.tags, t.vendor, t.os_version,
+        kindLabel(t.kind), t.connection_type,
+      ].filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  const { key, dir } = targetsState.sort;
+  const get = targetSortAccessor(key);
+  const mul = dir === "desc" ? -1 : 1;
+  rows.sort((a, b) => {
+    const va = get(a), vb = get(b);
+    if (va < vb) return -1 * mul;
+    if (va > vb) return  1 * mul;
+    return 0;
+  });
+  return rows;
+}
+
+function renderTargetSortHeaders() {
+  const { key, dir } = targetsState.sort;
+  document.querySelectorAll("#targetsTable th.sortable").forEach(th => {
+    th.classList.remove("sort-asc", "sort-desc");
+    if (th.dataset.sort === key) th.classList.add(dir === "desc" ? "sort-desc" : "sort-asc");
   });
 }
 
-function renderTargetStats(rows) {
+function renderTargetStats(filteredRows) {
   const el = $("#targetStats");
   if (!el) return;
   const total = (cache.targets || []).length;
   if (!total) { el.innerHTML = ""; return; }
-  const shown = rows.length;
-  const parts = [`<span class="machines-stat"><b>${shown}</b>${shown !== total ? ` of ${total}` : ""} machine${total === 1 ? "" : "s"}</span>`];
-  const crit = rows.filter(t => Number(t.tier) === 0).length;
-  if (crit) parts.push(`<span class="machines-stat"><b>${crit}</b> tier 0</span>`);
+  const shown = filteredRows.length;
+  const parts = [`<span class="machines-stat"><b>${fmtNum(shown)}</b>${shown !== total ? ` of ${fmtNum(total)}` : ""} machine${total === 1 ? "" : "s"}</span>`];
+  const crit = filteredRows.filter(t => Number(t.tier) === 0).length;
+  if (crit) parts.push(`<span class="machines-stat"><b>${fmtNum(crit)}</b> tier 0</span>`);
   el.innerHTML = parts.join("");
 }
 
-function renderTargetsTable(rows) {
-  renderTargetStats(rows);
-  if (!rows.length) {
-    const q = ($("#targetSearch")?.value || "").trim();
-    if (q && (cache.targets || []).length) {
-      $("#targetRows").innerHTML = `<tr><td colspan="7"><div class="empty-state"><p>No machines match “${esc(q)}”. Clear the search or try another term.</p></div></td></tr>`;
-      return;
-    }
-    const adminHint = isAdmin()
-      ? `<button class="primary" onclick="document.getElementById('targetAddBtn').click()">+ Add Machine</button>`
-      : `<span class="muted">Ask an administrator to register machines you need.</span>`;
-    $("#targetRows").innerHTML = `<tr><td colspan="7"><div class="empty-state">
-      <div class="empty-icon">▢</div>
-      <h4>No machines registered yet</h4>
-      <p>Add servers, network devices, firewalls, and consoles so users can request JIT access and launch sessions.</p>
-      ${adminHint}
+function fmtNum(n) { try { return Number(n).toLocaleString(); } catch { return String(n); } }
+
+function renderTargetRowsEmpty(filteredCount) {
+  const tbody = $("#targetRows");
+  const total = (cache.targets || []).length;
+  if (filteredCount === 0 && total > 0) {
+    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state">
+      <div class="empty-icon">⌕</div>
+      <h4>No machines match your filters</h4>
+      <p>Try a different search term or clear the tier / protocol filter.</p>
+      <button class="ghost" onclick="clearTargetFilters()">Clear filters</button>
     </div></td></tr>`;
     return;
   }
+  const adminHint = isAdmin()
+    ? `<button class="primary" onclick="document.getElementById('targetAddBtn').click()">+ Add Machine</button>`
+    : `<span class="muted">Ask an administrator to register machines you need.</span>`;
+  tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state">
+    <div class="empty-icon">▢</div>
+    <h4>No machines registered yet</h4>
+    <p>Add servers, network devices, firewalls, and consoles so users can request JIT access and launch sessions.</p>
+    ${adminHint}
+  </div></td></tr>`;
+}
+
+window.clearTargetFilters = () => {
+  $("#targetSearch").value = "";
+  $("#targetTierFilter").value = "";
+  $("#targetConnFilter").value = "";
+  targetsState.tier = "";
+  targetsState.conn = "";
+  targetsState.page = 1;
+  renderTargetsPage();
+};
+
+function renderTargetRowsSlice(slice) {
+  const admin = isAdmin();
   const tActions = t => {
-    const launchBtn = `<button class="ghost" onclick="launchTarget(${t.id})">Launch</button>`;
-    const requestBtn = `<button class="ghost" onclick="requestForTarget(${t.id})">Request</button>`;
-    const adminBtns = isAdmin()
-      ? `<button class="ghost" onclick="editTarget(${t.id})">Edit</button>
-         <button class="ghost danger" onclick="deleteTarget(${t.id})">Delete</button>`
+    const launchBtn  = `<button class="btn-mini primary" onclick="launchTarget(${t.id})" title="Launch session">Launch</button>`;
+    const requestBtn = `<button class="btn-mini" onclick="requestForTarget(${t.id})" title="Request access">Request</button>`;
+    const adminBtns = admin
+      ? `<button class="icon-btn" onclick="editTarget(${t.id})" title="Edit" aria-label="Edit">${ICON_EDIT}</button>` +
+        `<button class="icon-btn danger" onclick="deleteTarget(${t.id})" title="Delete" aria-label="Delete">${ICON_TRASH}</button>`
       : "";
     return launchBtn + requestBtn + adminBtns;
   };
-  $("#targetRows").innerHTML = rows.map(t => `
-    <tr>
-      <td class="name-cell"><b>${esc(t.name)}</b>${t.vendor || t.os_version ? `<div class="machine-meta">${esc([t.vendor, t.os_version].filter(Boolean).join(" · "))}</div>` : ""}</td>
-      <td><span class="pill">${esc(kindLabel(t.kind))}</span></td>
+  // Build with array.join for speed on large slices.
+  const html = new Array(slice.length);
+  for (let i = 0; i < slice.length; i++) {
+    const t = slice[i];
+    const platform = kindLabel(t.kind);
+    const meta = [t.vendor, t.os_version].filter(Boolean).join(" · ");
+    html[i] = `<tr>
+      <td class="name-cell">
+        <div class="name-text" title="${esc(t.name)}">${esc(t.name)}</div>
+        ${meta ? `<div class="machine-meta" title="${esc(meta)}">${esc(meta)}</div>` : ""}
+      </td>
+      <td><span class="pill" title="${esc(platform)}">${esc(platform)}</span></td>
       <td>${connectionBadge(t)}</td>
-      <td>${targetAddress(t)}</td>
+      <td class="addr-cell">${targetAddress(t)}</td>
       <td>${tierPill(t.tier)}</td>
-      <td class="muted">${esc(t.tags) || "—"}</td>
+      <td class="muted tags-cell" title="${esc(t.tags || "")}">${esc(t.tags) || "—"}</td>
       <td class="actions">${tActions(t)}</td>
-    </tr>`).join("");
+    </tr>`;
+  }
+  $("#targetRows").innerHTML = html.join("");
 }
+
+function renderTargetPagination(meta) {
+  const wrap = $("#targetPagination");
+  if (!wrap) return;
+  if (meta.filtered === 0) { wrap.style.display = "none"; return; }
+  wrap.style.display = "flex";
+  const from = meta.start + 1;
+  const to = meta.start + meta.count;
+  $("#pagInfo").innerHTML = `Showing <b>${fmtNum(from)}–${fmtNum(to)}</b> of <b>${fmtNum(meta.filtered)}</b>${meta.filtered !== meta.total ? ` <span class="muted">(filtered from ${fmtNum(meta.total)})</span>` : ""}`;
+  $("#pagCurrent").textContent = fmtNum(meta.page);
+  $("#pagTotal").textContent = fmtNum(meta.totalPages);
+  const atFirst = meta.page <= 1;
+  const atLast = meta.page >= meta.totalPages;
+  $("#pagFirst").disabled = atFirst;
+  $("#pagPrev").disabled  = atFirst;
+  $("#pagNext").disabled  = atLast;
+  $("#pagLast").disabled  = atLast;
+}
+
+function renderTargetsPage() {
+  renderTargetSortHeaders();
+  const filtered = getFilteredSortedTargets();
+  const total = (cache.targets || []).length;
+  renderTargetStats(filtered);
+  if (!filtered.length) {
+    renderTargetRowsEmpty(filtered.length);
+    renderTargetPagination({ total, filtered: 0, page: 1, totalPages: 1, start: 0, count: 0 });
+    return;
+  }
+  const pageSize = targetsState.pageSize;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const page = Math.min(Math.max(1, targetsState.page), totalPages);
+  targetsState.page = page;
+  const start = (page - 1) * pageSize;
+  const slice = filtered.slice(start, start + pageSize);
+  renderTargetRowsSlice(slice);
+  renderTargetPagination({ total, filtered: filtered.length, page, totalPages, pageSize, start, count: slice.length });
+  // Scroll table area back to top on page change for clean UX.
+  const scroll = document.querySelector("#tab-targets .table-scroll");
+  if (scroll) scroll.scrollTop = 0;
+}
+
+// Back-compat shim — older code paths call renderTargetsTable.
+function renderTargetsTable() { renderTargetsPage(); }
 
 function targetAddress(t) {
   if (t.connection_type === "web" || t.connection_type === "https-api") {
-    return `<a href="#" onclick="event.preventDefault();launchTarget(${t.id})" class="muted" title="Open in new tab">${esc(t.web_url)}</a>`;
+    const url = t.web_url || "";
+    return `<a href="#" onclick="event.preventDefault();launchTarget(${t.id})" class="muted" title="${esc(url)}">${esc(url)}</a>`;
   }
-  return `<span class="muted">${esc(t.host)}:${t.port}</span>`;
+  const addr = `${t.host || ""}:${t.port}`;
+  return `<span class="muted" title="${esc(addr)}">${esc(addr)}</span>`;
 }
 
 async function loadTargets() {
   try {
     cache.targets = await api("/policy/targets") || [];
-    renderTargetsTable(filterTargets($("#targetSearch")?.value));
+    renderTargetsPage();
   } catch (e) {
     $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted" style="padding:24px;text-align:center">${esc(e.message)}</td></tr>`;
     if ($("#targetStats")) $("#targetStats").innerHTML = "";
+    if ($("#targetPagination")) $("#targetPagination").style.display = "none";
   }
 }
 
@@ -2819,8 +3090,50 @@ $("#targetConnSegments")?.addEventListener("click", e => {
   $("#targetConn").value = btn.dataset.conn;
   applyConnectionTypeUI();
 });
+// Debounced search so typing in a 10k-row dataset stays smooth.
+let _targetSearchTimer = null;
 $("#targetSearch")?.addEventListener("input", () => {
-  renderTargetsTable(filterTargets($("#targetSearch").value));
+  clearTimeout(_targetSearchTimer);
+  _targetSearchTimer = setTimeout(() => {
+    targetsState.page = 1;
+    renderTargetsPage();
+  }, 120);
+});
+
+$("#targetTierFilter")?.addEventListener("change", e => {
+  targetsState.tier = e.target.value;
+  targetsState.page = 1;
+  renderTargetsPage();
+});
+$("#targetConnFilter")?.addEventListener("change", e => {
+  targetsState.conn = e.target.value;
+  targetsState.page = 1;
+  renderTargetsPage();
+});
+$("#targetPageSize")?.addEventListener("change", e => {
+  targetsState.pageSize = parseInt(e.target.value, 10) || 50;
+  targetsState.page = 1;
+  renderTargetsPage();
+});
+$("#pagFirst")?.addEventListener("click", () => { targetsState.page = 1; renderTargetsPage(); });
+$("#pagPrev")?.addEventListener("click", () => { targetsState.page = Math.max(1, targetsState.page - 1); renderTargetsPage(); });
+$("#pagNext")?.addEventListener("click", () => { targetsState.page = targetsState.page + 1; renderTargetsPage(); });
+$("#pagLast")?.addEventListener("click", () => { targetsState.page = 1e9; renderTargetsPage(); });
+
+// Click a sortable header to toggle sort. Same column → flip direction.
+document.querySelectorAll("#targetsTable th.sortable").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (!key) return;
+    if (targetsState.sort.key === key) {
+      targetsState.sort.dir = targetsState.sort.dir === "asc" ? "desc" : "asc";
+    } else {
+      targetsState.sort.key = key;
+      targetsState.sort.dir = "asc";
+    }
+    targetsState.page = 1;
+    renderTargetsPage();
+  });
 });
 window.editTarget = id => {
   const t = cache.targets.find(x => x.id === id); if (!t) return;
