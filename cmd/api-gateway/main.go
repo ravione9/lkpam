@@ -128,42 +128,20 @@ func main() {
 	// Validates the portal JWT (header, ?token=, or session cookie), loads session
 	// credentials from vault, and transparently proxies to the target web console.
 	vaultSvc := mustURL(config.Get("PAM_VAULT_URL", "http://localhost:8082"))
-	mux.Handle("/web/", webGated(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webProxy := webGated(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		webConsoleProxy(w, r, authURL, vaultSvc)
-	}), authURL))
+	}), authURL)
+	mux.Handle("/web/", webProxy)
 
 	// Static UI (SPA fallback only for non-file routes).
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			http.NotFound(w, r)
-			return
-		}
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path == "" {
-			path = "index.html"
-		}
-		b, err := webFS.ReadFile("web/" + path)
-		if err != nil {
-			// Do not serve the admin login shell for missing static assets.
-			if strings.Contains(path, ".") {
-				http.NotFound(w, r)
-				return
-			}
-			b, err = webFS.ReadFile("web/index.html")
-			if err != nil {
-				http.NotFound(w, r)
-				return
-			}
-		}
-		if strings.HasSuffix(path, ".html") || path == "index.html" {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		}
-		w.Write(b)
-	})
+	mux.HandleFunc("/", serveStaticUI)
 
 	addr := config.Get("PAM_GATEWAY_ADDR", ":8080")
 	log.Printf("api-gateway listening on %s — open http://localhost%s/", addr, addr)
-	if err := http.ListenAndServe(addr, httpx.LoggingMiddleware(mux)); err != nil {
+	// Bridge root-absolute SPA paths (/static/, /api/v2/, runtime.js, …) through the
+	// active web-console session when pam_web_sid cookie is set.
+	handler := webBridgeMiddleware(mux, webProxy)
+	if err := http.ListenAndServe(addr, httpx.LoggingMiddleware(handler)); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -213,6 +191,14 @@ func serveAuthed(w http.ResponseWriter, r *http.Request, next http.Handler, auth
 			Name:     "pam_web_tok",
 			Value:    tok,
 			Path:     "/web/" + webSessionID + "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   7200,
+		})
+		http.SetCookie(w, &http.Cookie{
+			Name:     "pam_web_sid",
+			Value:    webSessionID,
+			Path:     "/",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   7200,
@@ -412,9 +398,9 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		}
 	}
 
-	// Rewrite HTML bodies to make absolute target URLs go through the proxy.
+	// Rewrite HTML/JS/CSS bodies so root-absolute SPA paths go through the proxy.
 	ct := upResp.Header.Get("Content-Type")
-	if strings.Contains(ct, "text/html") {
+	if shouldRewriteWebBody(ct) {
 		body, _ := io.ReadAll(upResp.Body)
 		body = rewriteHTML(body, targetURL, sessionID)
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
@@ -424,6 +410,81 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		w.WriteHeader(upResp.StatusCode)
 		io.Copy(w, upResp.Body)
 	}
+}
+
+func shouldRewriteWebBody(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "text/html") ||
+		strings.Contains(ct, "javascript") ||
+		strings.Contains(ct, "text/css")
+}
+
+func serveStaticUI(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	if path == "" {
+		path = "index.html"
+	}
+	b, err := webFS.ReadFile("web/" + path)
+	if err != nil {
+		if strings.Contains(path, ".") {
+			http.NotFound(w, r)
+			return
+		}
+		b, err = webFS.ReadFile("web/index.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	if strings.HasSuffix(path, ".html") || path == "index.html" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	}
+	w.Write(b)
+}
+
+// webBridgeMiddleware forwards root-absolute paths from embedded SPAs (e.g. /static/,
+// /api/v2/, /runtime.js) through the active web-console session. The <base> tag does
+// not rewrite paths that start with /, so firewalls would otherwise hit the PAM UI.
+func webBridgeMiddleware(inner http.Handler, webProxy http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isReservedPAMPath(r.URL.Path) {
+			if c, err := r.Cookie("pam_web_sid"); err == nil && strings.TrimSpace(c.Value) != "" {
+				bridged := r.Clone(r.Context())
+				u := *r.URL
+				u.Path = "/web/" + c.Value + r.URL.Path
+				bridged.URL = &u
+				webProxy.ServeHTTP(w, bridged)
+				return
+			}
+		}
+		inner.ServeHTTP(w, r)
+	})
+}
+
+func isReservedPAMPath(path string) bool {
+	if path == "/" || path == "/index.html" || strings.HasPrefix(path, "/web/") {
+		return true
+	}
+	if path == "/health" {
+		return true
+	}
+	for _, p := range []string{
+		"/api/auth/", "/api/vault/", "/api/policy/", "/api/approval/", "/api/audit/", "/api/rdp/", "/api/ccp/",
+	} {
+		if strings.HasPrefix(path, p) || path == strings.TrimSuffix(p, "/") {
+			return true
+		}
+	}
+	for _, p := range []string{"/web-viewer.html", "/rdp-viewer.html", "/ssh-viewer.html"} {
+		if path == p {
+			return true
+		}
+	}
+	return false
 }
 
 func rewriteLocation(loc string, target *url.URL, sessionID string) string {
@@ -449,13 +510,75 @@ func rewriteHTML(body []byte, target *url.URL, sessionID string) []byte {
 	} else if idx := bytes.Index(body, []byte("<HEAD>")); idx >= 0 {
 		body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
 	}
-	// Rewrite absolute target URLs.
+	// Rewrite absolute target host URLs.
 	for _, scheme := range []string{"https://", "http://"} {
 		old := []byte(scheme + target.Host)
-		repl := []byte(pfx)
-		body = bytes.ReplaceAll(body, old, repl)
+		body = bytes.ReplaceAll(body, old, []byte(pfx))
+	}
+	// Root-absolute paths (/static/, /api/v2/, …) ignore <base> — prefix them.
+	return rewriteRootPaths(body, pfx)
+}
+
+// rewriteRootPaths prefixes root-absolute URL paths inside HTML/JS/CSS so they
+// route through /web/{sessionID}/ instead of the PAM gateway root.
+func rewriteRootPaths(body []byte, pfx string) []byte {
+	if len(pfx) == 0 {
+		return body
+	}
+	// Common SPA string literals in bundled JS.
+	for _, pair := range [][2]string{
+		{`"/api/`, `"` + pfx + `/api/`},
+		{`'/api/`, `'` + pfx + `/api/`},
+		{`"/static/`, `"` + pfx + `/static/`},
+		{`'/static/`, `'` + pfx + `/static/`},
+		{`"/assets/`, `"` + pfx + `/assets/`},
+		{`'/assets/`, `'` + pfx + `/assets/`},
+		{`"/ng/`, `"` + pfx + `/ng/`},
+		{`'/ng/`, `'` + pfx + `/ng/`},
+	} {
+		body = bytes.ReplaceAll(body, []byte(pair[0]), []byte(pair[1]))
+	}
+	// HTML attributes: href="/…", src="/…", action="/…" (skip protocol-relative //).
+	for _, attr := range []string{"href=", "src=", "action="} {
+		for _, q := range []byte{'"', '\''} {
+			body = rewriteRootAttr(body, attr, q, pfx)
+		}
 	}
 	return body
+}
+
+func rewriteRootAttr(body []byte, attr string, quote byte, pfx string) []byte {
+	needle := append(append([]byte(attr), quote), '/')
+	repl := append(append([]byte(attr), quote), []byte(pfx)...)
+	repl = append(repl, '/')
+
+	var out bytes.Buffer
+	i := 0
+	for i < len(body) {
+		idx := bytes.Index(body[i:], needle)
+		if idx < 0 {
+			out.Write(body[i:])
+			break
+		}
+		idx += i
+		absStart := idx + len(needle)
+		// Skip protocol-relative URLs (href="//cdn…").
+		if absStart < len(body) && body[absStart] == '/' {
+			out.Write(body[i:absStart])
+			i = absStart
+			continue
+		}
+		// Skip paths already routed through /web/{sessionID}/.
+		if absStart+4 <= len(body) && bytes.HasPrefix(body[absStart:], []byte("web/")) {
+			out.Write(body[i:absStart])
+			i = absStart
+			continue
+		}
+		out.Write(body[i:idx])
+		out.Write(repl)
+		i = absStart
+	}
+	return out.Bytes()
 }
 
 
