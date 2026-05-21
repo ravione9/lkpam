@@ -881,10 +881,9 @@ func (s *Server) buildDownstreamConfig(user, password string, certMethods []ssh.
 				return out, nil
 			}),
 		},
-		HostKeyCallback:     ssh.InsecureIgnoreHostKey(),
-		HostKeyAlgorithms:   hostKeyAlgos,
-		PubKeyAuthAlgorithms: hostKeyAlgos,
-		Timeout:             10 * time.Second,
+		HostKeyCallback:   ssh.InsecureIgnoreHostKey(),
+		HostKeyAlgorithms: hostKeyAlgos,
+		Timeout:           10 * time.Second,
 	}
 }
 
