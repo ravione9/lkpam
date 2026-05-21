@@ -48,14 +48,16 @@ run-gateway:
 run-tacacs:
 	PAM_DB=./data/pam.db go run ./cmd/tacacs-service
 
-COMPOSE := docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml
+COMPOSE := docker compose -f deploy/docker/docker-compose.yml
 
 docker-build:
 	@test -f deploy/docker/.env || cp deploy/docker/.env.example deploy/docker/.env
+	@test -f deploy/docker/secrets.env || cp deploy/docker/secrets.env.example deploy/docker/secrets.env
 	$(COMPOSE) build
 
 docker-up:
 	@test -f deploy/docker/.env || cp deploy/docker/.env.example deploy/docker/.env
+	@test -f deploy/docker/secrets.env || cp deploy/docker/secrets.env.example deploy/docker/secrets.env
 	$(COMPOSE) up --build -d
 
 docker-down:

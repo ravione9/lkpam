@@ -6,6 +6,7 @@ bin/
 data/
 recordings/
 .env
+deploy/docker/secrets.env
 .idea/
 .vscode/
 *.db

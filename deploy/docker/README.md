@@ -14,11 +14,13 @@ policy engine, approval workflow, audit, and SSH proxy.
 From the **repository root** (`pam-platform/`):
 
 ```bash
-# 1. Create env file (edit secrets before production)
+# 1. Create config files (edit secrets.env before production)
 cp deploy/docker/.env.example deploy/docker/.env
+cp deploy/docker/secrets.env.example deploy/docker/secrets.env
+chmod 600 deploy/docker/secrets.env
 
 # 2. Build and start all services
-docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml up --build -d
+docker compose -f deploy/docker/docker-compose.yml up --build -d
 
 # 3. Open the admin console
 #    http://localhost:8080
@@ -56,18 +58,22 @@ network only.
 
 ## Environment variables
 
-Copy `deploy/docker/.env.example` to `deploy/docker/.env`:
+Copy `deploy/docker/.env.example` → `.env` and `secrets.env.example` → `secrets.env`:
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `PAM_JWT_SECRET` | Yes (prod) | HS256 signing secret |
-| `PAM_MASTER_KEY` | Recommended | Base64 32-byte vault key. If unset, a key is auto-created at `/data/.master_key` on first boot (shared across all containers via the `pam-data` volume). |
-| `PAM_ADMIN_USER` | No | Bootstrap admin username (default `admin`) |
-| `PAM_ADMIN_PASS` | No | Bootstrap admin password (default `admin`) |
-| `PAM_HTTP_PORT` | No | Host port for UI (default `8080`) |
-| `PAM_SSH_PORT` | No | Host port for SSH proxy (default `2222`) |
-| `PAM_TACACS_PORT` | No | Host port for TACACS+ (default `49`) |
-| `PAM_TACACS_SECRET` | Yes (prod) | Shared secret for network devices |
+| File | Purpose |
+|------|---------|
+| `.env` | Host ports and URLs only (safe for Compose `${VAR}` substitution) |
+| `secrets.env` | JWT, vault key, TACACS secret, admin password — **may contain `$` safely** |
+
+| Variable | File | Required | Description |
+|----------|------|----------|-------------|
+| `PAM_JWT_SECRET` | secrets.env | Yes (prod) | HS256 signing secret |
+| `PAM_MASTER_KEY` | secrets.env | Recommended | Base64 32-byte vault key |
+| `PAM_TACACS_SECRET` | secrets.env | Yes (prod) | Shared secret for network devices |
+| `PAM_ADMIN_PASS` | secrets.env | No | Bootstrap admin password (default `admin`) |
+| `PAM_HTTP_PORT` | .env | No | Host port for UI (default `8080`) |
+| `PAM_SSH_PORT` | .env | No | Host port for SSH proxy (default `2222`) |
+| `PAM_TACACS_PORT` | .env | No | Host port for TACACS+ (default `49`) |
 
 Generate secrets:
 
@@ -126,21 +132,24 @@ docker compose -f deploy/docker/docker-compose.yml down -v
 
 **`The "mL8Q" variable is not set` (or similar)**
 
-One of your secrets in `deploy/docker/.env` contains a **`$` character**. Docker Compose treats `$name` as a variable reference and breaks the value.
+Secrets were in `deploy/docker/.env`. Compose treats `$name` inside `.env` as a variable reference and corrupts passwords that contain `$`.
 
-Fix either:
-
-1. **Escape each `$` as `$$`** in `.env` (e.g. secret `ab$cd` → write `ab$$cd`), or  
-2. **Regenerate secrets without `$`** (recommended for TACACS/JWT):
-   ```bash
-   openssl rand -hex 32    # for PAM_JWT_SECRET / PAM_TACACS_SECRET
-   ```
-
-Then restart:
+**Fix:** move secrets to `secrets.env` (Compose does not expand `$` in env_file values):
 
 ```bash
-docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml up -d --build tacacs
+cd /opt/lkpam
+git pull origin main
+cp deploy/docker/secrets.env.example deploy/docker/secrets.env
+
+# Copy your existing secrets from .env into secrets.env, then REMOVE them from .env:
+#   PAM_JWT_SECRET, PAM_MASTER_KEY, PAM_TACACS_SECRET, PAM_ADMIN_PASS
+nano deploy/docker/secrets.env
+nano deploy/docker/.env
+
+docker compose -f deploy/docker/docker-compose.yml up -d --build
 ```
+
+`.env` should only contain ports/URLs (see `.env.example`). All passwords go in `secrets.env`.
 
 **TACACS container missing (`ps tacacs` shows empty)**
 
@@ -148,8 +157,8 @@ Pull latest code (TACACS is included by default), then rebuild:
 
 ```bash
 git pull origin main
-docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml up -d --build tacacs
-docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml logs tacacs --tail 20
+docker compose -f deploy/docker/docker-compose.yml up -d --build tacacs
+docker compose -f deploy/docker/docker-compose.yml logs tacacs --tail 20
 ```
 
 Expect: `tacacs+ listening on :1049`
