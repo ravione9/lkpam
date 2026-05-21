@@ -155,6 +155,8 @@
         body: JSON.stringify({ reason: "User ended web session" }),
       });
     } catch {}
+    document.cookie = "pam_web_sid=; Path=/; Max-Age=0";
+    document.cookie = "pam_web_tok=; Path=/; Max-Age=0";
     statusEl.textContent = "ended";
     statusEl.className = "pill";
     frame.src = "about:blank";
