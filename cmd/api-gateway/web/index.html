@@ -337,7 +337,7 @@
           <h3 style="margin:0">User Groups</h3>
           <button class="primary" id="groupAddBtn">+ Add Group</button>
         </div>
-        <p class="desc">Groups grant a role to all their members. Map AD/LDAP groups by setting an LDAP DN — users synced from AD will be auto-assigned.</p>
+        <p class="desc">Groups grant a role to all their members. Map AD groups via <b>LDAP DN</b> or import them from <b>Settings → AD Sync</b>.</p>
         <table>
           <thead><tr><th>Name</th><th>Description</th><th>Role</th><th>Source</th><th>Members</th><th>LDAP DN</th><th></th></tr></thead>
           <tbody id="groupRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
@@ -742,7 +742,7 @@
           </div>
           <label>SSH proxy port</label><input id="onboardSshPort" type="number" value="2222" style="width:120px"/>
           <label>TACACS+ port</label><input id="onboardTacPort" type="number" value="49" style="width:120px"/>
-          <label>TACACS+ shared secret</label><input id="onboardSecret" placeholder="set on PAM tacacs-service, e.g. ChangeMe!"/>
+          <label>TACACS+ shared secret</label><input id="onboardSecret" placeholder="same as PAM_TACACS_SECRET in deploy/docker/.env"/>
         </div>
 
         <div class="row" style="gap:6px;flex-wrap:wrap" id="onboardKindBar"></div>
@@ -1033,6 +1033,11 @@ function sshProxyHost() {
 function buildSshCommand(username, target) {
   const dest = `${username}@${sshTargetRef(target)}@${sshProxyHost()}`;
   return `ssh -p ${SSH_PROXY_PORT} -o PreferredAuthentications=keyboard-interactive,password -o StrictHostKeyChecking=accept-new "${dest}"`;
+}
+
+function buildPuttyCommand(username, target) {
+  const login = `${username}@${sshTargetRef(target)}`;
+  return `putty -ssh -P ${SSH_PROXY_PORT} -l "${login}" ${sshProxyHost()}`;
 }
 
 // openPamViewer opens a recorded session using the same host as the portal (not PAM_PORTAL_URL).
@@ -1845,25 +1850,31 @@ function downloadTextFile(filename, content, mime) {
 
 function showSshLaunchModal(target) {
   const cmd = buildSshCommand(currentUser.username, target);
+  const puttyCmd = buildPuttyCommand(currentUser.username, target);
   const modal = document.createElement("div");
   modal.className = "modal-backdrop show";
   modal.innerHTML = `
-    <div class="modal" style="max-width:640px">
+    <div class="modal" style="max-width:680px">
       <h3>SSH launch — ${esc(target.name)}</h3>
-      <p class="muted">Paste this command in <b>CMD</b>, <b>PowerShell</b>, or <b>Windows Terminal</b>. Uses machine ID <code>${esc(sshTargetRef(target))}</code> so names with spaces work. Connect to <b>${esc(sshProxyHost())}:${SSH_PROXY_PORT}</b>.</p>
-      <pre id="sshLaunchCmd" style="font-size:11px;max-height:120px;overflow:auto;white-space:pre-wrap;word-break:break-all">${esc(cmd)}</pre>
+      <p class="muted">Choose how to connect. All paths go through the PAM SSH proxy on <b>${esc(sshProxyHost())}:${SSH_PROXY_PORT}</b> (machine ID <code>${esc(sshTargetRef(target))}</code>).</p>
+      <label class="muted" style="font-size:12px;display:block;margin-top:10px"><b>Terminal / CMD / Windows Terminal</b></label>
+      <pre id="sshLaunchCmd" style="font-size:11px;max-height:90px;overflow:auto;white-space:pre-wrap;word-break:break-all">${esc(cmd)}</pre>
+      <label class="muted" style="font-size:12px;display:block;margin-top:10px"><b>PuTTY</b> (paste into Run dialog or save as shortcut)</label>
+      <pre id="sshPuttyCmd" style="font-size:11px;max-height:70px;overflow:auto;white-space:pre-wrap;word-break:break-all">${esc(puttyCmd)}</pre>
       <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
-        <button class="primary" id="sshCopyBtn">Copy command</button>
+        <button class="primary" id="sshTerminalBtn">Open in Terminal (copy)</button>
+        <button class="primary" id="sshPuttyBtn">Open in PuTTY (copy)</button>
         <button class="ghost" id="sshBrowserBtn">Open in browser (recorded)</button>
         <button class="ghost" id="sshCloseBtn">Close</button>
       </div>
-      <p class="muted" style="font-size:12px;margin-top:12px">Login with your portal password at the prompt; enter MFA if enrolled. Browser option requires guacd and PAM SSH CA on the device.</p>
+      <p class="muted" style="font-size:12px;margin-top:12px">Paste the Terminal command into CMD, PowerShell, or Windows Terminal. For PuTTY, run the command from Start → Run or create a desktop shortcut. Log in with your portal password; enter MFA if enrolled.</p>
     </div>`;
   document.body.appendChild(modal);
   const close = () => modal.remove();
   modal.addEventListener("click", e => { if (e.target === modal) close(); });
   modal.querySelector("#sshCloseBtn").onclick = close;
-  modal.querySelector("#sshCopyBtn").onclick = () => copyToClipboard(cmd);
+  modal.querySelector("#sshTerminalBtn").onclick = () => copyToClipboard(cmd);
+  modal.querySelector("#sshPuttyBtn").onclick = () => copyToClipboard(puttyCmd);
   modal.querySelector("#sshBrowserBtn").onclick = async () => {
     const reason = prompt("Reason for recorded browser session:", "Approved access");
     if (reason === null) return;

@@ -35,6 +35,7 @@ func main() {
 		Vault:        v,
 		Auth:         authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
 		GuacdAddr:    config.Get("PAM_GUACD_ADDR", "guacd:4822"),
+		SSHProxyAddr: config.Get("PAM_SSH_PROXY_DIAL_ADDR", "ssh-proxy:2222"),
 		RecordingDir: config.Get("PAM_REC_DIR", "/recordings"),
 		ListenAddr:   config.Get("PAM_RDP_PROXY_ADDR", ":8086"),
 	}

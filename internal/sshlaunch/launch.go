@@ -104,15 +104,37 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 	}
 
 	principals := []string{userRole, downstreamUser}
-	privPEM, _, err := s.Vault.IssueSSHCert(principals, 30*time.Minute)
-	if err != nil {
-		return nil, fmt.Errorf("issue ssh cert: %w", err)
+	_ = principals // reserved for future direct-to-target cert auth
+
+	var portalUser string
+	_ = s.DB.QueryRowContext(ctx, `SELECT username FROM users WHERE id=?`, userID).Scan(&portalUser)
+	if portalUser == "" {
+		return nil, errors.New("portal user not found")
 	}
 
+	token, err := NewBrowserToken()
+	if err != nil {
+		return nil, fmt.Errorf("browser token: %w", err)
+	}
+	targetRef := TargetRef(targetID)
 	sessionID := fmt.Sprintf("ssh-%d-%d", time.Now().UnixNano(), targetID)
+	creds, err := MarshalSessionCreds(SessionCreds{
+		Mode: "browser", Token: token,
+		PortalUser: portalUser, TargetRef: targetRef,
+		UserID: userID, TargetID: targetID,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	recDir := RecordingDirForSession(s.RecordingDir, sessionID)
-	if err := s.Vault.PutSecret(ctx, SessionSecretName(sessionID), privPEM, nil); err != nil {
-		return nil, fmt.Errorf("store session key: %w", err)
+	if err := s.Vault.PutSecret(ctx, SessionSecretName(sessionID), creds, nil); err != nil {
+		return nil, fmt.Errorf("store session credentials: %w", err)
+	}
+	if err := s.Vault.PutSecret(ctx, BrowserTokenVaultKey(token), creds, nil); err != nil {
+		_ = s.Vault.DeleteSecret(ctx, SessionSecretName(sessionID))
+		return nil, fmt.Errorf("store browser token: %w", err)
 	}
 
 	_, err = s.DB.ExecContext(ctx, `
@@ -120,6 +142,7 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		VALUES(?,?,?,?,?,?,?)`,
 		sessionID, userID, targetID, db.Now(), clientIP, "ssh", recDir)
 	if err != nil {
+		_ = s.Vault.DeleteSecret(ctx, BrowserTokenVaultKey(token))
 		_ = s.Vault.DeleteSecret(ctx, SessionSecretName(sessionID))
 		return nil, err
 	}
@@ -137,8 +160,8 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		Username:   downstreamUser,
 		BrowserURL: browserURL,
 		Recorded:   true,
-		Instructions: "Session opens in your browser — proxied through PAM/guacd and recorded for audit. " +
-			"The target must trust the PAM SSH CA and allow user " + downstreamUser + ".",
+		Instructions: "Browser session connects through the PAM SSH proxy (same path as CMD/PuTTY) and is recorded. " +
+			"For native clients, use Open in Terminal or PuTTY from the launch dialog.",
 	}, nil
 }
 

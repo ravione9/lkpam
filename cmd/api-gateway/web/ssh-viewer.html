@@ -9,10 +9,14 @@
     header { padding: 10px 16px; background: #020617; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #334155; font-family: system-ui, sans-serif; }
     header h1 { font-size: 15px; font-weight: 600; }
     header .muted { font-size: 12px; color: #94a3b8; }
-    #display { flex: 1; overflow: hidden; background: #111; position: relative; }
+    #display { flex: 1; min-height: 320px; overflow: hidden; background: #111; position: relative; }
     #display > div { width: 100% !important; height: 100% !important; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
+    #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
+    #fallback h2 { font-size: 16px; margin-bottom: 8px; }
+    #fallback p { font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 1.5; }
+    #fallback a { color: #38bdf8; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/guacamole-common-js@1.5.0/dist/guacamole-common.min.js"></script>
 </head>
@@ -25,6 +29,11 @@
     <button id="disconnectBtn" style="padding:6px 14px;border-radius:6px;border:1px solid #475569;background:#334155;color:#e2e8f0;cursor:pointer;font-family:system-ui,sans-serif">Disconnect</button>
   </header>
   <div id="display"></div>
+  <div id="fallback">
+    <h2>Browser session could not connect</h2>
+    <p id="fallbackMsg">Use Terminal or PuTTY from the PAM portal Launch dialog instead — those use the same SSH proxy path and work without guacd in the browser.</p>
+    <p><a href="/">← Back to PAM portal</a></p>
+  </div>
   <div id="status">Session is recorded by PAM for audit.</div>
   <script>
     const params = new URLSearchParams(location.search);
@@ -32,42 +41,61 @@
     const token = params.get("token");
     const statusEl = document.getElementById("status");
     const labelEl = document.getElementById("sessionLabel");
+    const fallbackEl = document.getElementById("fallback");
+    const displayEl = document.getElementById("display");
+
+    function showFallback(msg) {
+      statusEl.textContent = msg;
+      statusEl.className = "err";
+      displayEl.style.display = "none";
+      fallbackEl.style.display = "block";
+      document.getElementById("fallbackMsg").textContent =
+        msg + " Use Open in Terminal or Open in PuTTY from the Launch dialog in the portal.";
+    }
 
     if (!sessionId || !token) {
-      statusEl.textContent = "Missing session or token — launch SSH from the PAM portal.";
-      statusEl.className = "err";
+      showFallback("Missing session or token — launch SSH from the PAM portal.");
     } else {
       labelEl.textContent = "Session: " + sessionId;
+      statusEl.textContent = "Connecting to target via PAM SSH proxy…";
       const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = wsProto + "//" + location.host + "/api/rdp/websocket-tunnel?session="
         + encodeURIComponent(sessionId) + "&token=" + encodeURIComponent(token);
 
       const tunnel = new Guacamole.WebSocketTunnel(wsUrl);
       const client = new Guacamole.Client(tunnel);
-      const display = document.getElementById("display");
-      display.appendChild(client.getDisplay().getElement());
+      displayEl.appendChild(client.getDisplay().getElement());
 
+      let connected = false;
       client.onstatechange = state => {
-        if (state === Guacamole.Client.State.CONNECTED) statusEl.textContent = "Connected — terminal session is being recorded.";
-        if (state === Guacamole.Client.State.DISCONNECTED) statusEl.textContent = "Disconnected. Recording saved in PAM Sessions tab.";
+        if (state === Guacamole.Client.State.CONNECTED) {
+          connected = true;
+          statusEl.textContent = "Connected — terminal session is being recorded.";
+          statusEl.className = "";
+        }
+        if (state === Guacamole.Client.State.DISCONNECTED) {
+          statusEl.textContent = connected
+            ? "Disconnected. Recording saved in PAM Sessions tab."
+            : "Disconnected before connect — try Terminal or PuTTY from the portal.";
+          if (!connected) statusEl.className = "err";
+        }
       };
       client.onerror = err => {
-        statusEl.textContent = "Connection error: " + (err && err.message ? err.message : "unknown");
-        statusEl.className = "err";
+        showFallback("Connection error: " + (err && err.message ? err.message : "unknown"));
       };
 
       function connect() {
-        client.connect("width=" + display.clientWidth + "&height=" + display.clientHeight);
+        client.connect("width=" + Math.max(displayEl.clientWidth, 800) + "&height=" + Math.max(displayEl.clientHeight, 480));
       }
       window.addEventListener("resize", () => {
         if (client.getDisplay()) {
-          client.sendSize(display.clientWidth, display.clientHeight);
+          client.sendSize(displayEl.clientWidth, displayEl.clientHeight);
         }
       });
 
       tunnel.onerror = status => {
-        statusEl.textContent = "Tunnel error — is guacd running? " + JSON.stringify(status);
-        statusEl.className = "err";
+        const detail = status && status.message ? status.message : JSON.stringify(status);
+        showFallback("Tunnel error — is guacd running? " + detail);
       };
 
       connect();

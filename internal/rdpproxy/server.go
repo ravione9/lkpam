@@ -32,6 +32,7 @@ type Server struct {
 	Vault        *vault.Vault
 	Auth         *authclient.Client
 	GuacdAddr    string
+	SSHProxyAddr string // dial address for browser SSH via ssh-proxy (e.g. ssh-proxy:2222)
 	RecordingDir string
 	ListenAddr   string
 
@@ -135,7 +136,6 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 			"hostname":               params.Host,
 			"port":                     strconv.Itoa(params.Port),
 			"username":                 params.Username,
-			"private-key":              string(params.PrivateKey),
 			"typescript-path":          params.RecDir,
 			"typescript-name":          params.SessionID,
 			"create-typescript-path":   "true",
@@ -146,6 +146,12 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 			"color-scheme":             "gray-black",
 			"scrollback":               "1000",
 			"server-alive-interval":    "60",
+		}
+		if len(params.PrivateKey) > 0 {
+			config.Parameters["private-key"] = string(params.PrivateKey)
+		}
+		if params.Password != "" {
+			config.Parameters["password"] = params.Password
 		}
 	} else {
 		config.Protocol = "rdp"
@@ -237,16 +243,24 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 
 	switch protocol {
 	case "ssh":
-		if port <= 0 {
-			port = 22
-			params.Port = 22
-		}
 		key, err := s.Vault.GetSecret(ctx, sshlaunch.SessionSecretName(sessionID))
 		if err != nil {
 			return nil, fmt.Errorf("session credentials expired or missing")
 		}
-		params.Username = "pam-user"
-		params.PrivateKey = key
+		if creds, perr := sshlaunch.ParseSessionCreds(key); perr == nil && creds.Mode == "browser" {
+			proxyHost, proxyPort := splitHostPort(s.SSHProxyAddr, 2222)
+			params.Host = proxyHost
+			params.Port = proxyPort
+			params.Username = creds.PortalUser + "@" + creds.TargetRef
+			params.Password = creds.Token
+		} else {
+			if port <= 0 {
+				port = 22
+				params.Port = 22
+			}
+			params.Username = "pam-user"
+			params.PrivateKey = key
+		}
 		params.RecDir = sshlaunch.RecordingDirForSession(s.RecordingDir, sessionID)
 	default: // rdp
 		pw, err := s.Vault.GetSecret(ctx, rdp.SessionSecretName(sessionID))
@@ -307,6 +321,11 @@ func (s *Server) closeSession(ctx context.Context, sessionID string) {
 		db.Now(), recPath, recPath, sessionID)
 
 	_ = s.Vault.DeleteSecret(ctx, rdp.SessionSecretName(sessionID))
+	if raw, err := s.Vault.GetSecret(ctx, sshlaunch.SessionSecretName(sessionID)); err == nil {
+		if creds, perr := sshlaunch.ParseSessionCreds(raw); perr == nil && creds.Token != "" {
+			_ = s.Vault.DeleteSecret(ctx, sshlaunch.BrowserTokenVaultKey(creds.Token))
+		}
+	}
 	_ = s.Vault.DeleteSecret(ctx, sshlaunch.SessionSecretName(sessionID))
 	_, _ = s.DB.ExecContext(ctx, `
 		UPDATE session_terminations SET acknowledged_at=?
@@ -326,6 +345,25 @@ func (s *Server) findRecording(sessionID string) string {
 		}
 	}
 	return ""
+}
+
+func splitHostPort(addr string, defaultPort int) (string, int) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "ssh-proxy", defaultPort
+	}
+	if !strings.Contains(addr, ":") {
+		return addr, defaultPort
+	}
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return strings.TrimPrefix(addr, ":"), defaultPort
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 {
+		port = defaultPort
+	}
+	return host, port
 }
 
 func findGuacInDir(dir string) string {

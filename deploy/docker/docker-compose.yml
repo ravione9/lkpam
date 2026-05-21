@@ -6,6 +6,7 @@
 #
 # Admin UI:  http://localhost:8080  (default admin / admin)
 # SSH proxy: ssh -p 2222 "user@#target-id@localhost"
+# TACACS+:  host port 49 (PAM_TACACS_PORT) — shared secret PAM_TACACS_SECRET
 
 name: pam
 
@@ -140,9 +141,12 @@ services:
       <<: *common-env
       PAM_RDP_PROXY_ADDR: ":8086"
       PAM_GUACD_ADDR: "guacd:4822"
+      PAM_SSH_PROXY_DIAL_ADDR: "ssh-proxy:2222"
       PAM_AUTH_URL: "http://auth:8081"
     depends_on:
       guacd:
+        condition: service_started
+      ssh-proxy:
         condition: service_started
       auth:
         condition: service_healthy
@@ -185,21 +189,29 @@ services:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
       <<: *http-health
 
-  # Optional: TACACS+ AAA for network devices (Cisco IOS, etc.)
+  # TACACS+ AAA for network devices (Cisco IOS, etc.)
   tacacs:
     <<: *common
-    profiles: [tacacs]
     container_name: pam-tacacs
     command: ["/app/tacacs-service"]
     environment:
       <<: *common-env
-      PAM_TACACS_ADDR: ":49"
+      PAM_TACACS_ADDR: ":1049"
       PAM_TACACS_SECRET: "${PAM_TACACS_SECRET:-change-me}"
+      PAM_AUTH_URL: "http://auth:8081"
     depends_on:
+      auth:
+        condition: service_healthy
       policy:
         condition: service_healthy
     ports:
-      - "${PAM_TACACS_PORT:-49}:49"
+      - "${PAM_TACACS_PORT:-49}:1049"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "1049"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 networks:
   pam-net:

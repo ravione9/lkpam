@@ -28,6 +28,7 @@ import (
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/policy"
+	"github.com/example/pam-platform/internal/sshlaunch"
 	"github.com/example/pam-platform/internal/vault"
 
 	"golang.org/x/crypto/ssh"
@@ -93,6 +94,9 @@ func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, 
 	user, target, ok := splitUserTarget(c.User())
 	if !ok {
 		return nil, errors.New("login must be user@target")
+	}
+	if perms, err := s.tryBrowserToken(user, target, string(pw)); err == nil {
+		return perms, nil
 	}
 	authedUser, err := s.authenticate(user, string(pw), "")
 	if err != nil {
@@ -204,6 +208,64 @@ func (s *Server) resolveTarget(targetRef string) (tid int64, name, kind, host st
 	return tid, name, kind, host, port, tier, nil
 }
 
+// tryBrowserToken validates a one-time token issued for recorded browser SSH
+// (guacd → ssh-proxy → target). Skips portal password auth when the token matches.
+func (s *Server) tryBrowserToken(loginUser, targetRef, token string) (*ssh.Permissions, error) {
+	if token == "" {
+		return nil, errors.New("no token")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	raw, err := s.Vault.GetSecret(ctx, sshlaunch.BrowserTokenVaultKey(token))
+	if err != nil {
+		return nil, errors.New("invalid token")
+	}
+	creds, err := sshlaunch.ParseSessionCreds(raw)
+	if err != nil || creds.Mode != "browser" {
+		return nil, errors.New("invalid token")
+	}
+	if creds.PortalUser != loginUser || creds.TargetRef != targetRef {
+		return nil, errors.New("token mismatch")
+	}
+
+	tid, name, kind, host, port, tier, err := s.resolveTarget(targetRef)
+	if err != nil {
+		return nil, err
+	}
+	if tid != creds.TargetID {
+		return nil, errors.New("target mismatch")
+	}
+
+	var role string
+	if err := s.DB.QueryRow(`SELECT role FROM users WHERE id = ?`, creds.UserID).Scan(&role); err != nil {
+		return nil, errors.New("user not found")
+	}
+	dec, err := s.Policy.Decide(ctx, policy.Input{
+		UserID: creds.UserID, Role: role, TargetID: tid, TargetKind: kind,
+		TargetTier: tier, Action: "ssh",
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !dec.Allow {
+		return nil, fmt.Errorf("denied by policy: %v", dec.Reasons)
+	}
+	return &ssh.Permissions{
+		Extensions: map[string]string{
+			"user-id":            fmt.Sprintf("%d", creds.UserID),
+			"role":               role,
+			"target-id":          fmt.Sprintf("%d", tid),
+			"target":             name,
+			"kind":               kind,
+			"host":               host,
+			"port":               fmt.Sprintf("%d", port),
+			"allow-csv":          joinCSV(dec.AllowedCmds),
+			"deny-csv":           joinCSV(dec.DeniedCmds),
+			"browser-session-id": creds.SessionID,
+		},
+	}, nil
+}
+
 // authorizeAndStash looks up the target, evaluates policy with the user's
 // effective roles, and packages routing info into ssh.Permissions for the
 // connection handler to consume.
@@ -253,7 +315,11 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	port := sconn.Permissions.Extensions["port"]
 	targetName := sconn.Permissions.Extensions["target"]
 	user := sconn.User()
-	sessionID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), targetName)
+	browserSess := sconn.Permissions.Extensions["browser-session-id"]
+	sessionID := browserSess
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("%d-%s", time.Now().UnixNano(), targetName)
+	}
 
 	s.Bus.Publish(events.Event{
 		Source: "ssh-proxy", Kind: "session.open", Severity: "info",
@@ -296,24 +362,31 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	}
 	defer upClient.Close()
 
-	// Open recording file
-	recPath := filepath.Join(s.RecordingDir, sessionID+".log")
-	rec, err := os.OpenFile(recPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		log.Printf("open recording: %v", err)
-		return
-	}
-	defer rec.Close()
+	// Open recording file (browser sessions are recorded by guacd; skip duplicate tee).
+	var rec *os.File
+	if browserSess == "" {
+		recPath := filepath.Join(s.RecordingDir, sessionID+".log")
+		rec, err = os.OpenFile(recPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			log.Printf("open recording: %v", err)
+			return
+		}
+		defer rec.Close()
 
-	// Persist session row
-	if _, err := s.DB.Exec(`
+		if _, err := s.DB.Exec(`
 		INSERT INTO sessions(id, user_id, target_id, started_at, recording_path, client_ip)
 		VALUES(?, ?, ?, ?, ?, ?)`,
-		sessionID,
-		mustAtoi(sconn.Permissions.Extensions["user-id"]),
-		mustAtoi(sconn.Permissions.Extensions["target-id"]),
-		time.Now().Unix(), recPath, nc.RemoteAddr().String()); err != nil {
-		log.Printf("insert session: %v", err)
+			sessionID,
+			mustAtoi(sconn.Permissions.Extensions["user-id"]),
+			mustAtoi(sconn.Permissions.Extensions["target-id"]),
+			time.Now().Unix(), recPath, nc.RemoteAddr().String()); err != nil {
+			log.Printf("insert session: %v", err)
+		}
+	} else {
+		rec, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if rec != nil {
+			defer rec.Close()
+		}
 	}
 
 	// Background watcher: poll session_terminations every 5s and tear down
@@ -331,9 +404,11 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		go s.pipeSession(newChan, upClient, rec, sessionID, user, targetName)
 	}
 
-	// Mark session closed
-	_, _ = s.DB.Exec(`UPDATE sessions SET ended_at = ?, ended_reason = COALESCE(ended_reason, 'closed') WHERE id = ?`,
-		time.Now().Unix(), sessionID)
+	// Mark session closed (browser sessions are ended by rdp-proxy when guacd disconnects).
+	if browserSess == "" {
+		_, _ = s.DB.Exec(`UPDATE sessions SET ended_at = ?, ended_reason = COALESCE(ended_reason, 'closed') WHERE id = ?`,
+			time.Now().Unix(), sessionID)
+	}
 }
 
 // watchTermination polls the session_terminations table for a kill order

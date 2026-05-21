@@ -39,6 +39,7 @@ make docker-down    # stop and remove containers
 |------|---------|---------|
 | **8080** | API gateway | Admin UI + REST API |
 | **2222** | SSH proxy | Privileged SSH sessions |
+| **49** | TACACS+ | Network device AAA (host port; override with `PAM_TACACS_PORT`) |
 
 All other services (auth, vault, policy, …) run on the internal `pam-net`
 network only.
@@ -65,6 +66,8 @@ Copy `deploy/docker/.env.example` to `deploy/docker/.env`:
 | `PAM_ADMIN_PASS` | No | Bootstrap admin password (default `admin`) |
 | `PAM_HTTP_PORT` | No | Host port for UI (default `8080`) |
 | `PAM_SSH_PORT` | No | Host port for SSH proxy (default `2222`) |
+| `PAM_TACACS_PORT` | No | Host port for TACACS+ (default `49`) |
+| `PAM_TACACS_SECRET` | Yes (prod) | Shared secret for network devices |
 
 Generate secrets:
 
@@ -76,15 +79,33 @@ openssl rand -hex 32
 openssl rand -base64 32
 ```
 
-## Optional: TACACS+
+## TACACS+
 
-Start the TACACS+ AAA server for network devices:
+TACACS+ starts automatically with the stack. Point network devices at the PAM host on port **49** (or `PAM_TACACS_PORT`) with shared secret `PAM_TACACS_SECRET`.
 
 ```bash
-docker compose -f deploy/docker/docker-compose.yml --profile tacacs up -d
+# Verify the service is listening (after docker compose up)
+docker compose -f deploy/docker/docker-compose.yml ps tacacs
+docker compose -f deploy/docker/docker-compose.yml logs tacacs --tail 20
 ```
 
-Point devices at host port **49** with shared secret `PAM_TACACS_SECRET`.
+Cisco IOS example (replace `192.168.24.253` and secret):
+
+```
+aaa new-model
+aaa group server tacacs+ PAM
+ server-private 192.168.24.253 key YOUR-PAM_TACACS_SECRET
+aaa authentication login default group PAM local
+```
+
+If port 49 is blocked on the host firewall, open it:
+
+```bash
+# Linux (ufw example)
+sudo ufw allow 49/tcp
+```
+
+To use a non-standard host port (e.g. 4949), set `PAM_TACACS_PORT=4949` in `.env` and configure devices with `port 4949`.
 
 ## Data persistence
 

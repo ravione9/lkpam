@@ -18,7 +18,7 @@ RUN mkdir -p /out && \
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates wget su-exec tzdata \
+RUN apk add --no-cache ca-certificates wget su-exec tzdata netcat-openbsd \
     && addgroup -S pam \
     && adduser -S pam -G pam
 
@@ -31,7 +31,7 @@ RUN chmod +x /entrypoint.sh \
 
 VOLUME ["/data", "/recordings"]
 
-EXPOSE 8080 8081 8082 8083 8084 8085 8086 2222 49
+EXPOSE 8080 8081 8082 8083 8084 8085 8086 2222 1049
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/app/api-gateway"]
