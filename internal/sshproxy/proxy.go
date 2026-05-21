@@ -416,11 +416,10 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		plans = append(plans, loginPlan{portalUsername, ptPassword, "passthrough"})
 	}
 
-	downUser, authMode := portalUsername, ""
+	downUser := portalUsername
 	var authMethods []ssh.AuthMethod
 	if len(plans) == 0 {
 		downUser = "pam-user"
-		authMode = "ssh-cert"
 		principals := []string{sconn.Permissions.Extensions["role"], "pam-user"}
 		upPriv, upCertAuth, certErr := s.Vault.IssueSSHCert(principals, 30*time.Minute)
 		if certErr != nil {
