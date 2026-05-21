@@ -4473,18 +4473,36 @@ function renderLdapSyncSelection() {
     if (!ldapSyncSel.user_dns.length) {
       uEl.innerHTML = '<span class="muted">No users selected — all AD users can sign in (login-time sync only).</span>';
     } else {
-      uEl.innerHTML = ldapSyncSel.user_dns.map(dn => {
+      uEl.innerHTML = "";
+      for (const dn of ldapSyncSel.user_dns) {
         const m = ldapSyncMeta.users[dn] || { name: dn };
-        return `<span class="pill accent" style="margin:2px">${esc(m.name)} <a href="#" onclick="event.preventDefault();removeLdapUser(${JSON.stringify(dn)})">×</a></span>`;
-      }).join(" ");
+        const pill = document.createElement("span");
+        pill.className = "pill accent";
+        pill.style.margin = "2px";
+        pill.innerHTML = `${esc(m.name)} <a href="#" data-x>×</a>`;
+        pill.querySelector("[data-x]").addEventListener("click", e => {
+          e.preventDefault();
+          removeLdapUser(dn);
+        });
+        uEl.appendChild(pill);
+      }
     }
     if (!ldapSyncSel.group_dns.length) {
       gEl.innerHTML = '<span class="muted">No groups selected.</span>';
     } else {
-      gEl.innerHTML = ldapSyncSel.group_dns.map(dn => {
+      gEl.innerHTML = "";
+      for (const dn of ldapSyncSel.group_dns) {
         const m = ldapSyncMeta.groups[dn] || { name: dn };
-        return `<span class="pill" style="margin:2px">${esc(m.name)} <a href="#" onclick="event.preventDefault();removeLdapGroup(${JSON.stringify(dn)})">×</a></span>`;
-      }).join(" ");
+        const pill = document.createElement("span");
+        pill.className = "pill";
+        pill.style.margin = "2px";
+        pill.innerHTML = `${esc(m.name)} <a href="#" data-x>×</a>`;
+        pill.querySelector("[data-x]").addEventListener("click", e => {
+          e.preventDefault();
+          removeLdapGroup(dn);
+        });
+        gEl.appendChild(pill);
+      }
     }
   }
 }
@@ -4527,17 +4545,25 @@ async function searchLdapDirectory(type, q, resultEl) {
       resultEl.innerHTML = '<span class="muted">No results.</span>';
       return;
     }
-    resultEl.innerHTML = rows.map(r => {
-      const addFn = r.type === "group"
-        ? `addLdapGroup(${JSON.stringify(r.dn)}, ${JSON.stringify(r.name)})`
-        : `addLdapUser(${JSON.stringify(r.dn)}, ${JSON.stringify(r.name)}, ${JSON.stringify(r.email||"")})`;
+    resultEl.innerHTML = "";
+    for (const r of rows) {
+      const row = document.createElement("div");
+      row.style.cssText = "padding:6px 0;border-bottom:1px solid var(--border)";
       const sub = r.email ? ` <span class="muted">${esc(r.email)}</span>` : "";
-      return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+      row.innerHTML = `
         <b>${esc(r.name)}</b>${sub}
         <div class="muted" style="font-size:10px;word-break:break-all">${esc(r.dn)}</div>
-        <button class="ghost" style="margin-top:4px" onclick="${addFn}">Add</button>
-      </div>`;
-    }).join("");
+        <button class="ghost" type="button" style="margin-top:4px">Add</button>`;
+      const btn = row.querySelector("button");
+      const isGroup = r.type === "group";
+      btn.addEventListener("click", () => {
+        if (isGroup) addLdapGroup(r.dn, r.name);
+        else addLdapUser(r.dn, r.name, r.email || "");
+        btn.disabled = true;
+        btn.textContent = "Added";
+      });
+      resultEl.appendChild(row);
+    }
   } catch (e) {
     resultEl.innerHTML = `<span class="pill err">${esc(e.message)}</span>`;
   }
