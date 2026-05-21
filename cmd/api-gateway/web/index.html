@@ -88,6 +88,34 @@
   code { background: #fafaf8; padding: 2px 5px; border-radius: 3px; font-size: 12px; }
   .form-panel { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 16px; }
   .form-panel.hidden { display: none; }
+
+  /* Inline add/edit forms render as centered modal popups. */
+  .form-panel.popup-form:not(.hidden) {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 60;
+    background: #fff;
+    box-shadow: 0 24px 60px rgba(15,23,42,0.35);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 640px;
+    width: min(95vw, 640px);
+    max-height: 88vh;
+    overflow: auto;
+    margin: 0;
+  }
+  .form-panel.popup-form:not(.hidden) .form-grid input,
+  .form-panel.popup-form:not(.hidden) .form-grid select,
+  .form-panel.popup-form:not(.hidden) .form-grid textarea {
+    max-width: 100%;
+  }
+  .form-popup-backdrop {
+    position: fixed; inset: 0; background: rgba(15,23,42,0.5);
+    z-index: 59; display: none;
+  }
+  body:has(.form-panel.popup-form:not(.hidden)) .form-popup-backdrop { display: block; }
   .form-grid { display: grid; grid-template-columns: 180px 1fr; gap: 8px 14px; align-items: center; }
   .form-grid label { font-size: 12px; color: var(--muted); }
   .form-grid input, .form-grid select { width: 100%; max-width: 420px; }
@@ -305,13 +333,16 @@
       <section class="card tab" id="tab-users" style="display:none">
         <div class="row" style="justify-content:space-between;margin-bottom:12px">
           <h3 style="margin:0">Users</h3>
-          <button class="primary" id="userAddBtn">+ Add User</button>
+          <div class="row">
+            <button class="ghost" id="adSyncBtn" data-admin>Sync from Active Directory</button>
+            <button class="primary" id="userAddBtn">+ Add User</button>
+          </div>
         </div>
         <table>
           <thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Source</th><th>MFA</th><th>Status</th><th>Last Login</th><th></th></tr></thead>
           <tbody id="userRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="userForm">
+        <div class="form-panel popup-form hidden" id="userForm">
           <h4 id="userFormTitle">Add user</h4>
           <input type="hidden" id="userId"/>
           <div class="form-grid">
@@ -342,7 +373,7 @@
           <thead><tr><th>Name</th><th>Description</th><th>Role</th><th>Source</th><th>Members</th><th>LDAP DN</th><th></th></tr></thead>
           <tbody id="groupRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="groupForm">
+        <div class="form-panel popup-form hidden" id="groupForm">
           <h4 id="groupFormTitle">Add group</h4>
           <input type="hidden" id="groupId"/>
           <div class="form-grid">
@@ -370,7 +401,7 @@
           <thead><tr><th>Name</th><th>Updated</th><th></th></tr></thead>
           <tbody id="secretRows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="secretForm">
+        <div class="form-panel popup-form hidden" id="secretForm">
           <h4>Store Secret</h4>
           <input id="secretName" placeholder="name" style="width:300px"/>
           <textarea id="secretValue" placeholder="plaintext value"></textarea>
@@ -392,7 +423,7 @@
           <thead><tr><th>Name</th><th>Description</th><th>Type</th><th>Users</th><th>Groups</th><th>Policies</th><th></th></tr></thead>
           <tbody id="roleRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="roleForm">
+        <div class="form-panel popup-form hidden" id="roleForm">
           <h4 id="roleFormTitle">Add role</h4>
           <input type="hidden" id="roleId"/>
           <div class="form-grid">
@@ -418,7 +449,7 @@
           <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
           <tbody id="policyRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="policyForm">
+        <div class="form-panel popup-form hidden" id="policyForm">
           <h4 id="policyFormTitle">Add policy</h4>
           <input type="hidden" id="policyId"/>
           <div class="form-grid">
@@ -455,7 +486,7 @@
           <thead><tr><th>Priority</th><th>Name</th><th>Target kind</th><th>Tier</th><th>Required</th><th>Requester groups</th><th>Approver groups</th><th>On</th><th></th></tr></thead>
           <tbody id="matrixRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="matrixForm">
+        <div class="form-panel popup-form hidden" id="matrixForm">
           <h4 id="matrixFormTitle">Add approval rule</h4>
           <input type="hidden" id="matrixId"/>
           <div class="form-grid">
@@ -566,7 +597,7 @@
           <thead><tr><th>Name</th><th>Description</th><th>Accounts</th><th>Members</th><th>CPM</th><th>Rotation</th><th>Dual Control</th><th></th></tr></thead>
           <tbody id="safeRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="safeForm">
+        <div class="form-panel popup-form hidden" id="safeForm">
           <h4 id="safeFormTitle">Add safe</h4>
           <input type="hidden" id="safeId"/>
           <div class="form-grid">
@@ -597,7 +628,7 @@
           <thead><tr><th>Name</th><th>Safe</th><th>Username</th><th>Machine</th><th>Platform</th><th>Last rotated</th><th>Next due</th><th>Status</th><th></th></tr></thead>
           <tbody id="accountRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="accountForm">
+        <div class="form-panel popup-form hidden" id="accountForm">
           <h4 id="accountFormTitle">Add privileged account</h4>
           <input type="hidden" id="accountId"/>
           <div class="form-grid">
@@ -634,7 +665,7 @@
           <thead><tr><th>Name</th><th>Safe</th><th>Allowed accounts</th><th>Client IP allow</th><th>Enabled</th><th>Last used</th><th></th></tr></thead>
           <tbody id="appRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel hidden" id="appForm">
+        <div class="form-panel popup-form hidden" id="appForm">
           <h4 id="appFormTitle">Register application</h4>
           <input type="hidden" id="appId"/>
           <div class="form-grid">
@@ -793,7 +824,7 @@
                 <input id="ldapUserSearch" placeholder="Search AD users…" style="flex:1;min-width:120px"/>
                 <button class="ghost" id="ldapUserSearchBtn">Search</button>
               </div>
-              <div id="ldapUserResults" class="muted" style="font-size:12px;max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">Save LDAP settings and search.</div>
+              <div id="ldapUserResults" class="muted" style="font-size:12px;max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">Type a name and click Search. Save AD settings above first.</div>
               <div id="ldapSelectedUsers" style="font-size:12px;min-height:60px"></div>
             </div>
             <div>
@@ -802,7 +833,7 @@
                 <input id="ldapGroupSearch" placeholder="Search AD groups…" style="flex:1;min-width:120px"/>
                 <button class="ghost" id="ldapGroupSearchBtn">Search</button>
               </div>
-              <div id="ldapGroupResults" class="muted" style="font-size:12px;max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">Save LDAP settings and search.</div>
+              <div id="ldapGroupResults" class="muted" style="font-size:12px;max-height:140px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">Type a name and click Search. Save AD settings above first.</div>
               <div id="ldapSelectedGroups" style="font-size:12px;min-height:60px"></div>
             </div>
           </div>
@@ -852,7 +883,10 @@
   </main>
 </div>
 
-<!-- Group members modal -->
+<!-- Backdrop for inline add/edit popup forms (shown via CSS :has when a popup-form is visible) -->
+<div class="form-popup-backdrop" id="formPopupBackdrop"></div>
+
+<!-- Target add/edit modal -->
 <div class="modal-backdrop" id="targetModal">
   <div class="modal modal-lg">
     <h3 id="targetFormTitle">Add machine</h3>
@@ -919,6 +953,41 @@
     <div class="row" style="margin-top:14px">
       <button class="primary" id="mfaVerifyBtn">Verify &amp; enable</button>
       <button class="ghost" id="mfaCancelBtn" style="margin-left:auto">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- AD User & Group sync modal (opened from Users tab) -->
+<div class="modal-backdrop" id="adSyncModal">
+  <div class="modal modal-lg" style="max-width:760px">
+    <h3>Sync users &amp; groups from Active Directory</h3>
+    <p class="muted" id="adSyncIntro" style="font-size:12px">Search Active Directory, select the users and groups to import, then sync. When at least one user is selected, <b>only those users</b> may sign in with AD credentials.</p>
+    <div id="adSyncDisabled" class="pill warn" style="display:none;margin-bottom:12px">Active Directory is not enabled — configure it in <b>Settings → Active Directory / LDAP</b> first.</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="row" style="margin-bottom:8px">
+          <b>Users to sync</b>
+          <input id="adUserSearch" placeholder="Search AD users…" style="flex:1;min-width:120px"/>
+          <button class="ghost" id="adUserSearchBtn">Search</button>
+        </div>
+        <div id="adUserResults" class="muted" style="font-size:12px;max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">Type a name and click Search.</div>
+        <div id="adSelectedUsers" style="font-size:12px;min-height:60px"></div>
+      </div>
+      <div>
+        <div class="row" style="margin-bottom:8px">
+          <b>Groups to sync</b>
+          <input id="adGroupSearch" placeholder="Search AD groups…" style="flex:1;min-width:120px"/>
+          <button class="ghost" id="adGroupSearchBtn">Search</button>
+        </div>
+        <div id="adGroupResults" class="muted" style="font-size:12px;max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:8px">Type a name and click Search.</div>
+        <div id="adSelectedGroups" style="font-size:12px;min-height:60px"></div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button class="primary" id="adSyncSaveBtn">Save selection</button>
+      <button class="primary" id="adSyncRunBtn">Save &amp; sync now</button>
+      <span id="adSyncStatus" class="muted"></span>
+      <button class="ghost" id="adSyncCloseBtn" style="margin-left:auto">Close</button>
     </div>
   </div>
 </div>
@@ -998,6 +1067,19 @@ function toast(msg, kind) {
   el.className = "toast show " + (kind || "");
   setTimeout(() => el.classList.remove("show"), 2800);
 }
+
+// Close any open popup-form (add/edit dialogs) when clicking the backdrop or pressing Escape.
+function closeOpenPopupForms() {
+  document.querySelectorAll(".form-panel.popup-form:not(.hidden)").forEach(el => el.classList.add("hidden"));
+}
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  closeOpenPopupForms();
+  document.querySelectorAll(".modal-backdrop.show").forEach(el => el.classList.remove("show"));
+});
+document.addEventListener("click", e => {
+  if (e.target && e.target.id === "formPopupBackdrop") closeOpenPopupForms();
+});
 
 async function api(path, opts = {}) {
   opts.headers = opts.headers || {};
@@ -1812,8 +1894,19 @@ window.launchTarget = async id => {
     return;
   }
   if (ct === "web" || ct === "https-api") {
-    window.open(t.web_url, "_blank", "noopener");
-    toast("Web console opened — check out credentials from Privileged Accounts if needed", "ok");
+    if (!t.web_url) {
+      toast("No Web URL set for this target — admin must edit it", "err");
+      return;
+    }
+    let url = t.web_url;
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    const win = window.open(url, "_blank", "noopener");
+    if (!win) {
+      copyToClipboard(url);
+      toast("Pop-up blocked — URL copied to clipboard", "err");
+    } else {
+      toast("Web console opened — check out credentials from Privileged Accounts if needed", "ok");
+    }
     return;
   }
   if (ct === "rdp") {
@@ -1822,14 +1915,17 @@ window.launchTarget = async id => {
     try {
       const res = await api(`/auth/targets/${t.id}/rdp-launch`, {
         method: "POST",
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({ reason: reason || "RDP session via PAM" }),
       });
       showRdpLaunchModal(t, res);
     } catch (e) {
-      if (e.message && e.message.includes("privileged account")) {
-        toast("No Windows account linked — admin must add one in Safes → Privileged Accounts", "err");
-      } else if (e.message && e.message.includes("approved")) {
+      const m = (e.message || "").toLowerCase();
+      if (m.includes("privileged account") || m.includes("no account")) {
+        toast("No Windows account linked — admin: go to Privileged Accounts and add one for this machine", "err");
+      } else if (m.includes("approved") || m.includes("approval")) {
         toast("Access not approved yet — submit Request access first", "err");
+      } else if (m.includes("not rdp")) {
+        toast("This target is not configured as RDP — check connection type", "err");
       } else {
         toast(e.message, "err");
       }
@@ -2441,16 +2537,24 @@ window.downloadRecording = async sid => {
 };
 
 window.terminateSession = async sid => {
-  const reason = prompt("Reason for terminating this session:", "");
+  const reason = prompt("Reason for terminating this session:", "Admin terminate");
   if (reason === null) return;
   try {
     await api(`/audit/sessions/${encodeURIComponent(sid)}/terminate`, {
       method: "POST",
-      body: JSON.stringify({reason}),
+      body: JSON.stringify({reason: reason || "Admin terminate"}),
     });
-    toast("Terminate requested — proxy will kill the session within 5s", "ok");
-    setTimeout(loadSessions, 6000);
-  } catch (e) { toast(e.message, "err"); }
+    toast("Session terminated", "ok");
+    await loadSessions();
+    setTimeout(loadSessions, 3000);
+  } catch (e) {
+    if (e.message && e.message.includes("already ended")) {
+      toast("Session already ended", "ok");
+      await loadSessions();
+    } else {
+      toast(e.message, "err");
+    }
+  }
 };
 
 // --- Audit ---
@@ -4358,24 +4462,30 @@ let ldapSyncSel = { user_dns: [], group_dns: [] };
 let ldapSyncMeta = { users: {}, groups: {} };
 
 function renderLdapSyncSelection() {
-  const uEl = $("#ldapSelectedUsers");
-  const gEl = $("#ldapSelectedGroups");
-  if (!uEl || !gEl) return;
-  if (!ldapSyncSel.user_dns.length) {
-    uEl.innerHTML = '<span class="muted">No users selected — all AD users can sign in (login-time sync only).</span>';
-  } else {
-    uEl.innerHTML = ldapSyncSel.user_dns.map(dn => {
-      const m = ldapSyncMeta.users[dn] || { name: dn };
-      return `<span class="pill accent" style="margin:2px">${esc(m.name)} <a href="#" onclick="event.preventDefault();removeLdapUser(${JSON.stringify(dn)})">×</a></span>`;
-    }).join(" ");
-  }
-  if (!ldapSyncSel.group_dns.length) {
-    gEl.innerHTML = '<span class="muted">No groups selected.</span>';
-  } else {
-    gEl.innerHTML = ldapSyncSel.group_dns.map(dn => {
-      const m = ldapSyncMeta.groups[dn] || { name: dn };
-      return `<span class="pill" style="margin:2px">${esc(m.name)} <a href="#" onclick="event.preventDefault();removeLdapGroup(${JSON.stringify(dn)})">×</a></span>`;
-    }).join(" ");
+  const targets = [
+    { u: "#ldapSelectedUsers", g: "#ldapSelectedGroups" },
+    { u: "#adSelectedUsers",   g: "#adSelectedGroups"   },
+  ];
+  for (const t of targets) {
+    const uEl = $(t.u);
+    const gEl = $(t.g);
+    if (!uEl || !gEl) continue;
+    if (!ldapSyncSel.user_dns.length) {
+      uEl.innerHTML = '<span class="muted">No users selected — all AD users can sign in (login-time sync only).</span>';
+    } else {
+      uEl.innerHTML = ldapSyncSel.user_dns.map(dn => {
+        const m = ldapSyncMeta.users[dn] || { name: dn };
+        return `<span class="pill accent" style="margin:2px">${esc(m.name)} <a href="#" onclick="event.preventDefault();removeLdapUser(${JSON.stringify(dn)})">×</a></span>`;
+      }).join(" ");
+    }
+    if (!ldapSyncSel.group_dns.length) {
+      gEl.innerHTML = '<span class="muted">No groups selected.</span>';
+    } else {
+      gEl.innerHTML = ldapSyncSel.group_dns.map(dn => {
+        const m = ldapSyncMeta.groups[dn] || { name: dn };
+        return `<span class="pill" style="margin:2px">${esc(m.name)} <a href="#" onclick="event.preventDefault();removeLdapGroup(${JSON.stringify(dn)})">×</a></span>`;
+      }).join(" ");
+    }
   }
 }
 
@@ -4433,34 +4543,64 @@ async function searchLdapDirectory(type, q, resultEl) {
   }
 }
 
+async function saveLdapSyncSelection(statusSel) {
+  await api("/auth/settings/ldap/sync", { method: "PUT", body: JSON.stringify(ldapSyncSel) });
+  toast("AD sync selection saved", "ok");
+  const el = statusSel ? $(statusSel) : null;
+  if (el) el.innerHTML = '<span class="pill ok">Selection saved</span>';
+}
+
+async function runLdapSync(statusSel) {
+  const el = statusSel ? $(statusSel) : null;
+  if (el) el.textContent = "Syncing…";
+  try {
+    await api("/auth/settings/ldap/sync", { method: "PUT", body: JSON.stringify(ldapSyncSel) });
+    const res = await api("/auth/settings/ldap/sync/run", { method: "POST" });
+    const errNote = (res.errors||[]).length ? ` · ${res.errors.length} warning(s)` : "";
+    if (el) el.innerHTML = `<span class="pill ok">Synced ${res.users_synced} user(s), ${res.groups_synced} group(s)${esc(errNote)}</span>`;
+    if ((res.errors||[]).length) toast(res.errors.join("; "), "err");
+    else toast("AD sync complete", "ok");
+    loadUsers(); loadGroups();
+  } catch (e) {
+    if (el) el.innerHTML = `<span class="pill err">${esc(e.message)}</span>`;
+    toast(e.message, "err");
+  }
+}
+
 const ldapUserSearchBtn = document.getElementById("ldapUserSearchBtn");
 if (ldapUserSearchBtn) {
   ldapUserSearchBtn.onclick = () => searchLdapDirectory("users", $("#ldapUserSearch").value, $("#ldapUserResults"));
   document.getElementById("ldapGroupSearchBtn").onclick = () => searchLdapDirectory("groups", $("#ldapGroupSearch").value, $("#ldapGroupResults"));
   $("#ldapUserSearch").addEventListener("keydown", e => { if (e.key === "Enter") ldapUserSearchBtn.click(); });
   $("#ldapGroupSearch").addEventListener("keydown", e => { if (e.key === "Enter") document.getElementById("ldapGroupSearchBtn").click(); });
-  document.getElementById("ldapSyncSaveBtn").onclick = async () => {
+  document.getElementById("ldapSyncSaveBtn").onclick = () => saveLdapSyncSelection("#ldapSyncStatus").catch(e => toast(e.message, "err"));
+  document.getElementById("ldapSyncRunBtn").onclick = () => runLdapSync("#ldapSyncStatus");
+}
+
+// AD sync modal (opened from Users tab) — shares state with the Settings panel.
+const adSyncBtn = document.getElementById("adSyncBtn");
+if (adSyncBtn) {
+  adSyncBtn.onclick = async () => {
     try {
-      await api("/auth/settings/ldap/sync", { method: "PUT", body: JSON.stringify(ldapSyncSel) });
-      toast("AD sync selection saved", "ok");
-      $("#ldapSyncStatus").innerHTML = '<span class="pill ok">Selection saved</span>';
-    } catch (e) { toast(e.message, "err"); }
+      const cfg = await api("/auth/settings/ldap");
+      $("#adSyncDisabled").style.display = cfg && cfg.enabled ? "none" : "inline-block";
+    } catch { /* admin or AD disabled */ }
+    await loadLDAPSyncSelection();
+    $("#adSyncStatus").innerHTML = "";
+    $("#adUserResults").innerHTML = '<span class="muted">Type a name and click Search.</span>';
+    $("#adGroupResults").innerHTML = '<span class="muted">Type a name and click Search.</span>';
+    $("#adSyncModal").classList.add("show");
   };
-  document.getElementById("ldapSyncRunBtn").onclick = async () => {
-    $("#ldapSyncStatus").textContent = "Syncing…";
-    try {
-      await api("/auth/settings/ldap/sync", { method: "PUT", body: JSON.stringify(ldapSyncSel) });
-      const res = await api("/auth/settings/ldap/sync/run", { method: "POST" });
-      const errNote = (res.errors||[]).length ? ` · ${res.errors.length} warning(s)` : "";
-      $("#ldapSyncStatus").innerHTML = `<span class="pill ok">Synced ${res.users_synced} user(s), ${res.groups_synced} group(s)${esc(errNote)}</span>`;
-      if ((res.errors||[]).length) toast(res.errors.join("; "), "err");
-      else toast("AD sync complete", "ok");
-      loadUsers(); loadGroups();
-    } catch (e) {
-      $("#ldapSyncStatus").innerHTML = `<span class="pill err">${esc(e.message)}</span>`;
-      toast(e.message, "err");
-    }
-  };
+  $("#adSyncCloseBtn").onclick = () => $("#adSyncModal").classList.remove("show");
+  $("#adSyncModal").addEventListener("click", e => {
+    if (e.target.id === "adSyncModal") $("#adSyncModal").classList.remove("show");
+  });
+  $("#adUserSearchBtn").onclick = () => searchLdapDirectory("users", $("#adUserSearch").value, $("#adUserResults"));
+  $("#adGroupSearchBtn").onclick = () => searchLdapDirectory("groups", $("#adGroupSearch").value, $("#adGroupResults"));
+  $("#adUserSearch").addEventListener("keydown", e => { if (e.key === "Enter") $("#adUserSearchBtn").click(); });
+  $("#adGroupSearch").addEventListener("keydown", e => { if (e.key === "Enter") $("#adGroupSearchBtn").click(); });
+  $("#adSyncSaveBtn").onclick = () => saveLdapSyncSelection("#adSyncStatus").catch(e => toast(e.message, "err"));
+  $("#adSyncRunBtn").onclick = () => runLdapSync("#adSyncStatus");
 }
 
 $("#mfaPolicySaveBtn").onclick = async () => {

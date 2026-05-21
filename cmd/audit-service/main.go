@@ -139,6 +139,15 @@ func main() {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
 		}
+		// Immediately mark the session as terminated so the UI updates even
+		// when no proxy is actively polling (e.g. dangling native sessions).
+		// The proxy that owns an active tunnel will still kill the live process
+		// within ~5s via its own poller, then acknowledge the row.
+		_, _ = d.ExecContext(r.Context(), `
+			UPDATE sessions
+			   SET ended_at = ?, ended_reason = 'terminated'
+			 WHERE id = ? AND ended_at IS NULL`,
+			db.Now(), sid)
 		// Best-effort audit row.
 		_, _ = d.ExecContext(r.Context(), `
 			INSERT INTO audit_events(ts, actor, kind, target, detail, severity)
