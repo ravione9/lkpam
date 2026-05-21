@@ -246,28 +246,25 @@ func main() {
 			httpx.Error(w, http.StatusNotFound, errStr("no recording for this session"))
 			return
 		}
-		// recording_path may be a directory (pending) or .guac file (complete).
-		info, err := os.Stat(recPath)
+		file, err := resolveRecordingFile(recPath)
 		if err != nil {
-			httpx.Error(w, http.StatusNotFound, errStr("recording file not found on disk"))
+			httpx.Error(w, http.StatusNotFound, errStr(err.Error()))
 			return
 		}
-		file := recPath
-		if info.IsDir() {
-			entries, _ := os.ReadDir(recPath)
-			for _, e := range entries {
-				if !e.IsDir() && filepath.Ext(e.Name()) == ".guac" {
-					file = filepath.Join(recPath, e.Name())
-					break
-				}
+		ext := filepath.Ext(file)
+		switch ext {
+		case ".guac":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(file)+`"`)
+		case ".log":
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			if r.URL.Query().Get("download") == "1" {
+				w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(file)+`"`)
 			}
-		}
-		if filepath.Ext(file) != ".guac" {
-			httpx.Error(w, http.StatusNotFound, errStr("recording not ready yet — session may still be active"))
+		default:
+			httpx.Error(w, http.StatusNotFound, errStr("unsupported recording format"))
 			return
 		}
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(file)+`"`)
 		http.ServeFile(w, r, file)
 	})
 
@@ -324,6 +321,32 @@ func cleanupPendingSessions(ctx context.Context, d *db.DB) {
 	}
 }
 
+// resolveRecordingFile maps a session recording_path to a readable file on disk.
+// Supports native SSH .log files and browser RDP/SSH .guac recordings in a directory.
+func resolveRecordingFile(recPath string) (string, error) {
+	info, err := os.Stat(recPath)
+	if err != nil {
+		return "", errors.New("recording file not found on disk")
+	}
+	if !info.IsDir() {
+		ext := filepath.Ext(recPath)
+		if ext == ".log" || ext == ".guac" {
+			return recPath, nil
+		}
+		return "", errors.New("unsupported recording format")
+	}
+	entries, _ := os.ReadDir(recPath)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if ext := filepath.Ext(e.Name()); ext == ".guac" || ext == ".log" {
+			return filepath.Join(recPath, e.Name()), nil
+		}
+	}
+	return "", errors.New("recording not ready yet — session may still be active")
+}
+
 func pendingRecordingMissing(recPath string) bool {
 	info, err := os.Stat(recPath)
 	if err != nil {
@@ -337,8 +360,11 @@ func pendingRecordingMissing(recPath string) bool {
 		return true
 	}
 	for _, e := range entries {
-		if !e.IsDir() && filepath.Ext(e.Name()) == ".guac" {
-			return false
+		if !e.IsDir() {
+			ext := filepath.Ext(e.Name())
+			if ext == ".guac" || ext == ".log" {
+				return false
+			}
 		}
 	}
 	return true

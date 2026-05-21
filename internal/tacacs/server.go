@@ -185,7 +185,7 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	}
 
 	cmd, args := extractCommand(req.Args)
-	svc := extractArg(args, "service")
+	svc := extractArg(req.Args, "service")
 	var allow bool
 	var role string
 	var replyArgs []string
@@ -295,8 +295,6 @@ func extractCommand(args []string) (cmd string, rest []string) {
 			cmd = strings.TrimPrefix(a, "cmd=")
 		} else if strings.HasPrefix(a, "cmd-arg=") {
 			rest = append(rest, strings.TrimPrefix(a, "cmd-arg="))
-		} else {
-			rest = append(rest, a)
 		}
 	}
 	return cmd, rest

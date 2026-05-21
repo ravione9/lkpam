@@ -2595,14 +2595,29 @@ async function loadSessions() {
         tBtn.addEventListener("click", () => terminateSession(s.id));
         actions.appendChild(tBtn);
       }
-      if (!active && s.protocol === "rdp" && s.recording_path) {
-        const dBtn = document.createElement("button");
-        dBtn.className = "ghost";
-        dBtn.style.marginLeft = "6px";
-        dBtn.textContent = "Recording";
-        dBtn.addEventListener("click", () => downloadRecording(s.id));
-        actions.appendChild(dBtn);
-      } else if (active && proto === "RDP") {
+      if (!active && s.recording_path) {
+        const isLog = /\.log$/i.test(s.recording_path);
+        if (isLog) {
+          const vBtn = document.createElement("button");
+          vBtn.className = "ghost";
+          vBtn.textContent = "View log";
+          vBtn.addEventListener("click", () => viewLogRecording(s.id));
+          actions.appendChild(vBtn);
+          const dBtn = document.createElement("button");
+          dBtn.className = "ghost";
+          dBtn.style.marginLeft = "6px";
+          dBtn.textContent = "Download";
+          dBtn.addEventListener("click", () => downloadRecording(s.id));
+          actions.appendChild(dBtn);
+        } else {
+          const dBtn = document.createElement("button");
+          dBtn.className = "ghost";
+          dBtn.style.marginLeft = "6px";
+          dBtn.textContent = "Recording";
+          dBtn.addEventListener("click", () => downloadRecording(s.id));
+          actions.appendChild(dBtn);
+        }
+      } else if (active && (proto === "RDP" || proto === "SSH")) {
         const span = document.createElement("span");
         span.className = "muted";
         span.style.fontSize = "11px";
@@ -2617,17 +2632,51 @@ async function loadSessions() {
 
 window.downloadRecording = async sid => {
   try {
-    const r = await fetch("/api/audit/sessions/" + encodeURIComponent(sid) + "/recording", {
+    const r = await fetch("/api/audit/sessions/" + encodeURIComponent(sid) + "/recording?download=1", {
       headers: { Authorization: "Bearer " + token },
     });
     if (!r.ok) throw new Error(await r.text() || "download failed");
+    const ct = r.headers.get("content-type") || "";
+    const disp = r.headers.get("content-disposition") || "";
+    let filename = sid + (ct.includes("text/plain") ? ".log" : ".guac");
+    const m = /filename="([^"]+)"/.exec(disp);
+    if (m) filename = m[1];
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = sid + ".guac";
+    a.href = url; a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
-    toast("Recording downloaded — replay with Apache Guacamole player", "ok");
+    toast(ct.includes("text/plain")
+      ? "Session log downloaded"
+      : "Recording downloaded — replay with Apache Guacamole player", "ok");
+  } catch (e) { toast(e.message, "err"); }
+};
+
+window.viewLogRecording = async sid => {
+  try {
+    const r = await fetch("/api/audit/sessions/" + encodeURIComponent(sid) + "/recording", {
+      headers: { Authorization: "Bearer " + token },
+    });
+    if (!r.ok) throw new Error(await r.text() || "could not load log");
+    const text = await r.text();
+    const modal = document.createElement("div");
+    modal.className = "modal-backdrop show";
+    modal.innerHTML = `
+      <div class="modal modal-lg" style="max-width:900px">
+        <h3>SSH session log</h3>
+        <p class="muted" style="font-size:12px;margin-top:0">Keystroke transcript (IN = user input, OUT = device output). Timestamps are UTC.</p>
+        <pre style="background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;max-height:60vh;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all">${esc(text)}</pre>
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+          <button class="ghost" id="logDlBtn">Download</button>
+          <button class="primary" id="logCloseBtn">Close</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    const close = () => modal.remove();
+    modal.addEventListener("click", e => { if (e.target === modal) close(); });
+    modal.querySelector("#logCloseBtn").onclick = close;
+    modal.querySelector("#logDlBtn").onclick = () => { close(); downloadRecording(sid); };
   } catch (e) { toast(e.message, "err"); }
 };
 
