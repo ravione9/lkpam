@@ -158,10 +158,11 @@
   <div id="login">
     <h2>PAM Platform</h2>
     <div class="brand">Privileged Access Management</div>
-    <input id="u" placeholder="username" value="admin"/>
+    <input id="u" placeholder="username or email" value="admin"/>
     <input id="p" type="password" placeholder="password" value="admin"/>
     <input id="otp" placeholder="MFA code (if enrolled)" style="display:none"/>
     <button class="primary" id="loginBtn">Sign in</button>
+    <p class="hint" id="loginHint">LDAP users: use your AD password (sAMAccountName or email).</p>
     <div id="ssoOptions" style="display:none">
       <div style="text-align:center;color:var(--muted);font-size:11px;margin:14px 0 10px;letter-spacing:0.06em">— OR —</div>
       <button id="ssoBtn" style="width:100%;padding:10px;background:#fff;color:#1a1d23;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:10px">
