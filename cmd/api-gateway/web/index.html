@@ -150,6 +150,64 @@
   .access-step p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
   .access-hints { background: var(--warn-soft); border: 1px solid #fcd34d; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; }
   .access-hints ul { margin: 6px 0 0; padding-left: 18px; }
+
+  /* Machines page */
+  .page-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+  .page-header h3 { margin: 0 0 6px; font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+  .page-header .desc { margin: 0; max-width: 520px; line-height: 1.55; }
+  .machines-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .machines-toolbar .search-wrap { flex: 1; min-width: 200px; max-width: 360px; position: relative; }
+  .machines-toolbar .search-wrap input { width: 100%; padding-left: 34px; }
+  .machines-toolbar .search-wrap::before { content: "⌕"; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 14px; pointer-events: none; }
+  .machines-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .machines-stat { font-size: 12px; color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; }
+  .machines-stat b { color: var(--fg); font-weight: 600; }
+  .table-wrap { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .table-pro th { background: #f8fafc; }
+  .table-pro td.name-cell { font-weight: 500; }
+  .table-pro .machine-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .table-pro .actions { white-space: nowrap; }
+  .empty-state { text-align: center; padding: 48px 24px; }
+  .empty-state .empty-icon { font-size: 40px; opacity: 0.25; margin-bottom: 12px; }
+  .empty-state h4 { margin: 0 0 8px; font-size: 15px; }
+  .empty-state p { margin: 0 0 16px; color: var(--muted); font-size: 13px; max-width: 360px; margin-left: auto; margin-right: auto; }
+  .pill.tier-0 { color: #991b1b; border-color: #fecaca; background: #fef2f2; }
+  .pill.tier-1 { color: #9a3412; border-color: #fed7aa; background: #fff7ed; }
+  .pill.tier-2 { color: #1d4ed8; border-color: #bfdbfe; background: #eff6ff; }
+  .pill.tier-3 { color: #047857; border-color: #a7f3d0; background: #ecfdf5; }
+  .conn-icon { display: inline-flex; align-items: center; gap: 6px; }
+  .conn-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .conn-dot.ssh { background: #22c55e; }
+  .conn-dot.rdp { background: #3b82f6; }
+  .conn-dot.web { background: #8b5cf6; }
+  .conn-dot.telnet { background: #f59e0b; }
+  .conn-dot.api { background: #06b6d4; }
+
+  /* Machine add/edit modal */
+  .modal-machine { max-width: 720px; padding: 0; overflow: hidden; display: flex; flex-direction: column; max-height: 90vh; }
+  .modal-machine-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px 24px 18px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, #f8fafc 0%, #fff 100%); }
+  .modal-machine-header h3 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
+  .modal-subtitle { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.45; max-width: 480px; }
+  .modal-close { width: 32px; height: 32px; border: none; background: transparent; color: var(--muted); font-size: 22px; line-height: 1; cursor: pointer; border-radius: 6px; flex-shrink: 0; }
+  .modal-close:hover { background: var(--bg); color: var(--fg); }
+  .modal-machine .modal-body { padding: 20px 24px; overflow-y: auto; flex: 1; }
+  .modal-machine .modal-footer { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--border); background: #fafbfc; }
+  .form-section { margin-bottom: 22px; }
+  .form-section:last-child { margin-bottom: 0; }
+  .form-section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .form-section .form-grid { grid-template-columns: 140px 1fr; gap: 10px 16px; }
+  .form-section .form-grid label { font-size: 13px; color: var(--fg); font-weight: 500; }
+  .form-section .form-grid .field-hint { grid-column: 2; font-size: 11px; color: var(--muted); margin-top: -6px; }
+  .conn-segments { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 2; }
+  .conn-seg { padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px; background: #fff; cursor: pointer; font-size: 12px; font-weight: 500; color: var(--muted); transition: border-color 0.15s, background 0.15s, color 0.15s; }
+  .conn-seg:hover { border-color: #93c5fd; color: var(--accent); }
+  .conn-seg.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .conn-seg .seg-label { display: block; font-weight: 600; color: inherit; }
+  .conn-seg .seg-sub { display: block; font-size: 10px; font-weight: 400; opacity: 0.85; margin-top: 2px; }
+  #targetConn { display: none; }
+  .host-port-row { display: grid; grid-template-columns: 1fr 100px; gap: 10px; grid-column: 2; }
+  .modal-machine .form-grid input,
+  .modal-machine .form-grid select { max-width: none; }
 </style>
 </head>
 <body>
@@ -276,15 +334,25 @@
 
       <!-- Machines (Targets) -->
       <section class="card tab" id="tab-targets" style="display:none">
-        <div class="row" style="justify-content:space-between;margin-bottom:12px">
-          <h3 style="margin:0">Managed Machines</h3>
+        <div class="page-header">
+          <div>
+            <h3>Managed Machines</h3>
+            <p class="desc">Register servers, network devices, firewalls, and consoles. Use <b>Launch</b> for SSH (proxy port 2222) or recorded RDP / web sessions after access is approved.</p>
+          </div>
           <button class="primary" id="targetAddBtn">+ Add Machine</button>
         </div>
-        <p class="desc">Register servers, network devices, firewalls, hypervisors, web admin consoles, and more. Click <b>Launch</b> — SSH copies a terminal command (port 2222); RDP opens a recorded browser session.</p>
-        <table>
-          <thead><tr><th>Name</th><th>Platform</th><th>Connection</th><th>Address</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
-          <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
-        </table>
+        <div class="machines-toolbar">
+          <div class="search-wrap">
+            <input type="search" id="targetSearch" placeholder="Search by name, host, platform, tags…" autocomplete="off"/>
+          </div>
+          <div class="machines-stats" id="targetStats"></div>
+        </div>
+        <div class="table-wrap">
+          <table class="table-pro">
+            <thead><tr><th>Name</th><th>Platform</th><th>Connection</th><th>Address</th><th>Tier</th><th>Tags</th><th>Actions</th></tr></thead>
+            <tbody id="targetRows"><tr><td colspan="7" class="muted" style="padding:24px;text-align:center">Loading…</td></tr></tbody>
+          </table>
+        </div>
       </section>
 
       <!-- My Access (role + policy visibility for all users) -->
@@ -890,36 +958,78 @@
 
 <!-- Target add/edit modal -->
 <div class="modal-backdrop" id="targetModal">
-  <div class="modal modal-lg">
-    <h3 id="targetFormTitle">Add machine</h3>
-    <input type="hidden" id="targetId"/>
-    <div class="form-grid">
-      <label>Name</label><input id="targetName" placeholder="core-sw-01 / dc01 / fw-prod"/>
-      <label>Connection type</label>
-      <select id="targetConn">
-        <option value="ssh">SSH (CLI)</option>
-        <option value="rdp">RDP (Windows desktop)</option>
-        <option value="web">Web GUI (HTTPS console)</option>
-        <option value="telnet">Telnet (legacy CLI)</option>
-        <option value="https-api">HTTPS API</option>
-      </select>
-      <label>Platform / OEM</label>
-      <select id="targetKind"></select>
-      <label>Vendor</label><input id="targetVendor" placeholder="Cisco / Fortinet / Microsoft …"/>
-      <label>OS / firmware version</label><input id="targetOSVersion" placeholder="IOS 16.9.5 / FortiOS 7.2 / Windows 2022"/>
-      <label class="tf-host">Host / IP</label><input class="tf-host" id="targetHost" placeholder="192.168.1.1"/>
-      <label class="tf-port">Port</label><input class="tf-port" id="targetPort" type="number" value="22"/>
-      <label class="tf-web tf-hidden">Web URL</label><input class="tf-web tf-hidden" id="targetWebURL" placeholder="https://fw01.corp.local/login"/>
-      <label>Tier</label>
-      <select id="targetTier">
-        <option value="0">Tier 0 · critical</option><option value="1">Tier 1 · production</option>
-        <option value="2" selected>Tier 2 · staging</option><option value="3">Tier 3 · dev</option>
-      </select>
-      <label>Tags</label><input id="targetTags" placeholder="optional"/>
+  <div class="modal modal-lg modal-machine">
+    <div class="modal-machine-header">
+      <div>
+        <h3 id="targetFormTitle">Add machine</h3>
+        <p class="modal-subtitle" id="targetFormSubtitle">Register a target for privileged access, session recording, and JIT approval workflows.</p>
+      </div>
+      <button type="button" class="modal-close" id="targetModalClose" title="Close" aria-label="Close">&times;</button>
     </div>
-    <div class="row" style="margin-top:16px;justify-content:flex-end">
-      <button class="ghost" id="targetCancelBtn">Cancel</button>
-      <button class="primary" id="targetSaveBtn">Save</button>
+    <input type="hidden" id="targetId"/>
+    <div class="modal-body">
+      <section class="form-section">
+        <h4 class="form-section-title">Identity</h4>
+        <div class="form-grid">
+          <label for="targetName">Display name</label>
+          <input id="targetName" placeholder="e.g. core-sw-01, dc01, fw-prod"/>
+          <label for="targetKind">Platform</label>
+          <select id="targetKind"></select>
+          <label for="targetVendor">Vendor</label>
+          <input id="targetVendor" placeholder="Cisco, Fortinet, Microsoft…"/>
+          <label for="targetOSVersion">OS / firmware</label>
+          <input id="targetOSVersion" placeholder="IOS 16.9, FortiOS 7.2, Windows Server 2022"/>
+        </div>
+      </section>
+      <section class="form-section">
+        <h4 class="form-section-title">Connection</h4>
+        <div class="form-grid">
+          <label>Protocol</label>
+          <div>
+            <select id="targetConn" aria-hidden="true" tabindex="-1">
+              <option value="ssh">SSH (CLI)</option>
+              <option value="rdp">RDP (Windows desktop)</option>
+              <option value="web">Web GUI (HTTPS console)</option>
+              <option value="telnet">Telnet (legacy CLI)</option>
+              <option value="https-api">HTTPS API</option>
+            </select>
+            <div class="conn-segments" id="targetConnSegments" role="group" aria-label="Connection type">
+              <button type="button" class="conn-seg" data-conn="ssh"><span class="seg-label">SSH</span><span class="seg-sub">CLI · port 22</span></button>
+              <button type="button" class="conn-seg" data-conn="rdp"><span class="seg-label">RDP</span><span class="seg-sub">Windows desktop</span></button>
+              <button type="button" class="conn-seg" data-conn="web"><span class="seg-label">Web GUI</span><span class="seg-sub">HTTPS console</span></button>
+              <button type="button" class="conn-seg" data-conn="telnet"><span class="seg-label">Telnet</span><span class="seg-sub">Legacy CLI</span></button>
+              <button type="button" class="conn-seg" data-conn="https-api"><span class="seg-label">HTTPS API</span><span class="seg-sub">REST / API</span></button>
+            </div>
+          </div>
+          <label class="tf-host" for="targetHost">Host / IP</label>
+          <div class="host-port-row tf-host">
+            <input class="tf-host" id="targetHost" placeholder="192.168.1.1 or hostname"/>
+            <input class="tf-port" id="targetPort" type="number" value="22" title="Port"/>
+          </div>
+          <label class="tf-web tf-hidden" for="targetWebURL">Web URL</label>
+          <input class="tf-web tf-hidden" id="targetWebURL" placeholder="https://fw01.corp.local/login"/>
+          <span class="field-hint tf-host">SSH and RDP sessions route through the PAM proxy; users connect after JIT approval.</span>
+          <span class="field-hint tf-web tf-hidden">Full URL to the admin console (HTTPS).</span>
+        </div>
+      </section>
+      <section class="form-section">
+        <h4 class="form-section-title">Classification</h4>
+        <div class="form-grid">
+          <label for="targetTier">Risk tier</label>
+          <select id="targetTier">
+            <option value="0">Tier 0 — Critical infrastructure</option>
+            <option value="1">Tier 1 — Production</option>
+            <option value="2" selected>Tier 2 — Staging</option>
+            <option value="3">Tier 3 — Development / lab</option>
+          </select>
+          <label for="targetTags">Tags</label>
+          <input id="targetTags" placeholder="datacenter, network, optional labels"/>
+        </div>
+      </section>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="ghost" id="targetCancelBtn">Cancel</button>
+      <button type="button" class="primary" id="targetSaveBtn">Save machine</button>
     </div>
   </div>
 </div>
@@ -1846,18 +1956,27 @@ const DEFAULT_PORTS = { ssh: 22, rdp: 3389, telnet: 23, web: 443, "https-api": 4
 function applyConnectionTypeUI() {
   const ct = $("#targetConn").value;
   const isWeb = ct === "web" || ct === "https-api";
-  document.querySelectorAll("#targetModal .tf-host, #targetModal .tf-port").forEach(el => {
+  document.querySelectorAll("#targetModal .tf-host").forEach(el => {
     el.classList.toggle("tf-hidden", isWeb);
   });
   document.querySelectorAll("#targetModal .tf-web").forEach(el => {
     el.classList.toggle("tf-hidden", !isWeb);
   });
-  $("#targetPort").value = DEFAULT_PORTS[ct] || 22;
+  document.querySelectorAll("#targetConnSegments .conn-seg").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.conn === ct);
+  });
+  if (!$("#targetId").value) $("#targetPort").value = DEFAULT_PORTS[ct] || 22;
   fillTargetKindSelect($("#targetKind"), $("#targetKind").value, {includeAny: false, forPolicy: false});
 }
 
 function openTargetModal(title) {
+  const isEdit = /edit/i.test(title);
   $("#targetFormTitle").textContent = title;
+  $("#targetFormSubtitle").textContent = isEdit
+    ? "Update connection details, tier, and tags. The display name is fixed after creation."
+    : "Register a target for privileged access, session recording, and JIT approval workflows.";
+  $("#targetSaveBtn").textContent = isEdit ? "Save changes" : "Save machine";
+  applyConnectionTypeUI();
   $("#targetModal").classList.add("show");
 }
 
@@ -1866,8 +1985,80 @@ function closeTargetModal() {
 }
 
 function connectionBadge(t) {
-  const colors = { ssh:"", rdp:"warn", web:"accent", telnet:"err", "https-api":"accent" };
-  return `<span class="pill ${colors[t.connection_type]||''}">${esc(t.connection_type||'ssh')}</span>`;
+  const ct = t.connection_type || "ssh";
+  const dot = ct === "https-api" ? "api" : ct;
+  return `<span class="pill conn-icon"><span class="conn-dot ${esc(dot)}"></span>${esc(ct)}</span>`;
+}
+
+function tierPill(tier) {
+  const t = Number(tier);
+  const cls = t >= 0 && t <= 3 ? `tier-${t}` : "";
+  return `<span class="pill ${cls}">${esc(tierLabel(t))}</span>`;
+}
+
+function filterTargets(query) {
+  const q = (query || "").trim().toLowerCase();
+  const all = cache.targets || [];
+  if (!q) return all;
+  return all.filter(t => {
+    const hay = [
+      t.name, t.host, t.web_url, t.tags, t.vendor, t.os_version,
+      kindLabel(t.kind), t.connection_type,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function renderTargetStats(rows) {
+  const el = $("#targetStats");
+  if (!el) return;
+  const total = (cache.targets || []).length;
+  if (!total) { el.innerHTML = ""; return; }
+  const shown = rows.length;
+  const parts = [`<span class="machines-stat"><b>${shown}</b>${shown !== total ? ` of ${total}` : ""} machine${total === 1 ? "" : "s"}</span>`];
+  const crit = rows.filter(t => Number(t.tier) === 0).length;
+  if (crit) parts.push(`<span class="machines-stat"><b>${crit}</b> tier 0</span>`);
+  el.innerHTML = parts.join("");
+}
+
+function renderTargetsTable(rows) {
+  renderTargetStats(rows);
+  if (!rows.length) {
+    const q = ($("#targetSearch")?.value || "").trim();
+    if (q && (cache.targets || []).length) {
+      $("#targetRows").innerHTML = `<tr><td colspan="7"><div class="empty-state"><p>No machines match “${esc(q)}”. Clear the search or try another term.</p></div></td></tr>`;
+      return;
+    }
+    const adminHint = isAdmin()
+      ? `<button class="primary" onclick="document.getElementById('targetAddBtn').click()">+ Add Machine</button>`
+      : `<span class="muted">Ask an administrator to register machines you need.</span>`;
+    $("#targetRows").innerHTML = `<tr><td colspan="7"><div class="empty-state">
+      <div class="empty-icon">▢</div>
+      <h4>No machines registered yet</h4>
+      <p>Add servers, network devices, firewalls, and consoles so users can request JIT access and launch sessions.</p>
+      ${adminHint}
+    </div></td></tr>`;
+    return;
+  }
+  const tActions = t => {
+    const launchBtn = `<button class="ghost" onclick="launchTarget(${t.id})">Launch</button>`;
+    const requestBtn = `<button class="ghost" onclick="requestForTarget(${t.id})">Request</button>`;
+    const adminBtns = isAdmin()
+      ? `<button class="ghost" onclick="editTarget(${t.id})">Edit</button>
+         <button class="ghost danger" onclick="deleteTarget(${t.id})">Delete</button>`
+      : "";
+    return launchBtn + requestBtn + adminBtns;
+  };
+  $("#targetRows").innerHTML = rows.map(t => `
+    <tr>
+      <td class="name-cell"><b>${esc(t.name)}</b>${t.vendor || t.os_version ? `<div class="machine-meta">${esc([t.vendor, t.os_version].filter(Boolean).join(" · "))}</div>` : ""}</td>
+      <td><span class="pill">${esc(kindLabel(t.kind))}</span></td>
+      <td>${connectionBadge(t)}</td>
+      <td>${targetAddress(t)}</td>
+      <td>${tierPill(t.tier)}</td>
+      <td class="muted">${esc(t.tags) || "—"}</td>
+      <td class="actions">${tActions(t)}</td>
+    </tr>`).join("");
 }
 
 function targetAddress(t) {
@@ -1879,32 +2070,12 @@ function targetAddress(t) {
 
 async function loadTargets() {
   try {
-    const rows = await api("/policy/targets");
-    cache.targets = rows || [];
-    if (!cache.targets.length) {
-      $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">No machines yet. Admins: click + Add Machine.</td></tr>`;
-      return;
-    }
-    const tActions = t => {
-      const launchBtn = `<button class="ghost" onclick="launchTarget(${t.id})">Launch</button>`;
-      const requestBtn = `<button class="ghost" onclick="requestForTarget(${t.id})">Request access</button>`;
-      const adminBtns = isAdmin()
-        ? `<button class="ghost" onclick="editTarget(${t.id})">Edit</button>
-           <button class="ghost danger" onclick="deleteTarget(${t.id})">Delete</button>`
-        : "";
-      return launchBtn + " " + requestBtn + " " + adminBtns;
-    };
-    $("#targetRows").innerHTML = cache.targets.map(t => `
-      <tr>
-        <td><b>${esc(t.name)}</b>${t.vendor ? `<div class="muted" style="font-size:11px">${esc(t.vendor)}${t.os_version?' · '+esc(t.os_version):''}</div>` : ""}</td>
-        <td><span class="pill">${esc(kindLabel(t.kind))}</span></td>
-        <td>${connectionBadge(t)}</td>
-        <td>${targetAddress(t)}</td>
-        <td><span class="pill">${tierLabel(t.tier)}</span></td>
-        <td class="muted">${esc(t.tags)}</td>
-        <td class="actions">${tActions(t)}</td>
-      </tr>`).join("");
-  } catch (e) { $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+    cache.targets = await api("/policy/targets") || [];
+    renderTargetsTable(filterTargets($("#targetSearch")?.value));
+  } catch (e) {
+    $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted" style="padding:24px;text-align:center">${esc(e.message)}</td></tr>`;
+    if ($("#targetStats")) $("#targetStats").innerHTML = "";
+  }
 }
 
 // launchTarget dispatches the right action per connection type. The user must
@@ -2103,10 +2274,20 @@ $("#targetAddBtn").onclick = () => {
   openTargetModal("Add machine");
 };
 $("#targetCancelBtn").onclick = resetTargetForm;
+$("#targetModalClose")?.addEventListener("click", resetTargetForm);
 $("#targetModal").addEventListener("click", e => {
   if (e.target === $("#targetModal")) resetTargetForm();
 });
 $("#targetConn").addEventListener("change", applyConnectionTypeUI);
+$("#targetConnSegments")?.addEventListener("click", e => {
+  const btn = e.target.closest(".conn-seg");
+  if (!btn || !btn.dataset.conn) return;
+  $("#targetConn").value = btn.dataset.conn;
+  applyConnectionTypeUI();
+});
+$("#targetSearch")?.addEventListener("input", () => {
+  renderTargetsTable(filterTargets($("#targetSearch").value));
+});
 window.editTarget = id => {
   const t = cache.targets.find(x => x.id === id); if (!t) return;
   $("#targetId").value = t.id;
