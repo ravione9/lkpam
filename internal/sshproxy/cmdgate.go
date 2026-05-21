@@ -9,15 +9,18 @@ import (
 	"github.com/example/pam-platform/internal/policy"
 )
 
-// cmdGate forwards keystrokes immediately (so the device can echo them) and
-// evaluates the completed line when the user presses Enter.
+// cmdGate evaluates command policy by mirroring the device's visible line.
+// It does NOT buffer user keystrokes (so device-side echo, Tab-completion,
+// arrow history, paste, and abbreviations all behave normally). When the user
+// presses Enter, we look at what the device has on the current line and run
+// policy against that. Denied lines are cancelled before Enter is forwarded.
 type cmdGate struct {
 	up, down    io.Writer
 	allow, deny []string
-	mu          sync.Mutex
-	buf         []byte
-	ignoreLine  bool // skip policy check for enable/login password prompts
-	outTail     string
+
+	mu         sync.Mutex
+	devLine    []byte // visible characters of the device's current line
+	ignoreLine bool   // suppress policy check (e.g. after a password prompt)
 }
 
 func newCmdGate(up, down io.Writer, allow, deny []string) *cmdGate {
@@ -27,73 +30,76 @@ func newCmdGate(up, down io.Writer, allow, deny []string) *cmdGate {
 	return &cmdGate{up: up, down: down, allow: allow, deny: deny}
 }
 
-// noteOutput watches device output for password prompts so the next line is
-// not mistaken for a CLI command (e.g. after "enable" on Cisco IOS).
+// noteOutput updates the visible-line mirror from device output.
 func (g *cmdGate) noteOutput(p []byte) {
-	if len(p) == 0 {
-		return
-	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.outTail += strings.ToLower(string(p))
-	if len(g.outTail) > 256 {
-		g.outTail = g.outTail[len(g.outTail)-256:]
+	for _, b := range p {
+		switch b {
+		case '\r', '\n':
+			g.devLine = g.devLine[:0]
+		case 0x08, 0x7f: // backspace, DEL
+			if len(g.devLine) > 0 {
+				g.devLine = g.devLine[:len(g.devLine)-1]
+			}
+		default:
+			if b >= 0x20 && b < 0x7f {
+				g.devLine = append(g.devLine, b)
+			}
+		}
 	}
-	if strings.Contains(g.outTail, "password:") ||
-		strings.Contains(g.outTail, "passphrase:") ||
-		strings.Contains(g.outTail, "secret:") {
+	trim := strings.TrimSpace(strings.ToLower(string(g.devLine)))
+	if strings.HasSuffix(trim, "password:") ||
+		strings.HasSuffix(trim, "passphrase:") ||
+		strings.HasSuffix(trim, "secret:") {
 		g.ignoreLine = true
 	}
+}
+
+// currentCommand returns the user-typed portion of the current visible line
+// by stripping the device prompt (everything up to the last #, >, or $).
+func (g *cmdGate) currentCommand() string {
+	line := string(g.devLine)
+	if i := strings.LastIndexAny(line, "#>$"); i >= 0 {
+		line = line[i+1:]
+	}
+	return strings.TrimSpace(line)
 }
 
 func (g *cmdGate) Write(p []byte) (int, error) {
 	n := len(p)
 	for _, b := range p {
 		switch b {
-		case 0x7f, 0x08: // backspace / delete
-			g.mu.Lock()
-			if len(g.buf) > 0 {
-				g.buf = g.buf[:len(g.buf)-1]
-			}
-			g.mu.Unlock()
-			_, _ = g.up.Write([]byte{b})
-		case 0x15: // Ctrl+U — clear line on many CLIs
-			g.mu.Lock()
-			g.buf = g.buf[:0]
-			g.mu.Unlock()
-			_, _ = g.up.Write([]byte{b})
 		case '\n', '\r':
 			g.mu.Lock()
 			ignore := g.ignoreLine
 			if ignore {
 				g.ignoreLine = false
 			}
-			line := strings.TrimSpace(string(g.buf))
-			g.buf = g.buf[:0]
+			cmd := g.currentCommand()
 			g.mu.Unlock()
 
 			if ignore {
 				_, _ = g.up.Write([]byte{b})
 				continue
 			}
-			if line != "" && !policy.CommandAllowed(line, g.allow, g.deny) {
-				_, _ = g.up.Write([]byte{0x03}) // ^C — cancel buffered line on device
-				msg := fmt.Sprintf("\r\nPAM: command denied by policy: %s\r\n", line)
-				_, _ = g.down.Write([]byte(msg))
+			if cmd != "" && !policy.CommandAllowed(cmd, g.allow, g.deny) {
+				// Ctrl+U clears the entered line on Cisco/network CLIs; no
+				// Enter is forwarded so the command never executes.
+				_, _ = g.up.Write([]byte{0x15})
+				_, _ = g.down.Write([]byte(fmt.Sprintf(
+					"\r\nPAM: command denied by policy: %s\r\n", cmd)))
 				continue
 			}
 			_, _ = g.up.Write([]byte{b})
 		default:
-			g.mu.Lock()
-			g.buf = append(g.buf, b)
-			g.mu.Unlock()
 			_, _ = g.up.Write([]byte{b})
 		}
 	}
 	return n, nil
 }
 
-// gateAwareWriter passes device output to the client and notifies cmdGate.
+// gateAwareWriter forwards device output to the user and feeds the cmdGate.
 type gateAwareWriter struct {
 	gate *cmdGate
 	w    io.Writer
