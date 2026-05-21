@@ -31,6 +31,7 @@ import (
 	"github.com/example/pam-platform/internal/reports"
 	"github.com/example/pam-platform/internal/roles"
 	"github.com/example/pam-platform/internal/safes"
+	"github.com/example/pam-platform/internal/sshlaunch"
 	samlpkg "github.com/example/pam-platform/internal/saml"
 	"github.com/example/pam-platform/internal/settings"
 	"github.com/example/pam-platform/internal/threat"
@@ -82,6 +83,11 @@ func main() {
 		Vault:        &rdp.VaultAdapter{V: v},
 		RecordingDir: config.Get("PAM_REC_DIR", "/recordings"),
 		BrowserBase:  config.Get("PAM_PORTAL_URL", ""),
+	}
+	sshLaunchSvc := &sshlaunch.Service{
+		DB: d, Policy: policyEng, Approval: approvalSvc, Groups: groupSvc,
+		Vault: v, RecordingDir: config.Get("PAM_REC_DIR", "/recordings"),
+		BrowserBase: config.Get("PAM_PORTAL_URL", ""),
 	}
 	bus := events.New()
 
@@ -734,6 +740,43 @@ func main() {
 				"session_id": res.SessionID, "account": res.AccountName,
 				"checkout_id": strconv.FormatInt(res.CheckoutID, 10),
 			},
+		})
+		httpx.JSON(w, http.StatusOK, res)
+	})
+
+	mux.HandleFunc("POST /targets/{id}/ssh-launch", func(w http.ResponseWriter, r *http.Request) {
+		targetID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		role := r.Header.Get("X-PAM-Role")
+		user := r.Header.Get("X-PAM-User")
+		var in struct {
+			Reason string `json:"reason"`
+		}
+		_ = httpx.ReadJSON(r, &in)
+		clientIP := r.Header.Get("X-Forwarded-For")
+		if clientIP == "" {
+			clientIP = r.RemoteAddr
+		}
+		res, err := sshLaunchSvc.Launch(r.Context(), targetID, uid, role, in.Reason, clientIP)
+		if err != nil {
+			switch {
+			case errors.Is(err, sshlaunch.ErrTargetNotFound):
+				httpx.Error(w, http.StatusNotFound, err)
+			case errors.Is(err, sshlaunch.ErrNotSSH):
+				httpx.Error(w, http.StatusBadRequest, err)
+			case errors.Is(err, sshlaunch.ErrPolicyDenied):
+				httpx.Error(w, http.StatusForbidden, err)
+			case errors.Is(err, sshlaunch.ErrApprovalRequired):
+				httpx.Error(w, http.StatusForbidden, err)
+			default:
+				httpx.Error(w, http.StatusBadRequest, err)
+			}
+			return
+		}
+		bus.Publish(events.Event{
+			Source: "auth", Kind: "ssh.launch", Severity: "info",
+			Actor: user, Target: strconv.FormatInt(targetID, 10),
+			Detail: map[string]string{"session_id": res.SessionID, "target": res.TargetName},
 		})
 		httpx.JSON(w, http.StatusOK, res)
 	})

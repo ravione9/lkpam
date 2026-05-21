@@ -220,7 +220,7 @@
 
         <div class="card" style="margin:0">
           <h3>Quick Start · Machine Access</h3>
-          <p class="muted">Connect through the SSH proxy. Use <b>keyboard-interactive</b> auth when MFA is enrolled:</p>
+          <p class="muted">Click <b>Launch</b> on a machine to open a recorded SSH/RDP session in your browser. Advanced: native SSH via port 2222:</p>
           <pre id="sshHint">ssh -p 2222 … "user@#machine-id@host"</pre>
           <p class="muted" style="font-size:12px;margin-top:8px">Password prompt = portal password · MFA prompt = 6-digit TOTP code</p>
         </div>
@@ -251,7 +251,7 @@
           <h3 style="margin:0">Managed Machines</h3>
           <button class="primary" id="targetAddBtn">+ Add Machine</button>
         </div>
-        <p class="desc">Register servers, network devices, firewalls, hypervisors, web admin consoles, and more. Choose the right <b>connection type</b> per device. Users request JIT access then click <b>Launch</b> to connect (SSH command / RDP bundle / browser tab / telnet command).</p>
+        <p class="desc">Register servers, network devices, firewalls, hypervisors, web admin consoles, and more. Users request JIT access then click <b>Launch</b> — SSH opens a recorded terminal in the browser (like RDP).</p>
         <table>
           <thead><tr><th>Name</th><th>Platform</th><th>Connection</th><th>Address</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
           <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
@@ -999,63 +999,10 @@ function sshProxyHost() {
   return location.hostname || "localhost";
 }
 
-// buildSshCommand returns a quoted ssh command safe for CMD, PowerShell, and bash.
+// buildSshCommand returns a quoted native ssh command (port 2222 proxy — advanced use).
 function buildSshCommand(username, target) {
   const dest = `${username}@${sshTargetRef(target)}@${sshProxyHost()}`;
   return `ssh -p ${SSH_PROXY_PORT} -o PreferredAuthentications=keyboard-interactive,password -o StrictHostKeyChecking=accept-new "${dest}"`;
-}
-
-function buildSshBatContent(username, target) {
-  const dest = `${username}@${sshTargetRef(target)}@${sshProxyHost()}`;
-  const name = typeof target === "object" ? target.name : String(target);
-  const sshLine = `ssh -p ${SSH_PROXY_PORT} -o PreferredAuthentications=keyboard-interactive,password -o StrictHostKeyChecking=accept-new "${dest}"`;
-  return `@echo off\r\n` +
-    `title PAM SSH — ${name.replace(/"/g, "'")}\r\n` +
-    `echo Connecting to ${name.replace(/"/g, "'")} via PAM (port ${SSH_PROXY_PORT})...\r\n` +
-    `echo Login: portal password, then MFA code if enrolled.\r\n` +
-    `where wt >nul 2>&1\r\n` +
-    `if not errorlevel 1 (\r\n` +
-    `  wt -w 0 cmd /k ${sshLine}\r\n` +
-    `  exit /b 0\r\n` +
-    `)\r\n` +
-    `${sshLine}\r\n` +
-    `if errorlevel 1 pause\r\n`;
-}
-
-function buildPuttyBatContent(username, target) {
-  const login = `${username}@${sshTargetRef(target)}`;
-  const name = typeof target === "object" ? target.name : String(target);
-  return `@echo off\r\n` +
-    `title PAM PuTTY — ${name.replace(/"/g, "'")}\r\n` +
-    `where putty >nul 2>&1\r\n` +
-    `if errorlevel 1 (\r\n` +
-    `  echo PuTTY not found in PATH. Install from https://www.putty.org/ or use Launch-CMD.bat\r\n` +
-    `  pause\r\n` +
-    `  exit /b 1\r\n` +
-    `)\r\n` +
-    `putty -ssh -P ${SSH_PROXY_PORT} -l "${login.replace(/"/g, '""')}" ${sshProxyHost()}\r\n`;
-}
-
-function buildSshPs1Content(username, target) {
-  const cmd = buildSshCommand(username, target);
-  const name = typeof target === "object" ? target.name : String(target);
-  return `# PAM SSH launcher — ${name}\r\n` +
-    `Start-Process cmd.exe -ArgumentList '/k', ${JSON.stringify(cmd)}\r\n`;
-}
-
-function safeFilename(name) {
-  return String(name || "machine").replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-").slice(0, 40);
-}
-
-function trySshProtocol(username, target) {
-  const login = encodeURIComponent(`${username}@${sshTargetRef(target)}`);
-  const uri = `ssh://${login}@${sshProxyHost()}:${SSH_PROXY_PORT}`;
-  const a = document.createElement("a");
-  a.href = uri;
-  a.style.display = "none";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
 }
 
 async function persistToken(tok) {
@@ -1475,7 +1422,7 @@ function renderAccessTargets(targets, el) {
         <td><span class="pill">T${t.tier}</span></td>
         <td>${t.require_approval ? '<span class="pill warn">request + approve</span>' : '<span class="pill ok">direct launch</span>'}</td>
         <td class="muted">${t.require_approval ? esc((t.approver_groups||[]).join(", ") || "any admin") + (t.required_approvals > 1 ? ` (${t.required_approvals} needed)` : "") : "—"}</td>
-        <td>${t.require_approval ? `<button class="ghost" onclick="goRequest(${t.id})">Request</button>` : `<button class="ghost" onclick="switchTab('targets')">Launch</button>`}</td>
+        <td>${t.require_approval ? `<button class="ghost" onclick="goRequest(${t.id})">Request</button>` : `<button class="ghost" onclick="launchTarget(${t.id})">Launch</button>`}</td>
       </tr>`).join("")}</tbody></table>`;
 }
 
@@ -1810,7 +1757,27 @@ window.launchTarget = async id => {
   const t = cache.targets.find(x => x.id === id); if (!t) { toast("Target not found", "err"); return; }
   const ct = t.connection_type || "ssh";
   if (ct === "ssh") {
-    showSshLaunchModal(t);
+    const reason = prompt("Reason for SSH session (for audit):", "Approved access");
+    if (reason === null) return;
+    try {
+      const res = await api(`/auth/targets/${t.id}/ssh-launch`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      });
+      if (!res.browser_url) {
+        toast("Set PAM_PORTAL_URL in deploy/docker/.env and rebuild", "err");
+        return;
+      }
+      const url = res.browser_url + (res.browser_url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
+      window.open(url, "_blank", "noopener");
+      toast("SSH terminal opened in browser (recorded)", "ok");
+    } catch (e) {
+      if (e.message && e.message.includes("approved")) {
+        toast("Access not approved yet — submit Request access first", "err");
+      } else {
+        toast(e.message, "err");
+      }
+    }
     return;
   }
   if (ct === "telnet") {
@@ -1854,44 +1821,6 @@ function downloadTextFile(filename, content, mime) {
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
-}
-
-function showSshLaunchModal(target) {
-  const cmd = buildSshCommand(currentUser.username, target);
-  const base = "PAM-SSH-" + safeFilename(target.name);
-  const modal = document.createElement("div");
-  modal.className = "modal-backdrop show";
-  modal.innerHTML = `
-    <div class="modal" style="max-width:640px">
-      <h3>SSH launch — ${esc(target.name)}</h3>
-      <p class="muted">Uses machine ID <code>${esc(sshTargetRef(target))}</code> so names with spaces (e.g. "MPLS Switch") work correctly. Connect to <b>${esc(sshProxyHost())}:${SSH_PROXY_PORT}</b>.</p>
-      <pre style="font-size:11px;max-height:100px;overflow:auto">${esc(cmd)}</pre>
-      <div class="row" style="margin-top:14px;gap:8px;flex-wrap:wrap">
-        <button class="primary" id="sshOpenCmd">Open in CMD</button>
-        <button class="ghost" id="sshOpenPutty">Open in PuTTY</button>
-        <button class="ghost" id="sshCopyCmd">Copy command</button>
-        <button class="ghost" id="sshCloseBtn">Close</button>
-      </div>
-      <p class="muted" style="font-size:12px;margin-top:12px">CMD/PuTTY scripts download automatically and open a terminal window when you run them. If your browser registered <code>ssh://</code>, we also try that first.</p>
-    </div>`;
-  document.body.appendChild(modal);
-  const close = () => modal.remove();
-  modal.addEventListener("click", e => { if (e.target === modal) close(); });
-  modal.querySelector("#sshCloseBtn").onclick = close;
-  modal.querySelector("#sshCopyCmd").onclick = () => copyToClipboard(cmd);
-  modal.querySelector("#sshOpenCmd").onclick = () => {
-    downloadTextFile(base + "-CMD.bat", buildSshBatContent(currentUser.username, target), "application/bat");
-    downloadTextFile(base + ".ps1", buildSshPs1Content(currentUser.username, target), "text/plain");
-    trySshProtocol(currentUser.username, target);
-    toast("CMD launcher downloaded — run " + base + "-CMD.bat to connect", "ok");
-  };
-  modal.querySelector("#sshOpenPutty").onclick = () => {
-    downloadTextFile(base + "-PuTTY.bat", buildPuttyBatContent(currentUser.username, target), "application/bat");
-    toast("PuTTY launcher downloaded — run " + base + "-PuTTY.bat", "ok");
-  };
-  // Auto-download CMD launcher and try ssh:// on first open
-  downloadTextFile(base + "-CMD.bat", buildSshBatContent(currentUser.username, target), "application/bat");
-  trySshProtocol(currentUser.username, target);
 }
 
 function showRdpLaunchModal(target, res) {

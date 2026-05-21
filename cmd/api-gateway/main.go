@@ -186,6 +186,8 @@ func requiresAdmin(method, path string) bool {
 				return false
 			case strings.HasSuffix(path, "/rdp-launch"):
 				return false
+			case strings.HasSuffix(path, "/ssh-launch"):
+				return false
 			case strings.HasPrefix(path, "/api/auth/checkouts/") && strings.HasSuffix(path, "/return"):
 				return false
 			}

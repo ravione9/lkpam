@@ -20,6 +20,7 @@ import (
 	"github.com/example/pam-platform/internal/authclient"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/rdp"
+	"github.com/example/pam-platform/internal/sshlaunch"
 	"github.com/example/pam-platform/internal/vault"
 
 	"github.com/wwt/guac"
@@ -48,6 +49,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	if err := os.MkdirAll(filepath.Join(s.RecordingDir, "rdp"), 0o700); err != nil {
 		return fmt.Errorf("rdpproxy: mkdir recordings: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(s.RecordingDir, "ssh"), 0o700); err != nil {
+		return fmt.Errorf("rdpproxy: mkdir ssh recordings: %w", err)
 	}
 	s.tunnels = make(map[string]guac.Tunnel)
 
@@ -83,10 +87,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 type sessionParams struct {
 	SessionID string
+	Protocol  string
 	Host      string
 	Port      int
 	Username  string
 	Password  string
+	PrivateKey []byte
 	RecDir    string
 }
 
@@ -123,26 +129,46 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 	}
 
 	config := guac.NewGuacamoleConfiguration()
-	config.Protocol = "rdp"
-	config.Parameters = map[string]string{
-		"hostname":                params.Host,
-		"port":                    strconv.Itoa(params.Port),
-		"username":                params.Username,
-		"password":                params.Password,
-		"ignore-cert":             "true",
-		"security":                "any",
-		"resize-method":           "display-update",
-		"enable-wallpaper":        "false",
-		"enable-theming":          "false",
-		"enable-font-smoothing":   "true",
-		"enable-full-window-drag": "false",
-		"recording-path":          params.RecDir,
-		"recording-name":          params.SessionID,
-		"create-recording-path":   "true",
+	if params.Protocol == "ssh" {
+		config.Protocol = "ssh"
+		config.Parameters = map[string]string{
+			"hostname":               params.Host,
+			"port":                     strconv.Itoa(params.Port),
+			"username":                 params.Username,
+			"private-key":              string(params.PrivateKey),
+			"typescript-path":          params.RecDir,
+			"typescript-name":          params.SessionID,
+			"create-typescript-path":   "true",
+			"recording-path":           params.RecDir,
+			"recording-name":           params.SessionID,
+			"create-recording-path":    "true",
+			"font-size":                "14",
+			"color-scheme":             "gray-black",
+			"scrollback":               "1000",
+			"server-alive-interval":    "60",
+		}
+	} else {
+		config.Protocol = "rdp"
+		config.Parameters = map[string]string{
+			"hostname":                params.Host,
+			"port":                    strconv.Itoa(params.Port),
+			"username":                params.Username,
+			"password":                params.Password,
+			"ignore-cert":             "true",
+			"security":                "any",
+			"resize-method":           "display-update",
+			"enable-wallpaper":        "false",
+			"enable-theming":          "false",
+			"enable-font-smoothing":   "true",
+			"enable-full-window-drag": "false",
+			"recording-path":          params.RecDir,
+			"recording-name":          params.SessionID,
+			"create-recording-path":   "true",
+		}
+		config.OptimalScreenWidth = 1280
+		config.OptimalScreenHeight = 800
+		config.AudioMimetypes = []string{"audio/L16", "rate=44100", "channels=2"}
 	}
-	config.OptimalScreenWidth = 1280
-	config.OptimalScreenHeight = 800
-	config.AudioMimetypes = []string{"audio/L16", "rate=44100", "channels=2"}
 
 	addr, err := net.ResolveTCPAddr("tcp", s.GuacdAddr)
 	if err != nil {
@@ -169,8 +195,8 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 
 	go s.pollTermination(sessionID, rt)
 
-	log.Printf("rdp-proxy: session %s started → %s:%d as %s (recording %s)",
-		sessionID, params.Host, params.Port, params.Username, params.RecDir)
+	log.Printf("rdp-proxy: session %s started (%s) → %s:%d as %s (recording %s)",
+		sessionID, params.Protocol, params.Host, params.Port, params.Username, params.RecDir)
 	return rt, nil
 }
 
@@ -178,15 +204,17 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 	var userID, targetID int64
 	var host string
 	var port int
+	var protocol string
 	var username sql.NullString
 	var ended sql.NullInt64
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT s.user_id, s.target_id, t.host, t.port, COALESCE(pa.username,''), s.ended_at
+		SELECT s.user_id, s.target_id, t.host, t.port, COALESCE(s.protocol,'ssh'),
+		       COALESCE(pa.username,''), s.ended_at
 		FROM sessions s
 		JOIN targets t ON t.id = s.target_id
 		LEFT JOIN privileged_accounts pa ON pa.id = s.account_id
-		WHERE s.id = ? AND s.protocol = 'rdp'`, sessionID).
-		Scan(&userID, &targetID, &host, &port, &username, &ended)
+		WHERE s.id = ?`, sessionID).
+		Scan(&userID, &targetID, &host, &port, &protocol, &username, &ended)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, errors.New("session not found")
@@ -199,26 +227,44 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 	if ended.Valid {
 		return nil, errors.New("session already ended")
 	}
-	pw, err := s.Vault.GetSecret(ctx, rdp.SessionSecretName(sessionID))
-	if err != nil {
-		return nil, fmt.Errorf("session credentials expired or missing")
-	}
-	user := username.String
-	if user == "" {
-		user = "Administrator"
-	}
-	recDir := rdp.RecordingDirForSession(s.RecordingDir, sessionID)
-	if err := os.MkdirAll(recDir, 0o700); err != nil {
-		return nil, err
-	}
-	return &sessionParams{
+
+	params := &sessionParams{
 		SessionID: sessionID,
+		Protocol:  protocol,
 		Host:      host,
 		Port:      port,
-		Username:  user,
-		Password:  string(pw),
-		RecDir:    recDir,
-	}, nil
+	}
+
+	switch protocol {
+	case "ssh":
+		if port <= 0 {
+			port = 22
+			params.Port = 22
+		}
+		key, err := s.Vault.GetSecret(ctx, sshlaunch.SessionSecretName(sessionID))
+		if err != nil {
+			return nil, fmt.Errorf("session credentials expired or missing")
+		}
+		params.Username = "pam-user"
+		params.PrivateKey = key
+		params.RecDir = sshlaunch.RecordingDirForSession(s.RecordingDir, sessionID)
+	default: // rdp
+		pw, err := s.Vault.GetSecret(ctx, rdp.SessionSecretName(sessionID))
+		if err != nil {
+			return nil, fmt.Errorf("session credentials expired or missing")
+		}
+		params.Username = username.String
+		if params.Username == "" {
+			params.Username = "Administrator"
+		}
+		params.Password = string(pw)
+		params.RecDir = rdp.RecordingDirForSession(s.RecordingDir, sessionID)
+	}
+
+	if err := os.MkdirAll(params.RecDir, 0o700); err != nil {
+		return nil, err
+	}
+	return params, nil
 }
 
 func (s *Server) pollTermination(sessionID string, tunnel guac.Tunnel) {
@@ -261,6 +307,7 @@ func (s *Server) closeSession(ctx context.Context, sessionID string) {
 		db.Now(), recPath, recPath, sessionID)
 
 	_ = s.Vault.DeleteSecret(ctx, rdp.SessionSecretName(sessionID))
+	_ = s.Vault.DeleteSecret(ctx, sshlaunch.SessionSecretName(sessionID))
 	_, _ = s.DB.ExecContext(ctx, `
 		UPDATE session_terminations SET acknowledged_at=?
 		WHERE session_id=? AND acknowledged_at IS NULL`, db.Now(), sessionID)
@@ -272,7 +319,16 @@ func (s *Server) closeSession(ctx context.Context, sessionID string) {
 }
 
 func (s *Server) findRecording(sessionID string) string {
-	dir := rdp.RecordingDirForSession(s.RecordingDir, sessionID)
+	for _, sub := range []string{"rdp", "ssh"} {
+		dir := filepath.Join(s.RecordingDir, sub, sessionID)
+		if path := findGuacInDir(dir); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func findGuacInDir(dir string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""

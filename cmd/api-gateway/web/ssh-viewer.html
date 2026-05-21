@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>PAM — SSH Session (Recorded)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #0f172a; color: #e2e8f0; height: 100vh; display: flex; flex-direction: column; }
+    header { padding: 10px 16px; background: #020617; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #334155; font-family: system-ui, sans-serif; }
+    header h1 { font-size: 15px; font-weight: 600; }
+    header .muted { font-size: 12px; color: #94a3b8; }
+    #display { flex: 1; overflow: hidden; background: #111; position: relative; }
+    #display > div { width: 100% !important; height: 100% !important; }
+    #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
+    .err { color: #f87171; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/guacamole-common-js@1.5.0/dist/guacamole-common.min.js"></script>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>PAM Recorded SSH Session</h1>
+      <div class="muted" id="sessionLabel">Connecting…</div>
+    </div>
+    <button id="disconnectBtn" style="padding:6px 14px;border-radius:6px;border:1px solid #475569;background:#334155;color:#e2e8f0;cursor:pointer;font-family:system-ui,sans-serif">Disconnect</button>
+  </header>
+  <div id="display"></div>
+  <div id="status">Session is recorded by PAM for audit.</div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const sessionId = params.get("session");
+    const token = params.get("token");
+    const statusEl = document.getElementById("status");
+    const labelEl = document.getElementById("sessionLabel");
+
+    if (!sessionId || !token) {
+      statusEl.textContent = "Missing session or token — launch SSH from the PAM portal.";
+      statusEl.className = "err";
+    } else {
+      labelEl.textContent = "Session: " + sessionId;
+      const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = wsProto + "//" + location.host + "/api/rdp/websocket-tunnel?session="
+        + encodeURIComponent(sessionId) + "&token=" + encodeURIComponent(token);
+
+      const tunnel = new Guacamole.WebSocketTunnel(wsUrl);
+      const client = new Guacamole.Client(tunnel);
+      const display = document.getElementById("display");
+      display.appendChild(client.getDisplay().getElement());
+
+      client.onstatechange = state => {
+        if (state === Guacamole.Client.State.CONNECTED) statusEl.textContent = "Connected — terminal session is being recorded.";
+        if (state === Guacamole.Client.State.DISCONNECTED) statusEl.textContent = "Disconnected. Recording saved in PAM Sessions tab.";
+      };
+      client.onerror = err => {
+        statusEl.textContent = "Connection error: " + (err && err.message ? err.message : "unknown");
+        statusEl.className = "err";
+      };
+
+      function connect() {
+        client.connect("width=" + display.clientWidth + "&height=" + display.clientHeight);
+      }
+      window.addEventListener("resize", () => {
+        if (client.getDisplay()) {
+          client.sendSize(display.clientWidth, display.clientHeight);
+        }
+      });
+
+      tunnel.onerror = status => {
+        statusEl.textContent = "Tunnel error — is guacd running? " + JSON.stringify(status);
+        statusEl.className = "err";
+      };
+
+      connect();
+      document.getElementById("disconnectBtn").onclick = () => client.disconnect();
+    }
+  </script>
+</body>
+</html>
