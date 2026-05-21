@@ -576,6 +576,8 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 // lookupPrivilegedAccount returns the SSH-capable privileged account linked to
 // a target along with its plaintext password fetched from the vault. The third
 // return value is true when an account was found and its password retrieved.
+// It matches ANY platform that is not windows/rdp — so Ubuntu, Cisco, FortiGate etc.
+// all work without needing a specific platform filter.
 func (s *Server) lookupPrivilegedAccount(targetID int64) (username, password string, ok bool) {
 	if targetID == 0 {
 		return "", "", false
@@ -587,7 +589,7 @@ func (s *Server) lookupPrivilegedAccount(targetID int64) (username, password str
 		SELECT a.username, a.secret_ref
 		FROM privileged_accounts a
 		WHERE a.target_id = ?
-		  AND a.platform IN ('linux','cisco','arista','juniper','palo','forti','ssh','huawei','arubaos','mikrotik','sophos','fortinet','pfsense','sonicwall','f5','netscaler','ontap','a10','dlink','extreme','brocade')
+		  AND LOWER(a.platform) NOT IN ('windows','rdp')
 		ORDER BY a.id
 		LIMIT 1`, targetID).Scan(&username, &secretRef)
 	if err != nil {
