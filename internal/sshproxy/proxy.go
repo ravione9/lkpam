@@ -504,11 +504,23 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	}()
 
 	dialErrMsg := func(out dialOutcome) string {
+		kind := strings.ToLower(targetKind)
+		isNetworkAppliance := strings.Contains(kind, "forti") || strings.Contains(kind, "cisco") ||
+			strings.Contains(kind, "juniper") || strings.Contains(kind, "arista") ||
+			strings.Contains(kind, "palo") || strings.Contains(kind, "switch") ||
+			strings.Contains(kind, "router") || strings.Contains(kind, "firewall")
+
 		switch out.authMode {
 		case "priv-account":
 			return fmt.Sprintf("PAM: could not log in to %s as %s (privileged account).\r\nCheck the password in Privileged Accounts, or remove the account to use your portal credentials.\r\nUnderlying error: %v\r\n", host, out.user, out.err)
 		case "passthrough":
-			return fmt.Sprintf("PAM: could not log in to %s as %s using your portal credentials.\r\nFor Linux: ensure user %s exists on the server, PasswordAuthentication is enabled in sshd_config, and the password matches your PAM login.\r\nOr add a Privileged Account with the device username + password.\r\nUnderlying error: %v\r\n", host, out.user, out.user, out.err)
+			hint := fmt.Sprintf("For Linux: ensure user %s exists on the server, PasswordAuthentication is enabled in sshd_config, and the password matches your PAM login.\r\n", out.user)
+			if isNetworkAppliance {
+				hint = "FortiGate/Cisco/network devices do not accept your portal AD password over SSH.\r\n" +
+					"Add a Privileged Account (Safes tab) with the device admin username + password,\r\n" +
+					"or configure TACACS+ on the device to authenticate portal users.\r\n"
+			}
+			return fmt.Sprintf("PAM: could not log in to %s as %s using your portal credentials.\r\n%sOr add a Privileged Account with the device username + password.\r\nUnderlying error: %v\r\n", host, out.user, hint, out.err)
 		default:
 			return fmt.Sprintf("PAM: could not connect to %s.\r\nAdd a privileged account for this target in the Privileged Accounts tab so PAM can log in for you.\r\nUnderlying error: %v\r\n", host, out.err)
 		}
@@ -835,13 +847,26 @@ func writeUserChannelMessage(ch ssh.Channel, reqs <-chan *ssh.Request, msg strin
 }
 
 // buildDownstreamConfig returns an ssh.ClientConfig for logging into the target.
+// Network appliances (FortiGate, Cisco, etc.) often present rsa-sha2-512 host
+// keys; explicit HostKeyAlgorithms avoids "unknown key algorithm" handshake failures.
 func (s *Server) buildDownstreamConfig(user, password string, certMethods []ssh.AuthMethod) *ssh.ClientConfig {
+	hostKeyAlgos := []string{
+		ssh.KeyAlgoED25519,
+		ssh.KeyAlgoECDSA256,
+		ssh.KeyAlgoECDSA384,
+		ssh.KeyAlgoECDSA521,
+		ssh.KeyAlgoRSASHA256,
+		ssh.KeyAlgoRSASHA512,
+		ssh.KeyAlgoRSA,
+	}
 	if password == "" && len(certMethods) > 0 {
 		return &ssh.ClientConfig{
-			User:            user,
-			Auth:            certMethods,
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-			Timeout:         10 * time.Second,
+			User:                user,
+			Auth:                certMethods,
+			HostKeyCallback:     ssh.InsecureIgnoreHostKey(),
+			HostKeyAlgorithms:   hostKeyAlgos,
+			PubKeyAuthAlgorithms: hostKeyAlgos,
+			Timeout:             10 * time.Second,
 		}
 	}
 	pw := password
@@ -857,8 +882,10 @@ func (s *Server) buildDownstreamConfig(user, password string, certMethods []ssh.
 				return out, nil
 			}),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+		HostKeyCallback:     ssh.InsecureIgnoreHostKey(),
+		HostKeyAlgorithms:   hostKeyAlgos,
+		PubKeyAuthAlgorithms: hostKeyAlgos,
+		Timeout:             10 * time.Second,
 	}
 }
 
