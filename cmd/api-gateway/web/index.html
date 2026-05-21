@@ -2318,12 +2318,19 @@ $("#gmCloseBtn").onclick = () => $("#groupMembersModal").classList.remove("show"
 async function loadSecrets() {
   try {
     const rows = await api("/vault/secrets");
-    if (!(rows||[]).length) { $("#secretRows").innerHTML = `<tr><td colspan="3" class="muted">No secrets stored.</td></tr>`; return; }
-    $("#secretRows").innerHTML = rows.map(s => `
-      <tr>
-        <td><b>${esc(s.name)}</b></td><td class="muted">${fmtTime(s.updated_at)}</td>
-        <td><button class="ghost danger" onclick="deleteSecret(${JSON.stringify(s.name)})">Delete</button></td>
-      </tr>`).join("");
+    const tbody = $("#secretRows");
+    tbody.innerHTML = "";
+    if (!(rows||[]).length) { tbody.innerHTML = `<tr><td colspan="3" class="muted">No secrets stored.</td></tr>`; return; }
+    for (const s of rows) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td><b>${esc(s.name)}</b></td><td class="muted">${fmtTime(s.updated_at)}</td><td></td>`;
+      const btn = document.createElement("button");
+      btn.className = "ghost danger";
+      btn.textContent = "Delete";
+      btn.addEventListener("click", () => deleteSecret(s.name));
+      tr.lastElementChild.appendChild(btn);
+      tbody.appendChild(tr);
+    }
   } catch (e) { $("#secretRows").innerHTML = `<tr><td colspan="3" class="muted">${esc(e.message)}</td></tr>`; }
 }
 $("#secretAddBtn").onclick = () => { $("#secretName").value=""; $("#secretValue").value=""; $("#secretForm").classList.remove("hidden"); };
@@ -2508,17 +2515,14 @@ async function loadSessions() {
     const um = Object.fromEntries(cache.users.map(u => [u.id, u.username]));
     const tm = Object.fromEntries(cache.targets.map(t => [t.id, t.name]));
     const rows = await api("/audit/sessions?limit=200");
-    if (!(rows||[]).length) { $("#sessionRows").innerHTML = `<tr><td colspan="6" class="muted">No sessions yet.</td></tr>`; return; }
-    $("#sessionRows").innerHTML = rows.map(s => {
+    if (!(rows||[]).length) { $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">No sessions yet.</td></tr>`; return; }
+    const tbody = $("#sessionRows");
+    tbody.innerHTML = "";
+    for (const s of rows) {
       const active = !s.ended_at;
       const proto = (s.protocol || "ssh").toUpperCase();
-      const terminateBtn = (active && isAdmin())
-        ? `<button class="ghost danger" onclick="terminateSession(${JSON.stringify(s.id)})">Terminate</button>`
-        : "";
-      const recBtn = !active && (s.protocol === "rdp") && s.recording_path
-        ? `<button class="ghost" onclick="downloadRecording(${JSON.stringify(s.id)})">Recording</button>`
-        : (active && proto === "RDP" ? `<span class="muted" style="font-size:11px">recording…</span>` : "");
-      return `<tr>
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
         <td>${fmtTime(s.started_at)}</td>
         <td><span class="pill ${proto==='RDP'?'warn':''}">${esc(proto)}</span></td>
         <td>${esc(um[s.user_id] || s.user_id)}</td>
@@ -2526,9 +2530,32 @@ async function loadSessions() {
         <td class="muted">${esc(s.client_ip) || '—'}</td>
         <td>${active ? '<span class="pill ok">active</span>' : `<span class="pill">${esc(s.ended_reason || 'ended')}</span>`}</td>
         <td class="muted" style="font-size:11px">${esc(s.recording_path) || '—'}</td>
-        <td class="actions">${terminateBtn} ${recBtn}</td>
-      </tr>`;
-    }).join("");
+        <td class="actions"></td>`;
+      const actions = tr.querySelector(".actions");
+      if (active && isAdmin()) {
+        const tBtn = document.createElement("button");
+        tBtn.className = "ghost danger";
+        tBtn.textContent = "Terminate";
+        tBtn.addEventListener("click", () => terminateSession(s.id));
+        actions.appendChild(tBtn);
+      }
+      if (!active && s.protocol === "rdp" && s.recording_path) {
+        const dBtn = document.createElement("button");
+        dBtn.className = "ghost";
+        dBtn.style.marginLeft = "6px";
+        dBtn.textContent = "Recording";
+        dBtn.addEventListener("click", () => downloadRecording(s.id));
+        actions.appendChild(dBtn);
+      } else if (active && proto === "RDP") {
+        const span = document.createElement("span");
+        span.className = "muted";
+        span.style.fontSize = "11px";
+        span.style.marginLeft = "6px";
+        span.textContent = "recording…";
+        actions.appendChild(span);
+      }
+      tbody.appendChild(tr);
+    }
   } catch (e) { $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
 }
 
@@ -2813,25 +2840,27 @@ function showCheckoutModal(a, res) {
   modal.className = "modal-backdrop show";
   modal.innerHTML = `
     <div class="modal" style="max-width:600px">
-      <h3>${a.name} — credentials</h3>
+      <h3>${esc(a.name)} — credentials</h3>
       <p class="muted">Use these credentials only for the stated reason. The reveal is logged.</p>
       <div class="form-grid">
         <label>Username</label><input value="${esc(a.username)}" readonly/>
         <label>Password</label>
         <div class="row" style="gap:6px">
           <input id="copPw" value="${esc(res.password)}" readonly style="flex:1"/>
-          <button class="ghost" onclick="copyToClipboard(${JSON.stringify(res.password)})">Copy</button>
+          <button class="ghost" data-copy-pw>Copy</button>
         </div>
       </div>
       ${res.break_glass ? '<p class="pill err" style="margin-top:12px">Break-glass reveal — audit alert raised</p>' : ''}
       <div class="row" style="margin-top:14px;justify-content:flex-end">
-        <button class="ghost" onclick="returnCheckout(${res.checkout_id}, this)">Mark returned &amp; close</button>
+        <button class="ghost" data-return>Mark returned &amp; close</button>
       </div>
     </div>`;
+  modal.querySelector("[data-copy-pw]").addEventListener("click", () => copyToClipboard(res.password));
+  modal.querySelector("[data-return]").addEventListener("click", () => returnCheckout(res.checkout_id));
   document.body.appendChild(modal);
   window._activeCheckoutModal = modal;
 }
-window.returnCheckout = async (id, btn) => {
+window.returnCheckout = async (id) => {
   try { await api(`/auth/checkouts/${id}/return`, {method:"POST"}); }
   catch (e) { /* best-effort */ }
   if (window._activeCheckoutModal) {
@@ -2951,15 +2980,17 @@ function showAPIKeyModal(name, key) {
       <p class="muted">Copy this key now — it will not be shown again.</p>
       <div class="row" style="gap:6px">
         <input value="${esc(key)}" readonly style="flex:1"/>
-        <button class="ghost" onclick="copyToClipboard(${JSON.stringify(key)})">Copy</button>
+        <button class="ghost" data-copy-key>Copy</button>
       </div>
       <p class="desc" style="margin-top:12px">Use as:</p>
       <pre style="background:#0f1116;color:#e6e8eb;padding:10px;border-radius:6px;font-size:12px">curl -H "X-API-Key: ${esc(key)}" \\
   "${location.origin}/api/ccp/accounts?account=&lt;account-name&gt;"</pre>
       <div class="row" style="margin-top:14px;justify-content:flex-end">
-        <button class="primary" onclick="this.closest('.modal-backdrop').remove()">Done</button>
+        <button class="primary" data-close>Done</button>
       </div>
     </div>`;
+  m.querySelector("[data-copy-key]").addEventListener("click", () => copyToClipboard(key));
+  m.querySelector("[data-close]").addEventListener("click", () => m.remove());
   document.body.appendChild(m);
 }
 
