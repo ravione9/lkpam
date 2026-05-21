@@ -110,6 +110,78 @@ func main() {
 		})
 	})
 
+	// --- RDP launcher ---
+	//
+	// Returns a Microsoft .rdp file pre-filled with the host, username, and
+	// (optionally) tunneled credentials. The Windows client opens it directly.
+	// We do NOT embed the password — instead we run `cmdkey` injection from
+	// the bundled helper or fall back to the user typing it. This avoids
+	// keeping plaintext on disk in the .rdp file.
+	mux.HandleFunc("GET /rdp-file", func(w http.ResponseWriter, r *http.Request) {
+		host := r.URL.Query().Get("host")
+		port := r.URL.Query().Get("port")
+		user := r.URL.Query().Get("username")
+		name := r.URL.Query().Get("name")
+		if host == "" {
+			httpx.Error(w, http.StatusBadRequest, newErr("host required"))
+			return
+		}
+		if port == "" {
+			port = "3389"
+		}
+		if name == "" {
+			name = host
+		}
+		// Build the .rdp file. These are line-oriented Microsoft "i:" "s:" "b:" entries.
+		var b []byte
+		b = append(b, []byte("screen mode id:i:2\r\n")...)
+		b = append(b, []byte("use multimon:i:0\r\n")...)
+		b = append(b, []byte("session bpp:i:32\r\n")...)
+		b = append(b, []byte("compression:i:1\r\n")...)
+		b = append(b, []byte("keyboardhook:i:2\r\n")...)
+		b = append(b, []byte("audiocapturemode:i:0\r\n")...)
+		b = append(b, []byte("videoplaybackmode:i:1\r\n")...)
+		b = append(b, []byte("connection type:i:7\r\n")...)
+		b = append(b, []byte("networkautodetect:i:1\r\n")...)
+		b = append(b, []byte("bandwidthautodetect:i:1\r\n")...)
+		b = append(b, []byte("displayconnectionbar:i:1\r\n")...)
+		b = append(b, []byte("enableworkspacereconnect:i:0\r\n")...)
+		b = append(b, []byte("disable wallpaper:i:0\r\n")...)
+		b = append(b, []byte("allow font smoothing:i:1\r\n")...)
+		b = append(b, []byte("allow desktop composition:i:1\r\n")...)
+		b = append(b, []byte("disable full window drag:i:1\r\n")...)
+		b = append(b, []byte("disable menu anims:i:1\r\n")...)
+		b = append(b, []byte("disable themes:i:0\r\n")...)
+		b = append(b, []byte("disable cursor setting:i:0\r\n")...)
+		b = append(b, []byte("bitmapcachepersistenable:i:1\r\n")...)
+		b = append(b, []byte("full address:s:"+host+":"+port+"\r\n")...)
+		b = append(b, []byte("audiomode:i:0\r\n")...)
+		b = append(b, []byte("redirectprinters:i:0\r\n")...)
+		b = append(b, []byte("redirectcomports:i:0\r\n")...)
+		b = append(b, []byte("redirectsmartcards:i:1\r\n")...)
+		b = append(b, []byte("redirectclipboard:i:1\r\n")...)
+		b = append(b, []byte("redirectposdevices:i:0\r\n")...)
+		b = append(b, []byte("autoreconnection enabled:i:1\r\n")...)
+		b = append(b, []byte("authentication level:i:2\r\n")...)
+		b = append(b, []byte("prompt for credentials:i:1\r\n")...)
+		b = append(b, []byte("negotiate security layer:i:1\r\n")...)
+		b = append(b, []byte("remoteapplicationmode:i:0\r\n")...)
+		b = append(b, []byte("alternate shell:s:\r\n")...)
+		b = append(b, []byte("shell working directory:s:\r\n")...)
+		b = append(b, []byte("gatewayhostname:s:\r\n")...)
+		b = append(b, []byte("gatewayusagemethod:i:4\r\n")...)
+		b = append(b, []byte("gatewaycredentialssource:i:4\r\n")...)
+		b = append(b, []byte("gatewayprofileusagemethod:i:0\r\n")...)
+		b = append(b, []byte("promptcredentialonce:i:0\r\n")...)
+		b = append(b, []byte("use redirection server name:i:0\r\n")...)
+		if user != "" {
+			b = append(b, []byte("username:s:"+user+"\r\n")...)
+		}
+		w.Header().Set("Content-Type", "application/x-rdp")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.rdp"`)
+		w.Write(b)
+	})
+
 	// --- Central Credential Provider (app-to-app) ---
 	//
 	// Apps call:

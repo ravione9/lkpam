@@ -233,23 +233,39 @@
           <h3 style="margin:0">Managed Machines</h3>
           <button class="primary" id="targetAddBtn">+ Add Machine</button>
         </div>
-        <p class="desc">Register servers and network devices here. Users request JIT access, then connect via the SSH proxy using keyboard-interactive auth (password + MFA).</p>
+        <p class="desc">Register servers, network devices, firewalls, hypervisors, web admin consoles, and more. Choose the right <b>connection type</b> per device. Users request JIT access then click <b>Launch</b> to connect (SSH command / .rdp download / browser tab / telnet command).</p>
         <table>
-          <thead><tr><th>Name</th><th>Kind</th><th>Host</th><th>Port</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Platform</th><th>Connection</th><th>Address</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
           <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
         <div class="form-panel hidden" id="targetForm">
-          <h4 id="targetFormTitle">Add target</h4>
+          <h4 id="targetFormTitle">Add machine</h4>
           <input type="hidden" id="targetId"/>
           <div class="form-grid">
-            <label>Name</label><input id="targetName" placeholder="core-sw-01"/>
-            <label>Kind</label>
-            <select id="targetKind">
-              <option value="cisco">cisco</option><option value="arista">arista</option><option value="juniper">juniper</option>
-              <option value="linux">linux</option><option value="palo">palo</option><option value="forti">forti</option><option value="windows">windows</option>
+            <label>Name</label><input id="targetName" placeholder="core-sw-01 / dc01 / fw-prod"/>
+            <label>Connection type</label>
+            <select id="targetConn">
+              <option value="ssh">SSH (CLI)</option>
+              <option value="rdp">RDP (Windows desktop)</option>
+              <option value="web">Web GUI (HTTPS console)</option>
+              <option value="telnet">Telnet (legacy CLI)</option>
+              <option value="https-api">HTTPS API</option>
             </select>
-            <label>Host / IP</label><input id="targetHost" placeholder="192.168.1.1"/>
-            <label>Port</label><input id="targetPort" type="number" value="22"/>
+            <label>Platform / OEM</label>
+            <select id="targetKind"></select>
+            <label>Vendor</label><input id="targetVendor" placeholder="Cisco / Fortinet / Microsoft …"/>
+            <label>OS / firmware version</label><input id="targetOSVersion" placeholder="IOS 16.9.5 / FortiOS 7.2 / Windows 2022"/>
+            <div id="targetHostFields">
+              <div class="form-grid">
+                <label>Host / IP</label><input id="targetHost" placeholder="192.168.1.1"/>
+                <label>Port</label><input id="targetPort" type="number" value="22"/>
+              </div>
+            </div>
+            <div id="targetWebFields" style="display:none">
+              <div class="form-grid">
+                <label>Web URL</label><input id="targetWebURL" placeholder="https://fw01.corp.local/login"/>
+              </div>
+            </div>
             <label>Tier</label>
             <select id="targetTier">
               <option value="0">Tier 0 · critical</option><option value="1">Tier 1 · production</option>
@@ -836,7 +852,6 @@ let token = null;
 let currentUser = null;
 let pendingMFAUserID = null;
 let cache = { targets: [], users: [], groups: [], roles: [], matrix: [], safes: [], accounts: [], apps: [] };
-const TARGET_KINDS = ["cisco","arista","juniper","linux","palo","forti","windows"];
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
@@ -863,13 +878,6 @@ function fillRoleSelect(el, currentValue, opts) {
     roles.map(r => `<option value="${esc(r.name)}">${esc(r.name)}${r.builtin ? '' : ' (custom)'}</option>`).join("");
   if (currentValue) el.value = currentValue;
   else if (!placeholder && roles.length) el.value = "user";
-}
-
-function fillTargetKindSelect(el, current, includeAny) {
-  el.innerHTML =
-    (includeAny ? `<option value="*">* (any)</option>` : "") +
-    TARGET_KINDS.map(k => `<option value="${k}">${k}</option>`).join("");
-  if (current) el.value = current;
 }
 
 // applyRoleUI hides admin-only nav, buttons, and form panels for non-admins.
@@ -1192,7 +1200,7 @@ function renderMatrixGroupChecks(checkedIds) {
 
 function resetMatrixForm() {
   $("#matrixId").value = ""; $("#matrixName").value = "";
-  fillTargetKindSelect($("#matrixKind"), "*", true);
+  fillTargetKindSelect($("#matrixKind"), "*", {includeAny: true, forPolicy: true});
   $("#matrixTierMin").value = "0"; $("#matrixTierMax").value = "3";
   $("#matrixRequired").value = "1"; $("#matrixPriority").value = "100";
   $("#matrixEnabled").checked = true;
@@ -1214,7 +1222,7 @@ window.editMatrix = async id => {
   const r = cache.matrix.find(x => x.id === id); if (!r) return;
   if (!cache.groups.length) { try { cache.groups = await api("/auth/groups"); } catch {} }
   $("#matrixId").value = r.id; $("#matrixName").value = r.name;
-  fillTargetKindSelect($("#matrixKind"), r.target_kind, true);
+  fillTargetKindSelect($("#matrixKind"), r.target_kind, {includeAny: true, forPolicy: true});
   $("#matrixTierMin").value = r.tier_min; $("#matrixTierMax").value = r.tier_max;
   $("#matrixRequired").value = r.required_approvals;
   $("#matrixPriority").value = r.priority;
@@ -1311,7 +1319,192 @@ async function loadAccessProfile() {
   } catch (e) { $("#accessPolicies").innerHTML = `<span class="muted">${esc(e.message)}</span>`; }
 }
 
-// --- Targets ---
+// --- Targets / Machines ---
+//
+// DEVICE_CATALOG is the master list of supported platforms, grouped by
+// category. The Machines form uses it to populate the Platform dropdown,
+// and the Device Setup tab uses DEVICE_GUIDES (defined further below) to
+// render the per-platform integration guides.
+const DEVICE_CATALOG = {
+  "Network — Switches & Routers": [
+    {kind:"cisco-ios",       label:"Cisco IOS / IOS-XE (Catalyst)",  protocols:["ssh","telnet","web"]},
+    {kind:"cisco-nxos",      label:"Cisco Nexus (NX-OS)",            protocols:["ssh","web"]},
+    {kind:"cisco-iosxr",     label:"Cisco IOS XR (ASR/NCS)",         protocols:["ssh"]},
+    {kind:"cisco-isr",       label:"Cisco ISR / ASR routers",        protocols:["ssh","telnet"]},
+    {kind:"cisco-meraki",    label:"Cisco Meraki (cloud)",           protocols:["web","https-api"]},
+    {kind:"arista-eos",      label:"Arista EOS",                     protocols:["ssh","web"]},
+    {kind:"juniper-junos",   label:"Juniper Junos (EX/QFX/MX)",      protocols:["ssh","telnet","web"]},
+    {kind:"juniper-srx",     label:"Juniper SRX (firewall)",         protocols:["ssh","web"]},
+    {kind:"hp-aruba-cx",     label:"HPE Aruba CX (ArubaOS-CX)",      protocols:["ssh","web"]},
+    {kind:"hp-procurve",     label:"HPE ProCurve (legacy)",          protocols:["ssh","telnet","web"]},
+    {kind:"huawei-vrp",      label:"Huawei VRP (S/CE/NE)",           protocols:["ssh","telnet","web"]},
+    {kind:"dell-os10",       label:"Dell OS10 (PowerSwitch)",        protocols:["ssh","web"]},
+    {kind:"dell-os6",        label:"Dell OS6 (PowerConnect)",        protocols:["ssh","telnet","web"]},
+    {kind:"extreme-exos",    label:"Extreme EXOS",                   protocols:["ssh","telnet","web"]},
+    {kind:"ruijie",          label:"Ruijie / Reyee",                 protocols:["ssh","web"]},
+    {kind:"mikrotik-routeros", label:"MikroTik RouterOS",            protocols:["ssh","web","https-api"]},
+    {kind:"brocade-icx",     label:"Brocade ICX / NetIron",          protocols:["ssh","telnet","web"]},
+    {kind:"alcatel-aos",     label:"Alcatel-Lucent AOS",             protocols:["ssh","telnet"]},
+  ],
+  "Network — Firewalls / NGFW": [
+    {kind:"palo-paloalto",   label:"Palo Alto PAN-OS",               protocols:["ssh","web"]},
+    {kind:"fortinet-fortigate", label:"Fortinet FortiGate (FortiOS)",protocols:["ssh","web","https-api"]},
+    {kind:"cisco-asa",       label:"Cisco ASA",                      protocols:["ssh","telnet","web"]},
+    {kind:"cisco-ftd",       label:"Cisco Firepower (FTD/FMC)",      protocols:["ssh","web"]},
+    {kind:"checkpoint-gaia", label:"Check Point Gaia",               protocols:["ssh","web"]},
+    {kind:"sonicwall",       label:"SonicWall",                      protocols:["ssh","web"]},
+    {kind:"sophos-xg",       label:"Sophos XG / XGS",                protocols:["ssh","web"]},
+    {kind:"watchguard",      label:"WatchGuard Firebox",             protocols:["ssh","web"]},
+    {kind:"pfsense",         label:"pfSense",                        protocols:["ssh","web"]},
+    {kind:"opnsense",        label:"OPNsense",                       protocols:["ssh","web"]},
+    {kind:"meraki-mx",       label:"Meraki MX",                      protocols:["web"]},
+    {kind:"barracuda-ngf",   label:"Barracuda NextGen Firewall",     protocols:["ssh","web"]},
+  ],
+  "Network — Wireless / Controllers": [
+    {kind:"cisco-wlc",       label:"Cisco WLC (AireOS / IOS-XE)",    protocols:["ssh","web"]},
+    {kind:"aruba-wlc",       label:"HPE Aruba Mobility Controller",  protocols:["ssh","web"]},
+    {kind:"aruba-instant",   label:"Aruba Instant On",               protocols:["ssh","web"]},
+    {kind:"ruckus-smartzone",label:"Ruckus SmartZone",               protocols:["ssh","web"]},
+    {kind:"fortinet-fortiap",label:"Fortinet FortiAP / FortiWiFi",   protocols:["ssh","web"]},
+    {kind:"mist-juniper",    label:"Juniper Mist (cloud)",           protocols:["web","https-api"]},
+  ],
+  "Network — Load Balancers / ADC": [
+    {kind:"f5-bigip",        label:"F5 BIG-IP (LTM/GTM/APM)",        protocols:["ssh","web","https-api"]},
+    {kind:"citrix-netscaler",label:"Citrix NetScaler / ADC",         protocols:["ssh","web"]},
+    {kind:"kemp-loadmaster", label:"Progress Kemp LoadMaster",       protocols:["ssh","web"]},
+    {kind:"a10-thunder",     label:"A10 Thunder",                    protocols:["ssh","web"]},
+    {kind:"haproxy",         label:"HAProxy (self-managed)",         protocols:["ssh"]},
+  ],
+  "Servers — Operating Systems": [
+    {kind:"linux",           label:"Linux (generic)",                protocols:["ssh"]},
+    {kind:"rhel",            label:"Red Hat Enterprise Linux",       protocols:["ssh"]},
+    {kind:"ubuntu",          label:"Ubuntu Server",                  protocols:["ssh"]},
+    {kind:"debian",          label:"Debian",                         protocols:["ssh"]},
+    {kind:"centos",          label:"CentOS / Rocky / Alma",          protocols:["ssh"]},
+    {kind:"suse",            label:"SUSE Linux Enterprise",          protocols:["ssh"]},
+    {kind:"amazon-linux",    label:"Amazon Linux",                   protocols:["ssh"]},
+    {kind:"windows-server",  label:"Windows Server (2016+)",         protocols:["rdp","ssh"]},
+    {kind:"windows-desktop", label:"Windows 10 / 11",                protocols:["rdp"]},
+    {kind:"aix",             label:"IBM AIX",                        protocols:["ssh"]},
+    {kind:"solaris",         label:"Oracle Solaris",                 protocols:["ssh"]},
+    {kind:"macos",           label:"macOS Server",                   protocols:["ssh"]},
+  ],
+  "Hypervisors / Virtualization": [
+    {kind:"vmware-vcenter",  label:"VMware vCenter",                 protocols:["web","https-api","ssh"]},
+    {kind:"vmware-esxi",     label:"VMware ESXi",                    protocols:["ssh","web"]},
+    {kind:"proxmox",         label:"Proxmox VE",                     protocols:["ssh","web","https-api"]},
+    {kind:"hyperv",          label:"Microsoft Hyper-V Server",       protocols:["rdp","ssh"]},
+    {kind:"xenserver",       label:"Citrix XenServer / XCP-ng",      protocols:["ssh","web"]},
+    {kind:"nutanix",         label:"Nutanix Prism",                  protocols:["ssh","web","https-api"]},
+  ],
+  "Storage / Backup": [
+    {kind:"netapp-ontap",    label:"NetApp ONTAP",                   protocols:["ssh","web","https-api"]},
+    {kind:"dell-emc",        label:"Dell EMC Unity / PowerStore",    protocols:["ssh","web"]},
+    {kind:"hpe-3par",        label:"HPE 3PAR / Primera",             protocols:["ssh","web"]},
+    {kind:"pure-flasharray", label:"Pure Storage FlashArray",        protocols:["ssh","web","https-api"]},
+    {kind:"ibm-storwize",    label:"IBM Storwize / FlashSystem",     protocols:["ssh","web"]},
+    {kind:"veeam-bnr",       label:"Veeam Backup & Replication",     protocols:["rdp","https-api"]},
+  ],
+  "Cloud / IAM": [
+    {kind:"aws-iam",         label:"AWS IAM / Console",              protocols:["web","https-api"]},
+    {kind:"azure-portal",    label:"Microsoft Azure Portal",         protocols:["web","https-api"]},
+    {kind:"gcp-console",     label:"Google Cloud Console",           protocols:["web","https-api"]},
+    {kind:"oci-console",     label:"Oracle Cloud Infrastructure",    protocols:["web","https-api"]},
+    {kind:"alibaba-cloud",   label:"Alibaba Cloud Console",          protocols:["web","https-api"]},
+  ],
+  "Containers / Orchestration": [
+    {kind:"kubernetes",      label:"Kubernetes (API + kubectl)",     protocols:["https-api","ssh"]},
+    {kind:"openshift",       label:"Red Hat OpenShift",              protocols:["web","https-api"]},
+    {kind:"rancher",         label:"SUSE Rancher",                   protocols:["web","https-api"]},
+    {kind:"docker",          label:"Docker / Docker Swarm host",     protocols:["ssh","https-api"]},
+  ],
+  "Databases": [
+    {kind:"mysql",           label:"MySQL / MariaDB",                protocols:["ssh","https-api"]},
+    {kind:"postgres",        label:"PostgreSQL",                     protocols:["ssh","https-api"]},
+    {kind:"mssql",           label:"Microsoft SQL Server",           protocols:["rdp","ssh"]},
+    {kind:"oracle-db",       label:"Oracle Database",                protocols:["ssh"]},
+    {kind:"mongodb",         label:"MongoDB",                        protocols:["ssh"]},
+    {kind:"redis",           label:"Redis",                          protocols:["ssh"]},
+    {kind:"elastic",         label:"Elasticsearch / OpenSearch",     protocols:["ssh","web"]},
+  ],
+  "Directory & Identity": [
+    {kind:"active-directory",label:"Microsoft Active Directory DC",  protocols:["rdp","ssh"]},
+    {kind:"ldap-389",        label:"389-ds / OpenLDAP",              protocols:["ssh"]},
+    {kind:"okta-admin",      label:"Okta admin console",             protocols:["web","https-api"]},
+  ],
+  "Other": [
+    {kind:"generic-web",     label:"Generic web admin console",      protocols:["web"]},
+    {kind:"generic-api",     label:"Generic HTTPS API",              protocols:["https-api"]},
+    {kind:"generic-ssh",     label:"Generic SSH host",               protocols:["ssh"]},
+    {kind:"generic-rdp",     label:"Generic RDP host",               protocols:["rdp"]},
+  ],
+};
+
+// kindLabel returns the human label for a kind.
+function kindLabel(kind) {
+  for (const cat of Object.values(DEVICE_CATALOG)) {
+    const d = cat.find(x => x.kind === kind);
+    if (d) return d.label;
+  }
+  return kind;
+}
+
+// Common platform families used by older policy rules. Policy matching is
+// exact OR family — so a rule with target_kind="cisco" still applies to a
+// "cisco-ios" target via the family alias.
+const PLATFORM_FAMILIES = ["cisco","arista","juniper","fortinet","palo","linux","windows",
+  "vmware","aws","azure","gcp"];
+
+// fillTargetKindSelect populates a kind dropdown with grouped optgroups.
+// When forPolicy=true, also include the wildcard and common family aliases
+// at the top so policy admins can write rules that span a vendor.
+// When the machine form's targetConn is set, filter to compatible kinds.
+function fillTargetKindSelect(el, current, opts) {
+  opts = opts || {};
+  let html = "";
+  if (opts.includeAny) html += `<option value="*">* (any platform)</option>`;
+  if (opts.forPolicy) {
+    html += `<optgroup label="Common families (matches any specific platform within)">` +
+      PLATFORM_FAMILIES.map(f => `<option value="${f}">${f}</option>`).join("") +
+      `</optgroup>`;
+  }
+  const filter = opts.forPolicy ? "" : ($("#targetConn") ? $("#targetConn").value : "");
+  for (const [cat, devices] of Object.entries(DEVICE_CATALOG)) {
+    const items = filter
+      ? devices.filter(d => d.protocols.includes(filter))
+      : devices;
+    if (!items.length) continue;
+    html += `<optgroup label="${esc(cat)}">` +
+      items.map(d => `<option value="${esc(d.kind)}">${esc(d.label)}</option>`).join("") +
+      `</optgroup>`;
+  }
+  el.innerHTML = html;
+  if (current) el.value = current;
+}
+
+const DEFAULT_PORTS = { ssh: 22, rdp: 3389, telnet: 23, web: 443, "https-api": 443 };
+
+function applyConnectionTypeUI() {
+  const ct = $("#targetConn").value;
+  const isWeb = ct === "web" || ct === "https-api";
+  $("#targetHostFields").style.display = isWeb ? "none" : "";
+  $("#targetWebFields").style.display = isWeb ? "" : "none";
+  $("#targetPort").value = DEFAULT_PORTS[ct] || 22;
+  fillTargetKindSelect($("#targetKind"), $("#targetKind").value, {includeAny: false, forPolicy: false});
+}
+
+function connectionBadge(t) {
+  const colors = { ssh:"", rdp:"warn", web:"accent", telnet:"err", "https-api":"accent" };
+  return `<span class="pill ${colors[t.connection_type]||''}">${esc(t.connection_type||'ssh')}</span>`;
+}
+
+function targetAddress(t) {
+  if (t.connection_type === "web" || t.connection_type === "https-api") {
+    return `<a href="#" onclick="event.preventDefault();launchTarget(${t.id})" class="muted" title="Open in new tab">${esc(t.web_url)}</a>`;
+  }
+  return `<span class="muted">${esc(t.host)}:${t.port}</span>`;
+}
+
 async function loadTargets() {
   try {
     const rows = await api("/policy/targets");
@@ -1320,55 +1513,134 @@ async function loadTargets() {
       $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">No machines yet. Admins: click + Add Machine.</td></tr>`;
       return;
     }
-    const tActions = t => isAdmin()
-      ? `<button class="ghost" onclick="editTarget(${t.id})">Edit</button>
-         <button class="ghost danger" onclick="deleteTarget(${t.id})">Delete</button>`
-      : `<button class="ghost" onclick="requestForTarget(${t.id})">Request access</button>`;
+    const tActions = t => {
+      const launchBtn = `<button class="ghost" onclick="launchTarget(${t.id})">Launch</button>`;
+      const requestBtn = `<button class="ghost" onclick="requestForTarget(${t.id})">Request access</button>`;
+      const adminBtns = isAdmin()
+        ? `<button class="ghost" onclick="editTarget(${t.id})">Edit</button>
+           <button class="ghost danger" onclick="deleteTarget(${t.id})">Delete</button>`
+        : "";
+      return launchBtn + " " + requestBtn + " " + adminBtns;
+    };
     $("#targetRows").innerHTML = cache.targets.map(t => `
       <tr>
-        <td><b>${esc(t.name)}</b></td><td>${esc(t.kind)}</td><td>${esc(t.host)}</td><td>${t.port}</td>
+        <td><b>${esc(t.name)}</b>${t.vendor ? `<div class="muted" style="font-size:11px">${esc(t.vendor)}${t.os_version?' · '+esc(t.os_version):''}</div>` : ""}</td>
+        <td><span class="pill">${esc(kindLabel(t.kind))}</span></td>
+        <td>${connectionBadge(t)}</td>
+        <td>${targetAddress(t)}</td>
         <td><span class="pill">${tierLabel(t.tier)}</span></td>
         <td class="muted">${esc(t.tags)}</td>
         <td class="actions">${tActions(t)}</td>
       </tr>`).join("");
     if (currentUser) {
-      const t0 = cache.targets[0];
-      $("#targetSshCmd").textContent = `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${currentUser.username}@${t0.name}@localhost`;
+      const t0 = cache.targets.find(t => (t.connection_type||"ssh") === "ssh") || cache.targets[0];
+      if (t0 && t0.connection_type !== "web" && t0.connection_type !== "https-api") {
+        $("#targetSshCmd").textContent = `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${currentUser.username}@${t0.name}@localhost`;
+      }
     }
   } catch (e) { $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
 }
 
+// launchTarget dispatches the right action per connection type. The user must
+// have an approved access request; this is a UX helper, not policy.
+window.launchTarget = async id => {
+  const t = cache.targets.find(x => x.id === id); if (!t) { toast("Target not found", "err"); return; }
+  const ct = t.connection_type || "ssh";
+  if (ct === "ssh") {
+    const cmd = `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${currentUser.username}@${t.name}@${location.hostname}`;
+    copyToClipboard(cmd);
+    toast("SSH command copied — paste in your terminal", "ok");
+    return;
+  }
+  if (ct === "telnet") {
+    const cmd = `telnet ${t.host} ${t.port||23}`;
+    copyToClipboard(cmd);
+    toast("Telnet command copied (legacy — prefer SSH)", "ok");
+    return;
+  }
+  if (ct === "web" || ct === "https-api") {
+    window.open(t.web_url, "_blank", "noopener");
+    toast("Web console opened — check out credentials from Privileged Accounts if needed", "ok");
+    return;
+  }
+  if (ct === "rdp") {
+    // Fetch the .rdp file as a blob and trigger download.
+    try {
+      const params = new URLSearchParams({
+        host: t.host, port: String(t.port||3389),
+        username: currentUser.username, name: t.name,
+      });
+      const r = await fetch("/api/vault/rdp-file?" + params.toString(), {
+        headers: { Authorization: "Bearer " + token },
+      });
+      if (!r.ok) throw new Error(await r.text() || "rdp-file failed");
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = t.name + ".rdp";
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast("RDP file downloaded — open with mstsc / Remote Desktop", "ok");
+    } catch (e) { toast(e.message, "err"); }
+    return;
+  }
+  toast("Unknown connection type: " + ct, "err");
+};
+
 function resetTargetForm() {
-  ["targetId","targetName","targetHost","targetTags"].forEach(id => $("#"+id).value = "");
-  $("#targetKind").value = "cisco"; $("#targetPort").value = "22"; $("#targetTier").value = "2";
-  $("#targetName").disabled = false; $("#targetForm").classList.add("hidden");
+  ["targetId","targetName","targetHost","targetTags","targetVendor","targetOSVersion","targetWebURL"].forEach(id => $("#"+id).value = "");
+  $("#targetConn").value = "ssh";
+  $("#targetPort").value = "22"; $("#targetTier").value = "2";
+  $("#targetName").disabled = false;
+  applyConnectionTypeUI();
+  $("#targetForm").classList.add("hidden");
 }
-$("#targetAddBtn").onclick = () => { resetTargetForm(); $("#targetFormTitle").textContent = "Add target"; $("#targetForm").classList.remove("hidden"); };
+$("#targetAddBtn").onclick = () => {
+  resetTargetForm();
+  fillTargetKindSelect($("#targetKind"), "cisco-ios", {includeAny: false, forPolicy: false});
+  $("#targetFormTitle").textContent = "Add machine";
+  $("#targetForm").classList.remove("hidden");
+};
 $("#targetCancelBtn").onclick = resetTargetForm;
+$("#targetConn").addEventListener("change", applyConnectionTypeUI);
 window.editTarget = id => {
   const t = cache.targets.find(x => x.id === id); if (!t) return;
-  $("#targetId").value = t.id; $("#targetName").value = t.name; $("#targetName").disabled = true;
-  $("#targetKind").value = t.kind; $("#targetHost").value = t.host; $("#targetPort").value = t.port;
+  $("#targetId").value = t.id;
+  $("#targetName").value = t.name; $("#targetName").disabled = true;
+  $("#targetConn").value = t.connection_type || "ssh";
+  fillTargetKindSelect($("#targetKind"), t.kind, {includeAny: false, forPolicy: false});
+  $("#targetVendor").value = t.vendor || "";
+  $("#targetOSVersion").value = t.os_version || "";
+  $("#targetHost").value = t.host || ""; $("#targetPort").value = t.port || 22;
+  $("#targetWebURL").value = t.web_url || "";
   $("#targetTier").value = t.tier; $("#targetTags").value = t.tags || "";
-  $("#targetFormTitle").textContent = "Edit target"; $("#targetForm").classList.remove("hidden");
+  applyConnectionTypeUI();
+  $("#targetFormTitle").textContent = "Edit machine"; $("#targetForm").classList.remove("hidden");
 };
 $("#targetSaveBtn").onclick = async () => {
   const body = {
-    name: $("#targetName").value.trim(), kind: $("#targetKind").value,
-    host: $("#targetHost").value.trim(), port: parseInt($("#targetPort").value,10)||22,
-    tier: parseInt($("#targetTier").value,10), tags: $("#targetTags").value.trim(),
+    name: $("#targetName").value.trim(),
+    kind: $("#targetKind").value,
+    vendor: $("#targetVendor").value.trim(),
+    os_version: $("#targetOSVersion").value.trim(),
+    connection_type: $("#targetConn").value,
+    host: $("#targetHost").value.trim(),
+    port: parseInt($("#targetPort").value, 10) || DEFAULT_PORTS[$("#targetConn").value] || 22,
+    web_url: $("#targetWebURL").value.trim(),
+    tier: parseInt($("#targetTier").value,10),
+    tags: $("#targetTags").value.trim(),
   };
   try {
     const id = $("#targetId").value;
     if (id) { body.id = +id; await api("/policy/targets/"+id, {method:"PUT", body: JSON.stringify(body)}); }
     else await api("/policy/targets", {method:"POST", body: JSON.stringify(body)});
-    toast(id ? "Target updated" : "Target created", "ok");
+    toast(id ? "Machine updated" : "Machine created", "ok");
     resetTargetForm(); loadTargets();
   } catch (e) { toast(e.message, "err"); }
 };
 window.deleteTarget = async id => {
   const t = cache.targets.find(x => x.id === id);
-  if (!t || !confirm(`Delete target "${t.name}"?`)) return;
+  if (!t || !confirm(`Delete machine "${t.name}"?`)) return;
   try { await api("/policy/targets/"+id, {method:"DELETE"}); toast("Deleted", "ok"); loadTargets(); }
   catch (e) { toast(e.message, "err"); }
 };
@@ -1630,7 +1902,7 @@ async function loadPolicies() {
 function resetPolicyForm() {
   $("#policyId").value = "";
   fillRoleSelect($("#policyRole"), "netops");
-  fillTargetKindSelect($("#policyKind"), "linux", true);
+  fillTargetKindSelect($("#policyKind"), "linux", {includeAny: true, forPolicy: true});
   $("#policyTier").value = "2"; $("#policyApproval").checked = false;
   ["policyAllow","policyDeny"].forEach(id => $("#"+id).value = "");
   $("#policyForm").classList.add("hidden");
@@ -1646,7 +1918,7 @@ window.editPolicy = async id => {
   const p = (window._policies||[]).find(x => x.id === id); if (!p) return;
   await ensureRoles();
   fillRoleSelect($("#policyRole"), p.role);
-  fillTargetKindSelect($("#policyKind"), p.target_kind, true);
+  fillTargetKindSelect($("#policyKind"), p.target_kind, {includeAny: true, forPolicy: true});
   $("#policyId").value = p.id;
   $("#policyTier").value = p.tier_max; $("#policyApproval").checked = p.require_approval;
   $("#policyAllow").value = p.allowed_commands || ""; $("#policyDeny").value = p.denied_commands || "";
@@ -2272,7 +2544,7 @@ async function loadReports() {
 // substitutes {{HOST}}, {{SSH_PORT}}, {{TAC_PORT}}, {{SECRET}}, {{CA_PUB}}
 // with values from the form/server before display.
 const DEVICE_GUIDES = {
-  cisco: {
+  "cisco-ios": {
     label: "Cisco IOS / IOS-XE",
     intro: "Use TACACS+ for AAA (authentication, authorization, command accounting). Cisco devices send every login + command through PAM, which logs them in the audit trail.",
     prereqs: [
@@ -2319,17 +2591,36 @@ ip ssh server algorithm authentication publickey password keyboard-interactive` 
 test aaa group PAM <pam-username> <pam-password> new-code
 show tacacs
 show aaa servers` },
-      { title: "4. Register in PAM",
+      { title: "4. GUI alternative (Cisco IOS web UI / Web Services Manager)",
         code:
-`# Then in the PAM console:
+`! Enable the embedded HTTPS server (IOS XE 16.x+)
+ip http secure-server
+ip http authentication aaa login-authentication PAM-AUTH
+ip http authentication aaa exec-authorization PAM-EXEC
+no ip http server          ! HTTPS only
+
+! Then access:  https://<switch-ip>
+! Login lands on the Web UI; PAM TACACS+ credentials are used.
+! Useful pages:
+!   Configuration > Security > AAA > Servers
+!   Monitoring > Logging
+!   Configuration > Interfaces` },
+      { title: "5. Register in PAM",
+        code:
+`# CLI access:
 #   Machines -> + Add Machine
-#   Kind = cisco
-#   Host = <switch management IP>
-#   Port = 22, Tier = 1 (production)` },
+#   Name:            sw-core-01
+#   Connection type: SSH (CLI)
+#   Platform:        Cisco IOS / IOS-XE
+#   Host = <switch IP>, Port = 22, Tier = 1 (production)
+#
+# GUI access (optional, separate machine entry):
+#   Connection type: Web GUI (HTTPS console)
+#   Web URL:         https://<switch-ip>/` },
     ],
   },
 
-  arista: {
+  "arista-eos": {
     label: "Arista EOS",
     intro: "Arista EOS supports the same TACACS+ AAA model as Cisco. The PAM proxy authenticates users and logs commands.",
     prereqs: [
@@ -2362,7 +2653,7 @@ show aaa session` },
     ],
   },
 
-  juniper: {
+  "juniper-junos": {
     label: "Juniper Junos",
     intro: "Junos integrates with TACACS+ via <code>tacplus-server</code>. Map remote users to a Junos login class with the permissions you want.",
     prereqs: [
@@ -2448,7 +2739,7 @@ session sufficient pam_tacplus.so service=ssh` },
     ],
   },
 
-  palo: {
+  "palo-paloalto": {
     label: "Palo Alto PAN-OS",
     intro: "PAN-OS uses TACACS+ server profiles + an authentication profile bound to device administration.",
     prereqs: [
@@ -2477,8 +2768,8 @@ test authentication authentication-profile PAM-AUTH username <user> password <pw
     ],
   },
 
-  forti: {
-    label: "Fortinet FortiGate",
+  "fortinet-fortigate": {
+    label: "Fortinet FortiGate (CLI + GUI)",
     intro: "FortiOS authenticates admins against the PAM TACACS+ server and maps remote group members to an admin profile.",
     prereqs: [
       "FortiOS 6.4 or later",
@@ -2518,11 +2809,42 @@ end` },
         code:
 `# From the FortiGate CLI
 diagnose test authserver tacacs+ PAM-TAC <user> <password>` },
+      { title: "5. GUI alternative (FortiOS web)",
+        code:
+`# Same configuration via the FortiGate GUI:
+#   System  ->  Settings  ->  Administrators  ->  Settings (top right)
+#   System  ->  Settings  ->  Remote Authentication Servers  ->  Create New  ->  TACACS+
+#       Name:        PAM-TAC
+#       Server:      {{HOST}}
+#       Port:        {{TAC_PORT}}
+#       Key:         {{SECRET}}
+#       Auth Type:   PAP
+#   User & Authentication  ->  User Groups  ->  Create New
+#       Name:        PAM-Admins
+#       Type:        Firewall
+#       Remote Group / Match:  PAM-TAC, Group = (any)
+#   System  ->  Administrators  ->  Create New  ->  Match a remote server group
+#       Match:       PAM-Admins
+#       Profile:     super_admin
+#   Apply.
+#
+# Verify by signing out, then signing in as a PAM user — FortiOS will redirect
+# the auth to the PAM TACACS+ server.` },
+      { title: "6. Register in PAM (web GUI access)",
+        code:
+`# Then in the PAM console:
+#   Machines -> + Add Machine
+#   Name:            fw01
+#   Connection type: Web GUI (HTTPS console)
+#   Platform:        Fortinet FortiGate (FortiOS)
+#   Web URL:         https://<firewall-ip>/login
+#
+# Users will then click Launch to open the FortiGate GUI in a new tab.` },
     ],
   },
 
-  windows: {
-    label: "Windows Server (OpenSSH)",
+  "windows-server": {
+    label: "Windows Server (RDP + OpenSSH)",
     intro: "Windows targets run the built-in OpenSSH Server and trust the PAM SSH CA the same way Linux does. RDP can be tunnelled over the same SSH session.",
     prereqs: [
       "Windows Server 2019 or later (or Windows 10/11)",
@@ -2557,11 +2879,897 @@ Restart-Service sshd` },
 New-Item -Type Directory -Force C:\\ProgramData\\ssh\\auth_principals | Out-Null
 "admin
 sysadmin" | Out-File -Encoding ASCII -FilePath C:\\ProgramData\\ssh\\auth_principals\\Administrator` },
+      { title: "5. Enable RDP (GUI access)",
+        code:
+`# RDP is the primary way users will access the Windows desktop.
+# Run elevated PowerShell on the target:
+
+# Allow Remote Desktop connections
+Set-ItemProperty -Path "HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server" \`
+  -Name "fDenyTSConnections" -Value 0
+
+# Allow RDP through the Windows firewall
+Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+# Require Network Level Authentication (recommended)
+Set-ItemProperty -Path "HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp" \`
+  -Name "UserAuthentication" -Value 1
+
+# (Optional) Add a non-admin user that can RDP in
+net localgroup "Remote Desktop Users" CORP\\jdoe /add` },
+      { title: "6. Server Manager GUI (alternative to PowerShell)",
+        code:
+`# Open Server Manager  ->  Local Server  ->  Remote Desktop (click Disabled)
+#   Tab "Remote"  ->  select "Allow remote connections to this computer"
+#   Check "Allow connections only from computers running Remote Desktop with NLA"
+#   Click "Select Users..." to add specific accounts/groups
+#   Apply / OK.
+#
+# Then verify Windows Firewall:
+#   Control Panel  ->  Windows Defender Firewall  ->  Allowed apps
+#   Make sure "Remote Desktop" is enabled for Domain + Private networks.` },
+      { title: "7. Register in PAM (RDP)",
+        code:
+`# In the PAM console:
+#   Machines -> + Add Machine
+#   Name:            dc01
+#   Connection type: RDP (Windows desktop)
+#   Platform:        Windows Server (2016+)
+#   Host:            <server IP or FQDN>
+#   Port:            3389 (default)
+#   Tier:            1 (production)
+#
+# Users will click Launch -> a tailored .rdp file is downloaded with the
+# correct host + username. Open it with mstsc / Remote Desktop client.` },
+    ],
+  },
+
+  "cisco-nxos": {
+    label: "Cisco Nexus (NX-OS)",
+    intro: "Cisco Nexus switches use TACACS+ similarly to IOS but with feature-gated AAA commands. NX-OS also exposes a web GUI on https://&lt;switch&gt;/ when the NXAPI feature is enabled.",
+    prereqs: ["NX-OS 7.0(3) or later", "Reachable path to {{HOST}}:{{TAC_PORT}}"],
+    steps: [
+      { title: "1. Enable TACACS+ feature",
+        code:
+`feature tacacs+
+tacacs-server host {{HOST}} key 0 {{SECRET}}
+tacacs-server timeout 5
+aaa group server tacacs+ PAM
+  server {{HOST}}` },
+      { title: "2. Bind AAA",
+        code:
+`aaa authentication login default group PAM
+aaa authentication login console group PAM local
+aaa accounting default group PAM` },
+      { title: "3. Enable NXAPI (web GUI / REST)",
+        code:
+`feature nxapi
+nxapi http port 80
+nxapi https port 443
+no nxapi http
+# GUI:  https://<switch-ip>/ — uses TACACS+ credentials.` },
+      { title: "4. Register in PAM (SSH + Web)",
+        code:
+`# CLI access (Connection: SSH, port 22)
+# GUI access (Connection: Web GUI, URL: https://<switch-ip>/)` },
+    ],
+  },
+
+  "cisco-asa": {
+    label: "Cisco ASA (firewall)",
+    intro: "ASA uses TACACS+ for HTTPS / SSH / enable authentication and supports the ASDM GUI launcher.",
+    prereqs: ["ASA 9.x or later", "Network path to {{HOST}}:{{TAC_PORT}}"],
+    steps: [
+      { title: "1. Configure TACACS+",
+        code:
+`aaa-server PAM protocol tacacs+
+aaa-server PAM (mgmt) host {{HOST}}
+ key {{SECRET}}
+ server-port {{TAC_PORT}}` },
+      { title: "2. Bind AAA",
+        code:
+`aaa authentication ssh console PAM LOCAL
+aaa authentication enable console PAM LOCAL
+aaa authentication http console PAM LOCAL
+aaa accounting ssh console PAM
+aaa accounting enable console PAM
+aaa authorization command PAM LOCAL` },
+      { title: "3. ASDM GUI access",
+        code:
+`http server enable 443
+http 0.0.0.0 0.0.0.0 mgmt        ! restrict to your mgmt net in production
+! Then open https://<asa-ip>/admin/   (ASDM Java launcher)
+! Or  https://<asa-ip>/  for clientless web (CLI in browser).` },
+      { title: "4. Register in PAM",
+        code:
+`# Machines -> Add:
+#   Connection: SSH, Platform: Cisco ASA, Host=<asa-ip>, Port=22
+# Additionally for GUI:
+#   Connection: Web GUI, Web URL: https://<asa-ip>/admin/` },
+    ],
+  },
+
+  "cisco-wlc": {
+    label: "Cisco WLC (Wireless LAN Controller)",
+    intro: "Cisco WLC (AireOS or Catalyst 9800 IOS-XE) supports TACACS+ + the management GUI on HTTPS.",
+    prereqs: ["AireOS 8.x / IOS-XE WLC 17.x", "Path to PAM TACACS+"],
+    steps: [
+      { title: "1. AireOS CLI",
+        code:
+`config tacacs auth add 1 {{HOST}} {{TAC_PORT}} ascii {{SECRET}}
+config tacacs auth enable 1
+config radius auth disable all
+config aaa auth mgmt tacacs local
+save config` },
+      { title: "2. Catalyst 9800 (IOS-XE) — same as Cisco IOS",
+        code:
+`# Same configuration as Cisco IOS (see that guide). The Catalyst 9800
+# image is IOS-XE so the AAA stanza is identical.` },
+      { title: "3. Register in PAM",
+        code:
+`# Connection: Web GUI for the controller dashboard.
+# Web URL: https://<wlc-ip>/` },
+    ],
+  },
+
+  "checkpoint-gaia": {
+    label: "Check Point Gaia",
+    intro: "Check Point Gaia (the appliance OS for Quantum / R8x firewalls) supports TACACS+ for both clish CLI and the Gaia Portal web GUI.",
+    prereqs: ["Gaia R80 or later", "Expert-mode root access for initial setup"],
+    steps: [
+      { title: "1. Configure TACACS+ via clish",
+        code:
+`add aaa tacacs-servers priority 1 server {{HOST}} key {{SECRET}}
+set aaa tacacs-servers state on
+set aaa role admin-role default-shell /etc/cli.sh
+save config` },
+      { title: "2. Enable Gaia Portal HTTPS",
+        code:
+`set web ssl-port 443
+set web table-refresh-rate 15
+show web
+save config` },
+      { title: "3. Register in PAM",
+        code:
+`# CLI: SSH to port 22
+# GUI: Web URL = https://<gaia-ip>/` },
+    ],
+  },
+
+  "hp-aruba-cx": {
+    label: "HPE Aruba CX (ArubaOS-CX)",
+    intro: "ArubaOS-CX supports TACACS+ and exposes a modern web GUI plus REST API.",
+    prereqs: ["ArubaOS-CX 10.x", "Path to PAM TACACS+"],
+    steps: [
+      { title: "1. CLI configuration",
+        code:
+`configure
+tacacs-server host {{HOST}} key plaintext {{SECRET}} port {{TAC_PORT}}
+aaa group server tacacs PAM
+   server {{HOST}}
+aaa authentication login default group PAM local
+aaa authorization commands default group PAM none
+aaa accounting all default group PAM
+exit` },
+      { title: "2. Enable HTTPS server",
+        code:
+`https-server vrf mgmt
+https-server session-timeout 30
+# GUI: https://<switch-ip>/` },
+      { title: "3. Register in PAM",
+        code:
+`# CLI: SSH port 22, GUI: HTTPS port 443.` },
+    ],
+  },
+
+  "huawei-vrp": {
+    label: "Huawei VRP (S/CE/NE series)",
+    intro: "Huawei VRP supports HWTACACS (close to TACACS+) and a Web Network Management GUI.",
+    prereqs: ["VRP V200R009 or later", "TACACS+ reachability"],
+    steps: [
+      { title: "1. CLI configuration",
+        code:
+`system-view
+hwtacacs-server template PAM
+ hwtacacs-server authentication {{HOST}} {{TAC_PORT}}
+ hwtacacs-server authorization {{HOST}} {{TAC_PORT}}
+ hwtacacs-server accounting    {{HOST}} {{TAC_PORT}}
+ hwtacacs-server shared-key cipher {{SECRET}}
+ quit
+aaa
+ authentication-scheme pam
+  authentication-mode hwtacacs local
+ authorization-scheme pam
+  authorization-mode hwtacacs local
+ accounting-scheme pam
+  accounting-mode hwtacacs
+ domain default
+  authentication-scheme pam
+  authorization-scheme pam
+  accounting-scheme pam
+  hwtacacs-server PAM
+ quit` },
+      { title: "2. Enable web management",
+        code:
+`http server enable
+http secure-server enable
+# GUI: https://<device-ip>/` },
+      { title: "3. Register in PAM",
+        code:
+`# CLI: SSH, GUI: Web URL = https://<device-ip>/` },
+    ],
+  },
+
+  "mikrotik-routeros": {
+    label: "MikroTik RouterOS",
+    intro: "RouterOS supports TACACS+ via the AAA package and has the WinBox GUI plus a Webfig HTTPS UI plus a REST API.",
+    prereqs: ["RouterOS 6.x or 7.x"],
+    steps: [
+      { title: "1. CLI configuration",
+        code:
+`/user aaa set use-radius=no accounting=yes
+/system logging action add name=tacacs target=remote remote={{HOST}}
+# RouterOS doesn't natively speak TACACS+; for full AAA use FreeRADIUS
+# bridged to PAM, or fall back to local + audit-via-syslog (below).
+/system logging action set remote remote-port=514 remote=<syslog-host>
+/system logging add topics=info,debug action=remote
+/system logging add topics=critical,error,warning action=remote` },
+      { title: "2. Enable Webfig (HTTPS)",
+        code:
+`/ip service set www-ssl certificate=auto-generated disabled=no port=443
+/ip service set www disabled=yes
+# Then open https://<router-ip>/ for Webfig.` },
+      { title: "3. Register in PAM",
+        code:
+`# CLI: SSH on port 22 (or 22 if remapped)
+# GUI: Web URL = https://<router-ip>/` },
+    ],
+  },
+
+  "fortinet-fortiap": {
+    label: "Fortinet FortiAP / FortiWiFi",
+    intro: "Same FortiOS family as FortiGate but firmware varies. Use the FortiGate guide for TACACS+ and add the FortiAP-specific steps below.",
+    prereqs: ["FortiAP with FortiGate management"],
+    steps: [
+      { title: "1. Manage via FortiGate",
+        code:
+`# FortiAPs are usually managed FROM the FortiGate. Add the FortiAP to
+# the FortiGate (System > Network > Interfaces > FortiAP profile) and
+# the FortiGate TACACS+ configuration covers authentication.` },
+      { title: "2. Direct GUI access (if standalone)",
+        code:
+`# Register in PAM as:
+#   Connection: Web GUI, URL: https://<fortiap-ip>/login` },
+    ],
+  },
+
+  "pfsense": {
+    label: "pfSense",
+    intro: "pfSense supports RADIUS + TACACS+ (via package pfBlockerNG-Auth or freeradius3-tacacs+). Web GUI is HTTPS.",
+    prereqs: ["pfSense 2.5+"],
+    steps: [
+      { title: "1. Install TACACS+ package",
+        code:
+`# Web GUI: System -> Package Manager -> Available Packages
+# Install: "freeradius3"  (or use built-in RADIUS bridged to PAM)` },
+      { title: "2. Configure RADIUS pointing to PAM",
+        code:
+`# Web GUI: System -> User Manager -> Authentication Servers -> +Add
+#   Type:           RADIUS
+#   Hostname:       {{HOST}}
+#   Port:           1812
+#   Shared Secret:  {{SECRET}}
+#   Auth Protocol:  PAP
+# (Use the matching PAM service or configure freeradius bridge.)
+# Then: System -> User Manager -> Settings -> Auth server = your new RADIUS` },
+      { title: "3. Register in PAM",
+        code:
+`# CLI: SSH (must be enabled under System -> Advanced -> Admin Access)
+# GUI: Web URL = https://<pfsense-ip>/` },
+    ],
+  },
+
+  "opnsense": {
+    label: "OPNsense",
+    intro: "OPNsense follows the same pattern as pfSense. Web GUI is HTTPS by default on port 443.",
+    prereqs: ["OPNsense 22.x or later"],
+    steps: [
+      { title: "1. Web GUI: configure remote auth",
+        code:
+`# System -> Access -> Servers -> +Add
+#   Type:           RADIUS or LDAP (talk to PAM via bridge)
+#   Hostname:       {{HOST}}
+# System -> Settings -> Administration: choose the server as auth source.` },
+      { title: "2. Register in PAM",
+        code:
+`# CLI: SSH (Interfaces -> [WAN/LAN] -> Allow SSH, port 22)
+# GUI: Web URL = https://<opnsense-ip>/` },
+    ],
+  },
+
+  "sonicwall": {
+    label: "SonicWall (NSA / TZ)",
+    intro: "SonicWall SonicOS supports TACACS+ + RADIUS. GUI accessible on https://&lt;device&gt;/auth.html.",
+    prereqs: ["SonicOS 6.5 or 7.x"],
+    steps: [
+      { title: "1. Web GUI configuration",
+        code:
+`# Manage -> Users -> Settings -> Authentication method = TACACS+
+# Manage -> Users -> TACACS+ -> Add Server
+#   IP:            {{HOST}}
+#   Port:          {{TAC_PORT}}
+#   Shared Secret: {{SECRET}}
+# Apply and test by signing in as a PAM user.` },
+      { title: "2. Register in PAM",
+        code:
+`# CLI: SSH if enabled (Manage -> System Setup -> Appliance -> Administration)
+# GUI: Web URL = https://<sonicwall-ip>/` },
+    ],
+  },
+
+  "sophos-xg": {
+    label: "Sophos XG / XGS",
+    intro: "Sophos XG supports RADIUS / TACACS+ and an HTTPS admin GUI.",
+    prereqs: ["Sophos Firewall OS v18 or later"],
+    steps: [
+      { title: "1. GUI: System -> Authentication -> Servers",
+        code:
+`# Add RADIUS or TACACS+ server:
+#   Server Type: TACACS+
+#   Name:        PAM
+#   IP/Domain:   {{HOST}}
+#   Port:        {{TAC_PORT}}
+#   Shared Sec:  {{SECRET}}` },
+      { title: "2. Configure Authentication",
+        code:
+`# System -> Authentication -> Services -> Web Admin
+# Set auth server list to PAM (primary), local (fallback).` },
+      { title: "3. Register in PAM",
+        code:
+`# GUI: Web URL = https://<firewall-ip>:4444/   (default Sophos admin port)
+# CLI: SSH usually on port 22.` },
+    ],
+  },
+
+  "f5-bigip": {
+    label: "F5 BIG-IP (LTM/GTM/APM)",
+    intro: "BIG-IP uses TACACS+ via tmsh / TMOS. Web GUI on HTTPS, REST API on iControl REST.",
+    prereqs: ["TMOS 13.x or later"],
+    steps: [
+      { title: "1. tmsh: configure TACACS+",
+        code:
+`tmsh modify auth source type tacacs
+tmsh create auth tacacs system-auth servers add { {{HOST}} } secret {{SECRET}} service ppp protocol ip
+tmsh save sys config` },
+      { title: "2. GUI alternative",
+        code:
+`# System -> Users -> Authentication
+#   User Directory:  Remote - TACACS+
+#   Servers:         {{HOST}}
+#   Secret:          {{SECRET}}
+#   Service Name:    ppp
+#   Protocol Name:   ip
+# Apply.` },
+      { title: "3. Register in PAM",
+        code:
+`# CLI: SSH on port 22
+# GUI: Web URL = https://<bigip-ip>/
+# REST: HTTPS API base = https://<bigip-ip>/mgmt/tm/` },
+    ],
+  },
+
+  "citrix-netscaler": {
+    label: "Citrix NetScaler / ADC",
+    intro: "NetScaler (now Citrix ADC) supports TACACS+ for administrative AAA + a Java/HTML5 GUI.",
+    prereqs: ["NetScaler 12.x or later"],
+    steps: [
+      { title: "1. CLI configuration",
+        code:
+`add authentication tacacsAction PAM-TAC -serverIP {{HOST}} -tacacsSecret {{SECRET}} -authTimeout 5 -authorization ON -accounting ON
+add authentication policy PAM-POL -rule true -action PAM-TAC
+bind system global PAM-POL -priority 100` },
+      { title: "2. Register in PAM",
+        code:
+`# CLI: SSH on port 22
+# GUI: Web URL = https://<adc-ip>/menu/neo` },
+    ],
+  },
+
+  "vmware-vcenter": {
+    label: "VMware vCenter Server",
+    intro: "vCenter integrates auth via vSphere SSO. Hook PAM via LDAP / SAML through SSO admin, OR access the appliance shell via SSH.",
+    prereqs: ["vCenter Server 7.0 or later"],
+    steps: [
+      { title: "1. (Optional) SSH access to VCSA shell",
+        code:
+`# In the vCenter Server Appliance Management Interface (port 5480):
+#   Access -> Edit -> enable SSH login + Bash shell
+# Then SSH in as root@vcsa for break-glass.` },
+      { title: "2. vSphere SSO -> Active Directory / LDAP",
+        code:
+`# vSphere Client -> Administration -> Single Sign On -> Configuration
+#   Identity Sources -> Add -> Active Directory over LDAP (or OpenLDAP)
+#   Point at the same AD where PAM provisions users.
+# Then map domain groups to vCenter roles under
+#   Administration -> Access Control -> Global Permissions.` },
+      { title: "3. Register in PAM",
+        code:
+`# GUI: Web URL = https://<vcenter-fqdn>/ui/
+# Appliance: Web URL = https://<vcenter-fqdn>:5480/
+# Shell: SSH host = <vcenter-fqdn>, port = 22` },
+    ],
+  },
+
+  "vmware-esxi": {
+    label: "VMware ESXi (standalone host)",
+    intro: "ESXi can be locked down using vSphere Authentication Proxy or Active Directory join. SSH access is available for break-glass.",
+    prereqs: ["ESXi 7.0 or later", "Optional: domain to bind to"],
+    steps: [
+      { title: "1. Join ESXi to Active Directory",
+        code:
+`# In the ESXi web UI (DCUI / Host Client at https://<esxi>/ui):
+#   Manage -> Security & users -> Authentication -> Join domain
+#   Enter the domain + a user with permission to join machines.
+# Users in the AD group "ESX Admins" automatically get root access.` },
+      { title: "2. Enable SSH (break-glass)",
+        code:
+`# Host Client -> Manage -> Services -> TSM-SSH -> Start
+# (Disable when finished — keep ESXi locked down.)` },
+      { title: "3. Register in PAM",
+        code:
+`# GUI: Web URL = https://<esxi-ip>/ui/
+# SSH: Host = <esxi-ip>, port 22  (Tier 0 — critical)` },
+    ],
+  },
+
+  "proxmox": {
+    label: "Proxmox VE",
+    intro: "Proxmox supports LDAP / OIDC / pam-tacplus. Web GUI on HTTPS, REST API at /api2/json.",
+    prereqs: ["Proxmox VE 7.x or later"],
+    steps: [
+      { title: "1. Add LDAP / AD realm",
+        code:
+`# Datacenter -> Permissions -> Realms -> Add: Active Directory Server
+#   Domain:   corp.local
+#   Server:   <ad-server>
+#   Default:  yes
+# Or use OpenID Connect to a PAM SAML/OIDC bridge.` },
+      { title: "2. Group permissions",
+        code:
+`# Datacenter -> Permissions -> Groups -> Create (e.g. pam-admins)
+# Datacenter -> Permissions -> Add Group Permission
+#   Path:  /
+#   Group: pam-admins
+#   Role:  Administrator (or PVEVMAdmin / custom)` },
+      { title: "3. Register in PAM",
+        code:
+`# GUI:  Web URL = https://<proxmox>:8006/
+# CLI:  SSH on port 22` },
+    ],
+  },
+
+  "hyperv": {
+    label: "Microsoft Hyper-V Server",
+    intro: "Hyper-V hosts are managed via RDP + Hyper-V Manager and via PowerShell remoting. Use the Windows Server guide for OpenSSH/RDP setup.",
+    prereqs: ["Windows Server with Hyper-V role"],
+    steps: [
+      { title: "1. RDP + OpenSSH",
+        code:
+`# Follow the Windows Server guide on this same tab for RDP + OpenSSH.
+# Tier the host as critical (Tier 0) — compromising Hyper-V is a virtual
+# environment takeover.` },
+      { title: "2. Hyper-V Manager via PowerShell",
+        code:
+`# Enable PowerShell remoting on the target:
+Enable-PSRemoting -Force
+Set-Item WSMan:\\localhost\\Client\\TrustedHosts -Value "<pam-proxy-ip>" -Force` },
+      { title: "3. Register in PAM",
+        code:
+`# Connection: RDP, Port: 3389, Tier: 0 (critical)` },
+    ],
+  },
+
+  "active-directory": {
+    label: "Microsoft Active Directory DC",
+    intro: "Domain Controllers are the most critical hosts in any environment — Tier 0. Lock down with PAM-managed admin accounts + checkout-only access + recorded RDP.",
+    prereqs: ["Windows Server domain controller"],
+    steps: [
+      { title: "1. Treat as Tier 0",
+        code:
+`# In PAM:
+#   Machines -> + Add Machine
+#   Connection: RDP
+#   Tier: 0 (critical)
+#   Tags: tier0, domain-controller
+# In Approval Matrix: require 2+ approvers from "Security Operators" for tier 0.` },
+      { title: "2. Provision a managed domain admin account",
+        code:
+`# Vault -> Safes -> create "Domain Admins" safe with CPM enabled.
+# Vault -> Privileged Accounts -> Add Account
+#   Safe:     Domain Admins
+#   Username: ADM-DCAdmin
+#   Target:   <DC FQDN>
+#   Platform: windows-server
+#   Initial Password: (auto-generate)` },
+      { title: "3. Restrict console / RDP to break-glass",
+        code:
+`# In the AD GPO for DCs:
+#   Computer Config -> Policies -> Windows Settings -> Security Settings
+#     -> Local Policies -> User Rights Assignment
+#     -> "Allow log on through Remote Desktop Services" = only PAM-managed group.` },
+    ],
+  },
+
+  "kubernetes": {
+    label: "Kubernetes API server",
+    intro: "Kubernetes integrates via OIDC, webhook token, or static service-account tokens. Use the OIDC integration for PAM-fronted SSO.",
+    prereqs: ["Kubernetes 1.25+", "kubectl on the proxy"],
+    steps: [
+      { title: "1. Configure OIDC on the API server",
+        code:
+`# /etc/kubernetes/manifests/kube-apiserver.yaml — args:
+#   --oidc-issuer-url=https://<pam-host>/oidc
+#   --oidc-client-id=kubernetes
+#   --oidc-username-claim=email
+#   --oidc-groups-claim=groups
+#
+# (or use Dex / Keycloak federation if PAM doesn't speak OIDC directly.)` },
+      { title: "2. Map groups to RBAC ClusterRoles",
+        code:
+`kubectl create clusterrolebinding pam-admins \\
+  --clusterrole=cluster-admin \\
+  --group=pam-admins
+kubectl create rolebinding pam-viewers --namespace=default \\
+  --clusterrole=view \\
+  --group=pam-viewers` },
+      { title: "3. Register in PAM",
+        code:
+`# Connection: HTTPS API
+# Web URL:    https://<cluster-api>:6443/
+# Tier:       0 (critical)` },
+    ],
+  },
+
+  "netapp-ontap": {
+    label: "NetApp ONTAP",
+    intro: "ONTAP supports TACACS+ + AD-based admin auth + a System Manager web GUI + ONTAP REST.",
+    prereqs: ["ONTAP 9.7 or later"],
+    steps: [
+      { title: "1. CLI configuration",
+        code:
+`security login domain-tunnel create -vserver <svm>
+security login create -user-or-group-name pam-admins -application ssh -authentication-method domain -role admin
+security ssh add -vserver <svm> -authentication-method password` },
+      { title: "2. Register in PAM",
+        code:
+`# CLI: SSH on port 22
+# GUI: Web URL = https://<ontap-ip>/ (System Manager)
+# REST: https://<ontap-ip>/api/  (Tier 0)` },
+    ],
+  },
+
+  "aws-iam": {
+    label: "AWS IAM / Console",
+    intro: "AWS console access is best federated via SAML to PAM. SSO via the existing PAM SAML SP.",
+    prereqs: ["AWS account with IAM admin"],
+    steps: [
+      { title: "1. Configure SAML federation",
+        code:
+`# IAM -> Identity providers -> Add provider
+#   Provider type: SAML
+#   Metadata document: download from PAM Settings -> SAML -> Download SP metadata
+#   Then create IAM roles assumable by federated users.` },
+      { title: "2. Register in PAM",
+        code:
+`# Connection: Web GUI
+# Web URL: https://signin.aws.amazon.com/saml?idp=PAM
+# Tier: 0` },
+    ],
+  },
+
+  "azure-portal": {
+    label: "Microsoft Azure Portal",
+    intro: "Azure portal is fronted by Microsoft Entra ID (Azure AD). Federate Entra ID with the PAM SAML SP for SSO.",
+    prereqs: ["Entra ID tenant"],
+    steps: [
+      { title: "1. Add PAM as enterprise app",
+        code:
+`# In Entra ID -> Enterprise Applications -> +New
+#   Choose "Non-gallery application", paste PAM SAML metadata.
+#   Assign users / groups that may sign in.` },
+      { title: "2. Register in PAM",
+        code:
+`# Connection: Web GUI
+# Web URL: https://portal.azure.com/
+# Tier: 0` },
+    ],
+  },
+
+  "gcp-console": {
+    label: "Google Cloud Console",
+    intro: "Federate GCP with PAM via SAML on Google Workspace, or use Cloud Identity SSO.",
+    prereqs: ["GCP organization"],
+    steps: [
+      { title: "1. Configure SAML SSO",
+        code:
+`# admin.google.com -> Security -> SSO with third-party IdP
+#   Sign-in URL:  https://<pam-host>/api/auth/saml/login
+#   Cert / metadata from PAM SAML settings.` },
+      { title: "2. Register in PAM",
+        code:
+`# Connection: Web GUI
+# Web URL: https://console.cloud.google.com/
+# Tier: 0` },
+    ],
+  },
+
+  "kemp-loadmaster": {
+    label: "Progress Kemp LoadMaster",
+    intro: "LoadMaster supports RADIUS + GUI auth + REST API.",
+    prereqs: ["LMOS 7.x or later"],
+    steps: [
+      { title: "1. GUI configuration",
+        code:
+`# System Configuration -> System Administration -> WUI Authentication
+#   Authentication Methods: Password Only -> RADIUS
+#   RADIUS Server: {{HOST}}
+#   RADIUS Shared Secret: {{SECRET}}` },
+      { title: "2. Register in PAM",
+        code:
+`# GUI: https://<lm-ip>/
+# CLI: SSH on port 22` },
+    ],
+  },
+
+  "a10-thunder": {
+    label: "A10 Thunder",
+    intro: "A10 ACOS supports TACACS+ + a web GUI.",
+    prereqs: ["ACOS 4.x or later"],
+    steps: [
+      { title: "1. CLI configuration",
+        code:
+`tacacs-server host {{HOST}} secret {{SECRET}} port {{TAC_PORT}}
+aaa authentication login privilege-mode
+aaa authentication login tacacs-plus
+aaa authentication enable tacacs-plus
+aaa accounting commands all default group tacacs+` },
+      { title: "2. Register in PAM",
+        code:
+`# CLI: SSH (port 22), GUI: Web URL = https://<a10-ip>/` },
+    ],
+  },
+
+  "watchguard": {
+    label: "WatchGuard Firebox",
+    intro: "Firebox supports RADIUS / SecurID auth + the Fireware Web UI.",
+    prereqs: ["Fireware v12.x"],
+    steps: [
+      { title: "1. Web UI configuration",
+        code:
+`# Authentication -> Servers -> RADIUS -> +Add
+#   Name:    PAM
+#   IP:      {{HOST}}
+#   Secret:  {{SECRET}}
+# Authentication -> Users and Groups -> +Add: PAM-Admins (type=RADIUS)
+# Setup -> Device Configuration -> Authentication -> assign role.` },
+      { title: "2. Register in PAM",
+        code:
+`# CLI: SSH (port 4118 by default!)
+# GUI: Web URL = https://<firebox-ip>:8080/` },
+    ],
+  },
+
+  "dell-os10": {
+    label: "Dell OS10 (PowerSwitch)",
+    intro: "Dell OS10 is Cisco-like CLI with the Smart Fabric web GUI.",
+    prereqs: ["OS10 10.5+"],
+    steps: [
+      { title: "1. CLI configuration",
+        code:
+`configure
+tacacs-server host {{HOST}} key {{SECRET}}
+aaa authentication login default group tacacs+ local
+aaa authorization exec default group tacacs+ local
+aaa accounting commands default start-stop group tacacs+
+end
+write memory` },
+      { title: "2. Register in PAM",
+        code:
+`# CLI: SSH on port 22
+# GUI: Web URL = https://<switch-ip>/   (Smart Fabric Director, if present)` },
+    ],
+  },
+
+  "extreme-exos": {
+    label: "Extreme Networks EXOS",
+    intro: "EXOS supports TACACS+ + the Switch Engine web GUI.",
+    prereqs: ["EXOS 22.x or later"],
+    steps: [
+      { title: "1. CLI configuration",
+        code:
+`configure tacacs primary server {{HOST}} {{TAC_PORT}} client-ip <switch-mgmt-ip>
+configure tacacs primary shared-secret {{SECRET}}
+enable tacacs
+enable tacacs-authorization
+enable tacacs-accounting` },
+      { title: "2. Register in PAM",
+        code:
+`# CLI: SSH, GUI: Web URL = https://<switch-ip>/` },
+    ],
+  },
+
+  "brocade-icx": {
+    label: "Brocade ICX / NetIron",
+    intro: "Brocade switches are Cisco-like. TACACS+ + web GUI.",
+    prereqs: ["FastIron 8.x or later"],
+    steps: [
+      { title: "1. CLI configuration",
+        code:
+`tacacs-server host {{HOST}} key {{SECRET}}
+aaa authentication web-server default tacacs+ local
+aaa authentication login default tacacs+ local
+aaa authentication enable default tacacs+ enable
+aaa accounting commands 0 default start-stop tacacs+` },
+      { title: "2. Register in PAM",
+        code:
+`# CLI: SSH or Telnet, GUI: Web URL = https://<switch-ip>/` },
+    ],
+  },
+
+  "mssql": {
+    label: "Microsoft SQL Server",
+    intro: "MSSQL admin is usually via SSMS over RDP to the host. Provision a dedicated 'sa-pam' SQL login + put credentials in a safe.",
+    prereqs: ["SQL Server 2017+"],
+    steps: [
+      { title: "1. Create a managed SQL login",
+        code:
+`-- On the SQL Server:
+CREATE LOGIN [pam-sa] WITH PASSWORD = N'<strong-password>';
+ALTER SERVER ROLE sysadmin ADD MEMBER [pam-sa];
+-- Then store credentials in PAM:
+--   Vault -> Privileged Accounts -> add 'sa@<host>' platform=mssql` },
+      { title: "2. Register host in PAM",
+        code:
+`# Connection: RDP (admin via SSMS over RDP)
+# Tier: 0 — production DBs are critical.` },
+    ],
+  },
+
+  "mysql": {
+    label: "MySQL / MariaDB",
+    intro: "MySQL admin via shell on the host. Provision a 'root@pam' admin user + checkout from PAM.",
+    prereqs: ["MySQL 5.7+ / MariaDB 10.4+"],
+    steps: [
+      { title: "1. Create managed admin user",
+        code:
+`CREATE USER 'pam-root'@'%' IDENTIFIED BY '<strong-pw>';
+GRANT ALL PRIVILEGES ON *.* TO 'pam-root'@'%' WITH GRANT OPTION;
+FLUSH PRIVILEGES;` },
+      { title: "2. Register host in PAM",
+        code:
+`# Connection: SSH, Platform: MySQL/MariaDB.
+# Place 'pam-root' in a CPM-enabled safe for auto-rotation.` },
+    ],
+  },
+
+  "postgres": {
+    label: "PostgreSQL",
+    intro: "Postgres admin via psql + SSH to the host. Use a dedicated PAM admin role.",
+    prereqs: ["Postgres 12+"],
+    steps: [
+      { title: "1. Create managed superuser",
+        code:
+`CREATE ROLE pam_admin WITH LOGIN SUPERUSER PASSWORD '<strong-pw>';
+-- pg_hba.conf: restrict to PAM proxy IP
+host  all  pam_admin  <pam-proxy-ip>/32  scram-sha-256` },
+      { title: "2. Register host in PAM",
+        code:
+`# Connection: SSH, Platform: PostgreSQL.` },
+    ],
+  },
+
+  "oracle-db": {
+    label: "Oracle Database",
+    intro: "Oracle admin via SQL*Plus from the host. Manage SYS / SYSTEM passwords through PAM.",
+    prereqs: ["Oracle 19c or later"],
+    steps: [
+      { title: "1. Create managed admin user",
+        code:
+`CREATE USER pam_admin IDENTIFIED BY "<strong-pw>";
+GRANT DBA TO pam_admin;` },
+      { title: "2. Register host in PAM",
+        code:
+`# Connection: SSH, Platform: Oracle Database.` },
+    ],
+  },
+
+  "ldap-389": {
+    label: "389-ds / OpenLDAP",
+    intro: "Manage cn=Directory Manager / cn=Manager via PAM-stored credentials.",
+    prereqs: ["389-ds or OpenLDAP"],
+    steps: [
+      { title: "1. Set the Manager password",
+        code:
+`# 389-ds:
+dsconf <instance> config replace nsslapd-rootpw=<password>
+
+# OpenLDAP:
+slappasswd -s <password>   # paste into slapd.conf -> rootpw` },
+      { title: "2. Register in PAM",
+        code:
+`# Connection: SSH for host admin
+# OR Connection: HTTPS API (https://<ldap>:636) if using LDAPS+REST gateway.` },
+    ],
+  },
+
+  "okta-admin": {
+    label: "Okta admin console",
+    intro: "Okta supports SAML federation. Bring Okta admin login under PAM SSO.",
+    prereqs: ["Okta org"],
+    steps: [
+      { title: "1. Add PAM as SAML IdP",
+        code:
+`# Okta admin -> Security -> Identity Providers -> +Add
+#   Type: SAML 2.0
+#   Paste PAM SAML metadata XML.
+# Configure routing rule: Admin domain -> PAM IdP.` },
+      { title: "2. Register in PAM",
+        code:
+`# Connection: Web GUI
+# Web URL: https://<your-org>-admin.okta.com/` },
+    ],
+  },
+
+  "generic-web": {
+    label: "Generic web admin console",
+    intro: "For any HTTPS admin GUI not specifically listed. PAM treats it as a launcher target.",
+    prereqs: ["A web admin interface"],
+    steps: [
+      { title: "1. Register",
+        code:
+`# Machines -> + Add Machine
+#   Connection: Web GUI
+#   Web URL:    https://<console-url>/
+#
+# Users click Launch -> opens in a new tab.
+# If the device supports SAML or LDAP, federate it via PAM Settings.` },
+    ],
+  },
+
+  "generic-rdp": {
+    label: "Generic RDP host",
+    intro: "Any Windows host with RDP enabled. PAM generates the .rdp file when the user clicks Launch.",
+    prereqs: ["RDP enabled on the target"],
+    steps: [
+      { title: "1. Register",
+        code:
+`# Machines -> + Add Machine
+#   Connection: RDP
+#   Host: <hostname or IP>
+#   Port: 3389
+# Users click Launch -> .rdp file downloads with hostname + username pre-filled.` },
+    ],
+  },
+
+  "generic-ssh": {
+    label: "Generic SSH host",
+    intro: "Any SSH-reachable host. Routes through the PAM SSH proxy with session recording.",
+    prereqs: ["SSH enabled on the target"],
+    steps: [
+      { title: "1. Register",
+        code:
+`# Machines -> + Add Machine
+#   Connection: SSH
+#   Host: <hostname>
+#   Port: 22
+# Connect via:
+#   ssh -p {{SSH_PORT}} -o PreferredAuthentications=keyboard-interactive,password \\
+#       <pam-user>@<machine-name>@{{HOST}}` },
     ],
   },
 };
 
-let _onboardCurrent = "cisco";
+let _onboardCurrent = "cisco-ios";
 
 function detectedProxyHost() {
   try { return location.hostname || "pam.example.local"; } catch { return "pam.example.local"; }
@@ -2597,10 +3805,31 @@ function copyToClipboard(text) {
 }
 
 function renderOnboardKindBar() {
-  $("#onboardKindBar").innerHTML = Object.keys(DEVICE_GUIDES).map(k => `
-    <button class="ghost ${k===_onboardCurrent?'primary':''}" data-kind="${k}" onclick="selectOnboard('${k}')">
-      ${esc(DEVICE_GUIDES[k].label)}
-    </button>`).join("");
+  // Group the kind picker by the same categories used in DEVICE_CATALOG, so
+  // operators can find their device in a familiar taxonomy. Kinds present in
+  // DEVICE_GUIDES but not in any category get an "Other" bucket.
+  const grouped = new Map();
+  const seen = new Set();
+  for (const [cat, devices] of Object.entries(DEVICE_CATALOG)) {
+    const present = devices.filter(d => DEVICE_GUIDES[d.kind]);
+    if (!present.length) continue;
+    grouped.set(cat, present.map(d => d.kind));
+    present.forEach(d => seen.add(d.kind));
+  }
+  const orphans = Object.keys(DEVICE_GUIDES).filter(k => !seen.has(k));
+  if (orphans.length) grouped.set("Other", orphans);
+
+  let html = "";
+  for (const [cat, kinds] of grouped) {
+    html += `<div style="width:100%;font-size:11px;color:var(--muted);margin:8px 0 4px;letter-spacing:.05em;text-transform:uppercase">${esc(cat)}</div>`;
+    html += `<div style="display:flex;flex-wrap:wrap;gap:6px;width:100%">` +
+      kinds.map(k => `
+        <button class="ghost ${k===_onboardCurrent?'primary':''}" data-kind="${esc(k)}" onclick="selectOnboard('${esc(k)}')">
+          ${esc(DEVICE_GUIDES[k].label || k)}
+        </button>`).join("") +
+      `</div>`;
+  }
+  $("#onboardKindBar").innerHTML = html;
 }
 
 window.selectOnboard = kind => {

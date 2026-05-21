@@ -128,17 +128,27 @@ func (m *MatrixService) Delete(ctx context.Context, id int64) error {
 }
 
 // FindRule returns the most-specific enabled rule for the given target kind/tier.
+// Matches exact kind, then vendor family ("cisco-ios" -> "cisco"), then '*'.
 // Returns (nil, nil) if no rule matches.
 func (m *MatrixService) FindRule(ctx context.Context, targetKind string, tier int) (*MatrixRule, error) {
+	family := targetKind
+	if i := strings.Index(targetKind, "-"); i > 0 {
+		family = targetKind[:i]
+	}
 	rows, err := m.DB.QueryContext(ctx, `
 		SELECT id, name, target_kind, tier_min, tier_max,
 		       required_approvals, approver_group_ids, priority, enabled, created_at
 		FROM approval_matrix
-		WHERE enabled = 1 AND (target_kind = ? OR target_kind = '*')
+		WHERE enabled = 1
+		  AND (target_kind = ? OR target_kind = ? OR target_kind = '*')
 		  AND tier_min <= ? AND tier_max >= ?
-		ORDER BY CASE WHEN target_kind = ? THEN 0 ELSE 1 END,
+		ORDER BY CASE
+		           WHEN target_kind = ? THEN 0
+		           WHEN target_kind = ? THEN 1
+		           ELSE 2
+		         END,
 		         priority ASC, id ASC
-		LIMIT 1`, targetKind, tier, tier, targetKind)
+		LIMIT 1`, targetKind, family, tier, tier, targetKind, family)
 	if err != nil {
 		return nil, err
 	}

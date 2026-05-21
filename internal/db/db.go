@@ -267,6 +267,10 @@ func (d *DB) migrate() error {
 		`ALTER TABLE users ADD COLUMN source TEXT NOT NULL DEFAULT 'local'`,
 		`ALTER TABLE users ADD COLUMN external_dn TEXT`,
 		`ALTER TABLE users ADD COLUMN last_login INTEGER`,
+		`ALTER TABLE targets ADD COLUMN connection_type TEXT NOT NULL DEFAULT 'ssh'`,
+		`ALTER TABLE targets ADD COLUMN web_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE targets ADD COLUMN vendor TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE targets ADD COLUMN os_version TEXT NOT NULL DEFAULT ''`,
 	} {
 		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
 	}

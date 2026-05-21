@@ -57,14 +57,27 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 	allowedSet := map[string]bool{}
 	deniedSet := map[string]bool{}
 
+	// Family is the vendor root of a kind: "cisco-ios" -> "cisco". Policies
+	// written against the family ("cisco") still match a specific kind
+	// ("cisco-ios"), which keeps the rule set small for the common case
+	// while letting admins write rules for one specific platform when needed.
+	family := in.TargetKind
+	if i := strings.Index(in.TargetKind, "-"); i > 0 {
+		family = in.TargetKind[:i]
+	}
+
 	for _, role := range roles {
 		row := e.DB.QueryRowContext(ctx, `
 			SELECT target_kind, tier_max, require_approval, allowed_commands, denied_commands
 			FROM policies
-			WHERE role = ? AND (target_kind = ? OR target_kind = '*')
-			ORDER BY CASE WHEN target_kind = ? THEN 0 ELSE 1 END
+			WHERE role = ? AND (target_kind = ? OR target_kind = ? OR target_kind = '*')
+			ORDER BY CASE
+			           WHEN target_kind = ? THEN 0
+			           WHEN target_kind = ? THEN 1
+			           ELSE 2
+			         END
 			LIMIT 1`,
-			role, in.TargetKind, in.TargetKind)
+			role, in.TargetKind, family, in.TargetKind, family)
 		var (
 			kind            string
 			tierMax         int
