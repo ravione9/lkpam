@@ -50,7 +50,7 @@ func main() {
 		Policy:       &policy.Engine{DB: d},
 		Groups:       &groups.Service{DB: d},
 		Approval:     &approval.Service{DB: d},
-		Bus:          events.New(),
+		Bus:          events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085")),
 		HostKey:      hostSigner,
 		RecordingDir: config.Get("PAM_REC_DIR", "./recordings"),
 		ListenAddr:   config.Get("PAM_SSH_PROXY_ADDR", ":2222"),

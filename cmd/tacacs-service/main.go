@@ -45,7 +45,7 @@ func main() {
 		DB:     d,
 		Policy: &policy.Engine{DB: d},
 		Groups: &groups.Service{DB: d},
-		Bus:    events.New(),
+		Bus:    events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085")),
 		Auth:   authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
 	}
 

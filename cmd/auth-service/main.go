@@ -95,7 +95,7 @@ func main() {
 		DB: d, Policy: policyEng, Approval: approvalSvc, Groups: groupSvc,
 		Vault: v, BrowserBase: config.Get("PAM_PORTAL_URL", ""),
 	}
-	bus := events.New()
+	bus := events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085"))
 
 	bootstrap(svc, groupSvc, roleSvc, safeSvc)
 
