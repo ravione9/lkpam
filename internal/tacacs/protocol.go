@@ -9,8 +9,8 @@
 //   - Authorization: command authorization (AUTHOR REQUEST → REPLY PASS_ADD/FAIL)
 //   - Accounting: START / WATCHDOG / STOP records
 //
-// Not covered (PRs welcome):
-//   - PAP / CHAP / MS-CHAP authentication
+// Not covered yet:
+//   - CHAP / MS-CHAP authentication (use PAP on FortiGate: set authen-type pap)
 //   - Per-VRF binding
 //   - Single-connection mode TLS (draft-ietf-opsawg-tacacs-tls)
 //
@@ -42,6 +42,13 @@ const (
 	HeaderLen = 12
 
 	MaxBodyLen = 65535 // sanity cap; real packets are far smaller
+)
+
+// Authentication type codes (RFC 8907 §5.1).
+const (
+	AuthenTypeASCII = 1
+	AuthenTypePAP   = 2
+	AuthenTypeCHAP  = 3
 )
 
 // Authentication action codes.

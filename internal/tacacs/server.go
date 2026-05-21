@@ -86,18 +86,17 @@ func (s *Server) handleAuthen(c net.Conn, h Header, body []byte, clientIP string
 		return
 	}
 
-	// If the START packet already carries the password in Data, validate now.
-	if len(start.Data) > 0 {
-		s.verifyAndReply(c, h, start.User, string(start.Data), clientIP)
+	pass := passwordFromAuthenStart(start)
+	if pass != "" {
+		s.verifyAndReply(c, h, start.User, pass, clientIP)
 		return
 	}
 
-	// Otherwise ask for the password.
+	// ASCII login: prompt for password, then validate on CONTINUE.
 	reply := AuthenReply{Status: AuthenStatusGetPass, ServerMsg: "Password: "}
 	h.SeqNo++
 	_ = WritePacket(c, h, reply.Bytes(), s.Secret)
 
-	// Read CONTINUE.
 	h2, err := ReadHeader(c)
 	if err != nil {
 		return
@@ -111,17 +110,35 @@ func (s *Server) handleAuthen(c net.Conn, h Header, body []byte, clientIP string
 		log.Printf("tacacs continue parse: %v", err)
 		return
 	}
-	h2.SeqNo++
 	s.verifyAndReply(c, h2, start.User, cont.UserMsg, clientIP)
 }
 
+// passwordFromAuthenStart extracts the password from PAP/SENDAUTH or ASCII START bodies.
+func passwordFromAuthenStart(start *AuthenStart) string {
+	if len(start.Data) == 0 {
+		return ""
+	}
+	// PAP and SENDAUTH carry the password in Data (RFC 8907 §5.1).
+	if start.AuthenType == AuthenTypePAP || start.Action == AuthenActionSendAuth {
+		return string(start.Data)
+	}
+	// Some clients embed the password in Data for ASCII login too.
+	if start.Action == AuthenActionLogin && len(start.Data) > 0 {
+		return string(start.Data)
+	}
+	return ""
+}
+
 func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP string) {
+	h.SeqNo++ // REPLY seq_no must be request seq_no + 1 (RFC 8907 §4.4)
 	ok := s.checkPassword(user, pass)
 	status := AuthenStatusFail
 	msg := "auth failed"
 	if ok {
 		status = AuthenStatusPass
 		msg = "ok"
+	} else {
+		log.Printf("tacacs authen failed user=%q from %s", user, clientIP)
 	}
 	s.Bus.Publish(events.Event{
 		Source: "tacacs", Kind: "authen", Severity: severity(ok),
@@ -133,6 +150,10 @@ func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP strin
 }
 
 func (s *Server) checkPassword(user, pass string) bool {
+	user = strings.TrimSpace(user)
+	if user == "" || pass == "" {
+		return false
+	}
 	if s.Auth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -140,14 +161,15 @@ func (s *Server) checkPassword(user, pass string) bool {
 		if err == nil && res != nil && res.User != nil {
 			return true
 		}
-		// MFA-required users can't authenticate over TACACS+ (network devices
-		// don't carry a second factor in the AAA exchange). Fall through to
-		// local check below; this lets break-glass local accounts work even
-		// when the IdP enforces MFA for portal logins.
+		if err != nil {
+			log.Printf("tacacs auth-service login for %q: %v", user, err)
+		}
 	}
 	var hash string
-	err := s.DB.QueryRow(`SELECT password_hash FROM users WHERE username = ? AND disabled = 0`, user).Scan(&hash)
-	if err != nil {
+	err := s.DB.QueryRow(`
+		SELECT password_hash FROM users
+		WHERE lower(username)=lower(?) AND disabled=0`, user).Scan(&hash)
+	if err != nil || hash == "" {
 		return false
 	}
 	return cryptox.VerifyPassword(pass, hash)
@@ -163,7 +185,20 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	}
 
 	cmd, args := extractCommand(req.Args)
-	allow, role := s.authorize(req.User, clientIP, cmd, args)
+	svc := extractArg(args, "service")
+	var allow bool
+	var role string
+	var replyArgs []string
+
+	if cmd == "" && isAdminAuthService(svc) {
+		// FortiGate / firewall admin login — not per-command authorization.
+		allow, role = s.authorizeAdmin(req.User)
+		if allow {
+			replyArgs = []string{"priv-lvl=15", "service=" + svc}
+		}
+	} else {
+		allow, role = s.authorize(req.User, clientIP, cmd, args)
+	}
 
 	status := AuthorStatusFail
 	if allow {
@@ -173,14 +208,31 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 		Source: "tacacs", Kind: "authorize", Severity: severity(allow),
 		Actor: req.User, Target: clientIP,
 		Detail: map[string]string{
-			"cmd":  fmt.Sprintf("%s %s", cmd, strings.Join(args, " ")),
-			"role": role,
+			"cmd":     fmt.Sprintf("%s %s", cmd, strings.Join(args, " ")),
+			"role":    role,
+			"service": svc,
 		},
 	})
 
 	h.SeqNo++
-	rep := AuthorReply{Status: status, ServerMsg: ternary(allow, "ok", "denied by PAM policy")}
+	rep := AuthorReply{
+		Status:    status,
+		Args:      replyArgs,
+		ServerMsg: ternary(allow, "ok", "denied by PAM policy"),
+	}
 	_ = WritePacket(c, h, rep.Bytes(), s.Secret)
+}
+
+func (s *Server) authorizeAdmin(user string) (bool, string) {
+	var role string
+	var disabled int
+	err := s.DB.QueryRow(`
+		SELECT role, disabled FROM users WHERE lower(username)=lower(?)`, user).
+		Scan(&role, &disabled)
+	if err != nil || disabled != 0 {
+		return false, ""
+	}
+	return true, role
 }
 
 func (s *Server) authorize(user, deviceIP, cmd string, args []string) (bool, string) {
@@ -243,9 +295,30 @@ func extractCommand(args []string) (cmd string, rest []string) {
 			cmd = strings.TrimPrefix(a, "cmd=")
 		} else if strings.HasPrefix(a, "cmd-arg=") {
 			rest = append(rest, strings.TrimPrefix(a, "cmd-arg="))
+		} else {
+			rest = append(rest, a)
 		}
 	}
 	return cmd, rest
+}
+
+func extractArg(args []string, key string) string {
+	prefix := key + "="
+	for _, a := range args {
+		if strings.HasPrefix(a, prefix) {
+			return strings.TrimPrefix(a, prefix)
+		}
+	}
+	return ""
+}
+
+func isAdminAuthService(svc string) bool {
+	svc = strings.ToLower(strings.TrimSpace(svc))
+	switch svc {
+	case "shell", "system", "administration", "admin", "fortigate", "fortinet", "ftm", "exec":
+		return true
+	}
+	return strings.Contains(svc, "forti") || strings.Contains(svc, "admin")
 }
 
 func severity(ok bool) string {
