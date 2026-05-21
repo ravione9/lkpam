@@ -359,12 +359,21 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	//      AD/LDAP backend as PAM ("transparent SSO").
 	//   3. Ephemeral SSH cert as user "pam-user" — only works when the
 	//      target trusts the PAM CA via TrustedUserCAKeys / sshd_config.
+	// portalUsername is just the portal login name (e.g. "admin"), stripped of
+	// the "@target-ref" suffix that the SSH client includes in the username field
+	// so the proxy can resolve the machine (e.g. "admin@#4" → "admin").
+	portalUsername := user
+	if i := strings.Index(portalUsername, "@"); i >= 0 {
+		portalUsername = portalUsername[:i]
+	}
+
 	targetID := mustAtoi(sconn.Permissions.Extensions["target-id"])
 	downUser, downPassword, authMode := "", "", ""
 	if u, pw, ok := s.lookupPrivilegedAccount(targetID); ok {
 		downUser, downPassword, authMode = u, pw, "priv-account"
 	} else if pw := sconn.Permissions.Extensions["pt-password"]; pw != "" {
-		downUser, downPassword, authMode = user, pw, "passthrough"
+		// Passthrough: use the clean portal username (not the "user@#id" proxy string).
+		downUser, downPassword, authMode = portalUsername, pw, "passthrough"
 	}
 
 	var authMethods []ssh.AuthMethod
@@ -400,12 +409,13 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 
 	s.Bus.Publish(events.Event{
 		Source: "ssh-proxy", Kind: "session.open", Severity: "info",
-		Actor: user, Target: targetName,
+		Actor: portalUsername, Target: targetName,
 		Detail: map[string]string{
-			"session_id": sessionID,
-			"client":     nc.RemoteAddr().String(),
-			"auth_mode":  authMode,
-			"as_user":    downUser,
+			"session_id":   sessionID,
+			"client":       nc.RemoteAddr().String(),
+			"auth_mode":    authMode,
+			"device_user":  downUser,
+			"portal_user":  portalUsername,
 		},
 	})
 
