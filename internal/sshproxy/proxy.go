@@ -712,12 +712,13 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 	// Tee user input → upstream, and log it as the keystroke stream.
 	var wg sync.WaitGroup
 	wg.Add(2)
+	gate := newCmdGate(upCh, downCh, allowCmds, denyCmds)
 
 	// downstream (user)  ───►   recorder (input)  ───►   upstream (target)
 	go func() {
 		defer wg.Done()
 		up := io.Writer(upCh)
-		if gate := newCmdGate(upCh, downCh, allowCmds, denyCmds); gate != nil {
+		if gate != nil {
 			up = gate
 		}
 		tee := io.MultiWriter(up, &prefixedWriter{w: rec, prefix: "IN  "})
@@ -727,7 +728,11 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 	// upstream (target)  ───►   recorder (output) ───►   downstream (user)
 	go func() {
 		defer wg.Done()
-		tee := io.MultiWriter(downCh, &prefixedWriter{w: rec, prefix: "OUT "})
+		out := io.Writer(downCh)
+		if gate != nil {
+			out = &gateAwareWriter{gate: gate, w: downCh}
+		}
+		tee := io.MultiWriter(out, &prefixedWriter{w: rec, prefix: "OUT "})
 		_, _ = io.Copy(tee, upCh)
 		downCh.CloseWrite()
 	}()

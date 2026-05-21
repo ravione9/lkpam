@@ -187,9 +187,9 @@ func splitCSV(s string) []string {
 // Deny wins over allow. Patterns are simple prefix matches for now;
 // real OPA can do regex / glob. Matching is case-insensitive.
 func CommandAllowed(cmd string, allow, deny []string) bool {
-	cmd = strings.ToLower(strings.TrimSpace(cmd))
+	cmd = NormalizeCLI(cmd)
 	for _, d := range deny {
-		d = strings.ToLower(strings.TrimSpace(d))
+		d = NormalizeCLI(d)
 		if d != "" && strings.HasPrefix(cmd, d) {
 			return false
 		}
@@ -198,12 +198,31 @@ func CommandAllowed(cmd string, allow, deny []string) bool {
 		return true // permissive default if no allow list
 	}
 	for _, a := range allow {
-		a = strings.ToLower(strings.TrimSpace(a))
+		a = NormalizeCLI(a)
 		if a != "" && strings.HasPrefix(cmd, a) {
 			return true
 		}
 	}
 	return false
+}
+
+// NormalizeCLI lowercases and expands common Cisco IOS abbreviations.
+func NormalizeCLI(cmd string) string {
+	cmd = strings.ToLower(strings.TrimSpace(cmd))
+	if cmd == "" {
+		return cmd
+	}
+	fields := strings.Fields(cmd)
+	switch fields[0] {
+	case "en":
+		fields[0] = "enable"
+	case "conf":
+		fields[0] = "configure"
+		if len(fields) >= 2 && fields[1] == "t" {
+			fields = []string{"configure", "terminal"}
+		}
+	}
+	return strings.Join(fields, " ")
 }
 
 // FullCommand joins a TACACS cmd= value with cmd-arg= pieces into one line.

@@ -208,15 +208,16 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	if allow {
 		status = AuthorStatusPassAdd
 	}
-	log.Printf("tacacs author user=%q device=%q svc=%q cmd=%q allow=%v role=%q",
-		req.User, deviceIP, svc, fullCmd, allow, role)
+	log.Printf("tacacs author user=%q nas=%q rem_addr=%q svc=%q cmd=%q allow=%v role=%q",
+		req.User, deviceIP, strings.TrimSpace(req.RemAddr), svc, fullCmd, allow, role)
 	s.Bus.Publish(events.Event{
 		Source: "tacacs", Kind: "authorize", Severity: severity(allow),
 		Actor: req.User, Target: deviceIP,
 		Detail: map[string]string{
-			"cmd":     fullCmd,
-			"role":    role,
-			"service": svc,
+			"cmd":      fullCmd,
+			"role":     role,
+			"service":  svc,
+			"rem_addr": strings.TrimSpace(req.RemAddr),
 		},
 	})
 
@@ -343,9 +344,9 @@ func isAdminAuthService(svc string) bool {
 }
 
 func deviceIPFromAuthor(req *AuthorRequest, clientIP string) string {
-	if ip := strings.TrimSpace(req.RemAddr); ip != "" {
-		return ip
-	}
+	// clientIP is the NAS (switch/firewall) TCP connection to TACACS+.
+	// req.RemAddr is the end-user client IP on the NAS — not used for target lookup.
+	_ = req
 	return hostPart(clientIP)
 }
 

@@ -3,12 +3,9 @@ package policy
 import "testing"
 
 func TestCommandAllowed(t *testing.T) {
-	allow := []string{"show", "ping"}
-	deny := []string{"reload", "erase startup-config"}
-
 	cases := []struct {
-		cmd    string
-		want   bool
+		cmd  string
+		want bool
 	}{
 		{"show run", true},
 		{"SHOW RUN", true},
@@ -16,8 +13,12 @@ func TestCommandAllowed(t *testing.T) {
 		{"RELOAD", false},
 		{"erase startup-config", false},
 		{"configure terminal", false},
+		{"conf t", false},
+		{"en", false},
 		{"ping 8.8.8.8", true},
 	}
+	allow := []string{"show", "ping"}
+	deny := []string{"reload", "erase startup-config", "configure terminal", "enable"}
 	for _, tc := range cases {
 		got := CommandAllowed(tc.cmd, allow, deny)
 		if got != tc.want {
