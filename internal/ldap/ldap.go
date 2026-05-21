@@ -138,8 +138,25 @@ func (c *Client) bindService(conn *ldap.Conn) error {
 	return conn.Bind(c.Cfg.BindDN, c.Password)
 }
 
-func (c *Client) findUser(conn *ldap.Conn, username string) (*User, error) {
-	filter := fmt.Sprintf(c.Cfg.UserFilter, ldap.EscapeFilter(username))
+func (c *Client) findUser(conn *ldap.Conn, login string) (*User, error) {
+	login = strings.TrimSpace(login)
+	filter := fmt.Sprintf(c.Cfg.UserFilter, ldap.EscapeFilter(login))
+	if u, err := c.searchOneUser(conn, filter); err == nil {
+		return u, nil
+	}
+	// Allow sign-in with corporate email / UPN when users type mail instead of sAMAccountName.
+	if strings.Contains(login, "@") {
+		for _, attr := range []string{"mail", "userPrincipalName"} {
+			f := fmt.Sprintf("(%s=%s)", attr, ldap.EscapeFilter(login))
+			if u, err := c.searchOneUser(conn, f); err == nil {
+				return u, nil
+			}
+		}
+	}
+	return nil, errors.New("ldap: user not found")
+}
+
+func (c *Client) searchOneUser(conn *ldap.Conn, filter string) (*User, error) {
 	usernameAttr := c.Cfg.UsernameAttr
 	if usernameAttr == "" {
 		usernameAttr = "sAMAccountName"

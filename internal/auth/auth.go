@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/example/pam-platform/internal/cryptox"
@@ -92,6 +93,62 @@ func (s *Service) FindByUsername(ctx context.Context, username string) (*User, e
 	return u, err
 }
 
+// FindByLoginID resolves a portal login identifier (username or email) to a user.
+// When multiple records share an email, LDAP/SSO accounts take precedence over
+// disabled local duplicates created by mistake in the admin UI.
+func (s *Service) FindByLoginID(ctx context.Context, loginID string) (*User, error) {
+	loginID = strings.TrimSpace(loginID)
+	if loginID == "" {
+		return nil, sql.ErrNoRows
+	}
+	if u, err := s.FindByUsername(ctx, loginID); err == nil {
+		return u, nil
+	}
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT id, username, COALESCE(email,''), role, disabled,
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
+		       COALESCE(role_locked,0)
+		FROM users WHERE lower(username)=lower(?)`, loginID)
+	if u, err := scanUserRow(row); err == nil {
+		return u, nil
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
+	// Prefer active directory-backed accounts when email is reused.
+	row = s.DB.QueryRowContext(ctx, `
+		SELECT id, username, COALESCE(email,''), role, disabled,
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
+		       COALESCE(role_locked,0)
+		FROM users
+		WHERE lower(email)=lower(?) AND source IN ('ldap','saml') AND disabled=0
+		ORDER BY id LIMIT 1`, loginID)
+	if u, err := scanUserRow(row); err == nil {
+		return u, nil
+	} else if err != sql.ErrNoRows {
+		return nil, err
+	}
+	row = s.DB.QueryRowContext(ctx, `
+		SELECT id, username, COALESCE(email,''), role, disabled,
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
+		       COALESCE(role_locked,0)
+		FROM users WHERE lower(email)=lower(?)
+		ORDER BY id LIMIT 1`, loginID)
+	return scanUserRow(row)
+}
+
+func scanUserRow(row *sql.Row) (*User, error) {
+	var u User
+	var disabled, mfa, roleLocked int
+	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled,
+		&u.Source, &mfa, &u.LastLogin, &roleLocked); err != nil {
+		return nil, err
+	}
+	u.Disabled = disabled != 0
+	u.MFAEnabled = mfa != 0
+	u.RoleLocked = roleLocked != 0
+	return &u, nil
+}
+
 func (s *Service) loadUser(ctx context.Context, username string) (*User, string, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT id, username, COALESCE(email,''), password_hash, role, disabled,
@@ -139,7 +196,8 @@ func (s *Service) upsertExternalUser(ctx context.Context, source, username, emai
 		  email=excluded.email,
 		  role=CASE WHEN COALESCE(users.role_locked,0)=1 THEN users.role ELSE excluded.role END,
 		  source=excluded.source,
-		  external_dn=excluded.external_dn`,
+		  external_dn=excluded.external_dn,
+		  password_hash=''`,
 		username, email, "", role, source, externalID, db.Now())
 	if err != nil {
 		return nil, fmt.Errorf("auth: upsert %s user: %w", source, err)

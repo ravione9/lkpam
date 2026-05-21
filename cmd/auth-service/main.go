@@ -1082,10 +1082,27 @@ func loginHandler(
 		}
 
 		ctx := r.Context()
-		u, err := tryLocal(ctx, svc, req.Username, req.Password)
-		if err != nil {
-			// Try LDAP if configured.
-			u, err = tryLDAP(ctx, svc, groupSvc, settingsStore, v, req.Username, req.Password)
+		loginID := strings.TrimSpace(req.Username)
+		ldapCfg := loadLDAPConfig(ctx, settingsStore, v)
+		ldapEnabled := ldapCfg.Enabled && ldapCfg.URL != ""
+
+		existing, _ := svc.FindByLoginID(ctx, loginID)
+
+		var u *auth.User
+		var err error
+		switch {
+		case existing != nil && existing.Source == "ldap" && ldapEnabled:
+			u, err = tryLDAP(ctx, svc, groupSvc, settingsStore, v, loginID, req.Password)
+		case existing != nil && existing.Source == "saml":
+			err = errors.New("use SSO to sign in")
+		case existing != nil && existing.Source == "local" && existing.Disabled && ldapEnabled:
+			// Stale local account with same email — authenticate against AD instead.
+			u, err = tryLDAP(ctx, svc, groupSvc, settingsStore, v, loginID, req.Password)
+		default:
+			u, err = tryLocal(ctx, svc, loginID, req.Password)
+			if err != nil && ldapEnabled {
+				u, err = tryLDAP(ctx, svc, groupSvc, settingsStore, v, loginID, req.Password)
+			}
 		}
 		if err != nil {
 			bus.Publish(events.Event{Source: "auth", Kind: "login.failed", Severity: "warn", Actor: req.Username, Detail: map[string]string{"error": err.Error()}})
