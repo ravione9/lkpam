@@ -2,7 +2,9 @@
 #
 # Quick start (from repo root):
 #   cp deploy/docker/.env.example deploy/docker/.env
-#   docker compose -f deploy/docker/docker-compose.yml up --build -d
+#   docker compose --env-file deploy/docker/.env -f deploy/docker/docker-compose.yml up --build -d
+#
+# If a secret contains $, escape it as $$ in .env (e.g. ab$$cd not ab$cd).
 #
 # Admin UI:  http://localhost:8080  (default admin / admin)
 # SSH proxy: ssh -p 2222 "user@#target-id@localhost"
@@ -17,14 +19,15 @@ x-common: &common
   image: pam-platform:latest
   restart: unless-stopped
   networks: [pam-net]
+  # Load secrets from .env without Compose $-expansion inside values (see README).
+  env_file:
+    - path: .env
+      required: false
   environment: &common-env
     PAM_DB: "file:/data/pam.db?cache=shared&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
-    PAM_JWT_SECRET: "${PAM_JWT_SECRET:-dev-change-me}"
-    PAM_MASTER_KEY: "${PAM_MASTER_KEY:-}"
     PAM_AUDIT_JSONL: "/data/audit.jsonl"
     PAM_REC_DIR: "/recordings"
     PAM_ADMIN_USER: "${PAM_ADMIN_USER:-admin}"
-    PAM_ADMIN_PASS: "${PAM_ADMIN_PASS:-admin}"
   volumes:
     - pam-data:/data
     - pam-rec:/recordings
@@ -197,7 +200,6 @@ services:
     environment:
       <<: *common-env
       PAM_TACACS_ADDR: ":1049"
-      PAM_TACACS_SECRET: "${PAM_TACACS_SECRET:-change-me}"
       PAM_AUTH_URL: "http://auth:8081"
     depends_on:
       auth:
