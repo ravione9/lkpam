@@ -25,8 +25,10 @@ import (
 	"time"
 
 	"github.com/example/pam-platform/internal/authclient"
+	"github.com/example/pam-platform/internal/approval"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
+	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/policy"
 	"github.com/example/pam-platform/internal/sshlaunch"
 	"github.com/example/pam-platform/internal/vault"
@@ -47,6 +49,10 @@ type Server struct {
 	// TOTP-enrolled users get the same authentication flow they have in the
 	// portal. If nil, falls back to the legacy local-DB password check.
 	Auth *authclient.Client
+	// Groups resolves effective roles (primary role + group grants) for policy.
+	Groups *groups.Service
+	// Approval gates SSH when policy requires JIT access.
+	Approval *approval.Service
 }
 
 // Run starts the proxy. Blocks until ctx is done.
@@ -267,15 +273,9 @@ func (s *Server) tryBrowserToken(loginUser, targetRef, token string) (*ssh.Permi
 	if err := s.DB.QueryRow(`SELECT role FROM users WHERE id = ?`, creds.UserID).Scan(&role); err != nil {
 		return nil, errors.New("user not found")
 	}
-	dec, err := s.Policy.Decide(ctx, policy.Input{
-		UserID: creds.UserID, Role: role, TargetID: tid, TargetKind: kind,
-		TargetTier: tier, Action: "ssh",
-	})
+	dec, err := s.evaluateAccess(ctx, creds.UserID, role, tid, kind, tier)
 	if err != nil {
 		return nil, err
-	}
-	if !dec.Allow {
-		return nil, fmt.Errorf("denied by policy: %v", dec.Reasons)
 	}
 	return &ssh.Permissions{
 		Extensions: map[string]string{
@@ -293,6 +293,37 @@ func (s *Server) tryBrowserToken(loginUser, targetRef, token string) (*ssh.Permi
 	}, nil
 }
 
+// evaluateAccess checks policy using effective roles (primary + group grants)
+// and enforces JIT approval when required — same rules as browser SSH launch.
+func (s *Server) evaluateAccess(ctx context.Context, userID int64, primaryRole string, targetID int64, kind string, tier int) (policy.Decision, error) {
+	roles := []string{primaryRole}
+	if s.Groups != nil && userID > 0 {
+		if eff, err := s.Groups.EffectiveRoles(ctx, userID, primaryRole); err == nil && len(eff) > 0 {
+			roles = eff
+		}
+	}
+	dec, err := s.Policy.Decide(ctx, policy.Input{
+		UserID: userID, Role: primaryRole, Roles: roles,
+		TargetID: targetID, TargetKind: kind, TargetTier: tier, Action: "ssh",
+	})
+	if err != nil {
+		return dec, err
+	}
+	if !dec.Allow {
+		return dec, fmt.Errorf("denied by policy: %v", dec.Reasons)
+	}
+	if dec.RequireApproval && s.Approval != nil {
+		ok, err := s.Approval.IsApproved(ctx, userID, targetID)
+		if err != nil {
+			return dec, err
+		}
+		if !ok {
+			return dec, errors.New("approved access request required — open the portal, request access to this machine, and wait for approval")
+		}
+	}
+	return dec, nil
+}
+
 // authorizeAndStash looks up the target, evaluates policy with the user's
 // effective roles, and packages routing info into ssh.Permissions for the
 // connection handler to consume.
@@ -302,15 +333,9 @@ func (s *Server) authorizeAndStash(u *authedUser, target string) (*ssh.Permissio
 		return nil, err
 	}
 
-	dec, err := s.Policy.Decide(context.Background(), policy.Input{
-		UserID: u.ID, Role: u.Role, TargetID: tid, TargetKind: kind,
-		TargetTier: tier, Action: "ssh",
-	})
+	dec, err := s.evaluateAccess(context.Background(), u.ID, u.Role, tid, kind, tier)
 	if err != nil {
 		return nil, err
-	}
-	if !dec.Allow {
-		return nil, fmt.Errorf("denied by policy: %v", dec.Reasons)
 	}
 	return &ssh.Permissions{
 		Extensions: map[string]string{

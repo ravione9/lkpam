@@ -14,9 +14,11 @@ import (
 	"syscall"
 
 	"github.com/example/pam-platform/internal/authclient"
+	"github.com/example/pam-platform/internal/approval"
 	"github.com/example/pam-platform/internal/config"
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
+	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/policy"
 	"github.com/example/pam-platform/internal/sshproxy"
 	"github.com/example/pam-platform/internal/vault"
@@ -46,6 +48,8 @@ func main() {
 		Vault:        v,
 		DB:           d,
 		Policy:       &policy.Engine{DB: d},
+		Groups:       &groups.Service{DB: d},
+		Approval:     &approval.Service{DB: d},
 		Bus:          events.New(),
 		HostKey:      hostSigner,
 		RecordingDir: config.Get("PAM_REC_DIR", "./recordings"),

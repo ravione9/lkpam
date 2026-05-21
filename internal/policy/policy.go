@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/example/pam-platform/internal/db"
@@ -57,27 +58,34 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 	allowedSet := map[string]bool{}
 	deniedSet := map[string]bool{}
 
-	// Family is the vendor root of a kind: "cisco-ios" -> "cisco". Policies
-	// written against the family ("cisco") still match a specific kind
-	// ("cisco-ios"), which keeps the rule set small for the common case
-	// while letting admins write rules for one specific platform when needed.
-	family := in.TargetKind
-	if i := strings.Index(in.TargetKind, "-"); i > 0 {
-		family = in.TargetKind[:i]
+	// Family is the vendor root of a kind: "cisco-ios" -> "cisco". OS kinds
+	// like "ubuntu" also match policies written for "linux".
+	exactKind := strings.ToLower(strings.TrimSpace(in.TargetKind))
+	family := exactKind
+	if i := strings.Index(exactKind, "-"); i > 0 {
+		family = exactKind[:i]
 	}
+	matchKinds := policyMatchKinds(exactKind, family)
 
 	for _, role := range roles {
-		row := e.DB.QueryRowContext(ctx, `
+		query := fmt.Sprintf(`
 			SELECT target_kind, tier_max, require_approval, allowed_commands, denied_commands
 			FROM policies
-			WHERE role = ? AND (target_kind = ? OR target_kind = ? OR target_kind = '*')
+			WHERE role = ? AND target_kind IN (%s)
 			ORDER BY CASE
 			           WHEN target_kind = ? THEN 0
 			           WHEN target_kind = ? THEN 1
-			           ELSE 2
+			           WHEN target_kind = 'linux' THEN 2
+			           ELSE 3
 			         END
-			LIMIT 1`,
-			role, in.TargetKind, family, in.TargetKind, family)
+			LIMIT 1`, sqlPlaceholders(len(matchKinds)))
+		args := make([]any, 0, 1+len(matchKinds)+2)
+		args = append(args, role)
+		for _, k := range matchKinds {
+			args = append(args, k)
+		}
+		args = append(args, exactKind, family)
+		row := e.DB.QueryRowContext(ctx, query, args...)
 		var (
 			kind            string
 			tierMax         int
@@ -92,8 +100,10 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 		if err != nil {
 			return Decision{}, err
 		}
-		if in.TargetTier < tierMax {
-			continue // this role can't reach this tier
+		// tier_max is the highest target tier number this role may reach
+		// (T0=critical … T3=dev). Deny when the machine is more dev than allowed.
+		if in.TargetTier > tierMax {
+			continue
 		}
 		allowSeen = true
 		if requireApproval != 0 {
@@ -120,6 +130,39 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 		final.DeniedCmds = append(final.DeniedCmds, c)
 	}
 	return final, nil
+}
+
+// policyMatchKinds returns the target_kind values that may match a machine kind.
+func policyMatchKinds(exactKind, family string) []string {
+	seen := map[string]bool{"*": true}
+	add := func(k string) {
+		k = strings.ToLower(strings.TrimSpace(k))
+		if k != "" {
+			seen[k] = true
+		}
+	}
+	add(exactKind)
+	add(family)
+	switch family {
+	case "ubuntu", "debian", "rhel", "centos", "rocky", "alma", "suse", "linux":
+		add("linux")
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	return out
+}
+
+func sqlPlaceholders(n int) string {
+	if n <= 0 {
+		return "''"
+	}
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = "?"
+	}
+	return strings.Join(parts, ",")
 }
 
 func splitCSV(s string) []string {
