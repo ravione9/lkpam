@@ -409,8 +409,8 @@ spec:
       targetPort: 2222
 ---
 # =========================================================================
-# tacacs-service (TACACS+ AAA for network devices — listens on 1049 in the
-# container; exposed externally on port 49 via LoadBalancer)
+# tacacs-service (TACACS+ AAA for network devices — listens on port 49 and is
+# exposed externally on port 49 via LoadBalancer)
 # =========================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -427,12 +427,15 @@ spec:
           image: pam-platform:latest
           imagePullPolicy: IfNotPresent
           args: ["/app/tacacs-service"]
-          ports: [{ name: tacacs, containerPort: 1049 }]
+          ports: [{ name: tacacs, containerPort: 49 }]
+          securityContext:
+            capabilities:
+              add: ["NET_BIND_SERVICE"]
           envFrom:
             - secretRef: { name: pam-secrets }
             - configMapRef: { name: pam-config }
           env:
-            - { name: PAM_TACACS_ADDR, value: ":1049" }
+            - { name: PAM_TACACS_ADDR, value: ":49" }
           volumeMounts:
             - { name: data, mountPath: /data }
           readinessProbe:
@@ -453,7 +456,7 @@ spec:
   ports:
     - name: tacacs
       port: 49
-      targetPort: 1049
+      targetPort: 49
 ---
 # =========================================================================
 # api-gateway (admin UI + REST API, port 8080 — exposed externally)

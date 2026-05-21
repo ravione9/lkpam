@@ -199,7 +199,7 @@ services:
     command: ["/app/tacacs-service"]
     environment:
       <<: *common-env
-      PAM_TACACS_ADDR: ":1049"
+      PAM_TACACS_ADDR: ":49"
       PAM_AUTH_URL: "http://auth:8081"
     depends_on:
       auth:
@@ -207,9 +207,9 @@ services:
       policy:
         condition: service_healthy
     ports:
-      - "${PAM_TACACS_PORT:-49}:1049"
+      - "${PAM_TACACS_PORT:-49}:49"
     healthcheck:
-      test: ["CMD", "nc", "-z", "127.0.0.1", "1049"]
+      test: ["CMD", "nc", "-z", "127.0.0.1", "49"]
       interval: 20s
       timeout: 5s
       retries: 5

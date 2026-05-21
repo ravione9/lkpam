@@ -162,7 +162,7 @@ docker compose -f deploy/docker/docker-compose.yml up -d --build tacacs
 docker compose -f deploy/docker/docker-compose.yml logs tacacs --tail 20
 ```
 
-Expect: `tacacs+ listening on :1049`
+Expect: `tacacs+ listening on :49`
 
 **Services not starting**
 

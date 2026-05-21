@@ -18,7 +18,7 @@ RUN mkdir -p /out && \
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates wget su-exec tzdata netcat-openbsd \
+RUN apk add --no-cache ca-certificates wget su-exec tzdata netcat-openbsd libcap \
     && addgroup -S pam \
     && adduser -S pam -G pam
 
@@ -27,11 +27,12 @@ COPY --from=build /out/ /app/
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh \
     && mkdir -p /data /recordings \
-    && chown -R pam:pam /data /recordings
+    && chown -R pam:pam /data /recordings \
+    && setcap 'cap_net_bind_service=+ep' /app/tacacs-service
 
 VOLUME ["/data", "/recordings"]
 
-EXPOSE 8080 8081 8082 8083 8084 8085 8086 2222 1049
+EXPOSE 8080 8081 8082 8083 8084 8085 8086 2222 49
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/app/api-gateway"]
