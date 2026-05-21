@@ -130,7 +130,7 @@ func main() {
 	vaultSvc := mustURL(config.Get("PAM_VAULT_URL", "http://localhost:8082"))
 	webProxy := webGated(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		webConsoleProxy(w, r, authURL, vaultSvc)
-	}), authURL)
+	}), authURL, vaultSvc)
 	mux.Handle("/web/", webProxy)
 
 	// Static UI (SPA fallback only for non-file routes).
@@ -167,17 +167,44 @@ func gated(next http.Handler, authBase *url.URL) http.Handler {
 // webGated authenticates web-console proxy requests. Browser iframes cannot set
 // Authorization headers, so the viewer passes ?token= on first load; we store it
 // in an HttpOnly cookie scoped to /web/{sessionID}/ for subsequent assets.
-func webGated(next http.Handler, authBase *url.URL) http.Handler {
+// Asset/API sub-requests may omit the JWT — an active vault session is enough.
+func webGated(next http.Handler, authBase, vaultBase *url.URL) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessionID := webSessionIDFromPath(r.URL.Path)
 		tok, err := httpx.BearerTokenFromRequest(r)
-		if err != nil {
-			httpx.Error(w, http.StatusUnauthorized, err)
+		if err == nil {
+			setCookie := sessionID != "" && (r.URL.Query().Get("token") != "" || r.Header.Get("Authorization") != "")
+			serveAuthed(w, r, next, authBase, tok, sessionID, setCookie)
 			return
 		}
-		sessionID := webSessionIDFromPath(r.URL.Path)
-		setCookie := sessionID != "" && (r.URL.Query().Get("token") != "" || r.Header.Get("Authorization") != "")
-		serveAuthed(w, r, next, authBase, tok, sessionID, setCookie)
+		if sessionID != "" && webSessionActive(r.Context(), vaultBase, sessionID) {
+			serveWebSession(w, r, next, sessionID)
+			return
+		}
+		httpx.Error(w, http.StatusUnauthorized, err)
 	})
+}
+
+func serveWebSession(w http.ResponseWriter, r *http.Request, next http.Handler, sessionID string) {
+	r2 := r.Clone(r.Context())
+	r2.Header.Set("X-PAM-Web-Session", sessionID)
+	next.ServeHTTP(w, r2)
+}
+
+func webSessionActive(ctx context.Context, vaultBase *url.URL, sessionID string) bool {
+	if !strings.HasPrefix(sessionID, "web-") {
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", vaultBase.String()+"/internal/web-session/"+sessionID, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func serveAuthed(w http.ResponseWriter, r *http.Request, next http.Handler, authBase *url.URL, tok, webSessionID string, setWebCookie bool) {
@@ -348,9 +375,11 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		return
 	}
 
-	// Build the upstream request.
+	// Build the upstream request (strip PAM ?token= from query — never forward to target).
+	upQ := r.URL.Query()
+	upQ.Del("token")
 	upstream, _ := http.NewRequestWithContext(r.Context(), r.Method,
-		targetURL.Scheme+"://"+targetURL.Host+rest+"?"+r.URL.RawQuery, r.Body)
+		targetURL.Scheme+"://"+targetURL.Host+rest+"?"+upQ.Encode(), r.Body)
 	upstream.Header = r.Header.Clone()
 	upstream.Header.Del("X-PAM-UID")
 	upstream.Header.Del("X-PAM-Role")
@@ -451,18 +480,55 @@ func serveStaticUI(w http.ResponseWriter, r *http.Request) {
 // not rewrite paths that start with /, so firewalls would otherwise hit the PAM UI.
 func webBridgeMiddleware(inner http.Handler, webProxy http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isReservedPAMPath(r.URL.Path) {
-			if c, err := r.Cookie("pam_web_sid"); err == nil && strings.TrimSpace(c.Value) != "" {
-				bridged := r.Clone(r.Context())
-				u := *r.URL
-				u.Path = "/web/" + c.Value + r.URL.Path
-				bridged.URL = &u
-				webProxy.ServeHTTP(w, bridged)
-				return
-			}
+		if isReservedPAMPath(r.URL.Path) {
+			inner.ServeHTTP(w, r)
+			return
 		}
-		inner.ServeHTTP(w, r)
+		sid := webBridgeSessionID(r)
+		if sid == "" {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		bridged := r.Clone(r.Context())
+		u := *r.URL
+		u.Path = "/web/" + sid + r.URL.Path
+		bridged.URL = &u
+		webProxy.ServeHTTP(w, bridged)
 	})
+}
+
+// webBridgeSessionID resolves the active web-console session from cookie or Referer.
+func webBridgeSessionID(r *http.Request) string {
+	if c, err := r.Cookie("pam_web_sid"); err == nil {
+		if sid := strings.TrimSpace(c.Value); sid != "" {
+			return sid
+		}
+	}
+	return webSessionFromReferer(r)
+}
+
+func webSessionFromReferer(r *http.Request) string {
+	ref := r.Header.Get("Referer")
+	if ref == "" {
+		return ""
+	}
+	u, err := url.Parse(ref)
+	if err != nil {
+		return ""
+	}
+	const pfx = "/web/"
+	i := strings.Index(u.Path, pfx)
+	if i < 0 {
+		return ""
+	}
+	rest := u.Path[i+len(pfx):]
+	if rest == "" {
+		return ""
+	}
+	if j := strings.IndexByte(rest, '/'); j >= 0 {
+		return rest[:j]
+	}
+	return rest
 }
 
 func isReservedPAMPath(path string) bool {
@@ -535,6 +601,10 @@ func rewriteRootPaths(body []byte, pfx string) []byte {
 		{`'/assets/`, `'` + pfx + `/assets/`},
 		{`"/ng/`, `"` + pfx + `/ng/`},
 		{`'/ng/`, `'` + pfx + `/ng/`},
+		{`"/login`, `"` + pfx + `/login`},
+		{`'/login`, `'` + pfx + `/login`},
+		{`"/logout`, `"` + pfx + `/logout`},
+		{`'/logout`, `'` + pfx + `/logout`},
 	} {
 		body = bytes.ReplaceAll(body, []byte(pair[0]), []byte(pair[1]))
 	}
