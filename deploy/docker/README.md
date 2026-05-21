@@ -68,22 +68,23 @@ Copy `deploy/docker/.env.example` → `.env` and `secrets.env.example` → `secr
 | Variable | File | Required | Description |
 |----------|------|----------|-------------|
 | `PAM_JWT_SECRET` | secrets.env | Yes (prod) | HS256 signing secret |
-| `PAM_MASTER_KEY` | secrets.env | Recommended | Base64 32-byte vault key |
+| `PAM_MASTER_KEY` | secrets.env | Recommended | Base64 32-byte vault key (auto-created on first boot if blank) |
 | `PAM_TACACS_SECRET` | secrets.env | Yes (prod) | Shared secret for network devices |
+| `PAM_ADMIN_USER` | secrets.env | No | Bootstrap admin username (default `admin`) |
 | `PAM_ADMIN_PASS` | secrets.env | No | Bootstrap admin password (default `admin`) |
 | `PAM_HTTP_PORT` | .env | No | Host port for UI (default `8080`) |
 | `PAM_SSH_PORT` | .env | No | Host port for SSH proxy (default `2222`) |
 | `PAM_TACACS_PORT` | .env | No | Host port for TACACS+ (default `49`) |
+| `PAM_PORTAL_URL` | .env | No | Public URL of the portal (used in viewer links) |
 
 Generate secrets:
 
 ```bash
-# JWT secret
-openssl rand -hex 32
-
-# Vault master key (paste into PAM_MASTER_KEY in .env)
-openssl rand -base64 32
+openssl rand -hex 32       # PAM_JWT_SECRET, PAM_TACACS_SECRET
+openssl rand -base64 32    # PAM_MASTER_KEY
 ```
+
+> **Tip:** `.env` is only used by Docker Compose for `${VAR}` substitution — its values do **not** reach the containers. Everything containers read at startup must live in `secrets.env`.
 
 ## TACACS+
 
