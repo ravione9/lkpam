@@ -222,8 +222,11 @@ func (s *Server) authenticate(username, password, otp string) (*authedUser, erro
 	return &authedUser{ID: uid, Role: uRole}, nil
 }
 
-// resolveTarget looks up a target by numeric ref (#42 / id:42) or by display name.
-// ID refs avoid SSH parsing issues when machine names contain spaces or @.
+// resolveTarget looks up a target by numeric ref (#42 / id:42), by host/IP, or
+// by display name. Trying host before name lets users type the IP/hostname of
+// the device directly — which is the unambiguous identifier most admins
+// already know. ID refs avoid SSH parsing issues when machine names contain
+// spaces or @.
 func (s *Server) resolveTarget(targetRef string) (tid int64, name, kind, host string, port, tier int, err error) {
 	ref := strings.TrimSpace(targetRef)
 	if ref == "" {
@@ -243,6 +246,21 @@ func (s *Server) resolveTarget(targetRef string) (tid int64, name, kind, host st
 		}
 		return tid, name, kind, host, port, tier, nil
 	}
+	// Host/IP match first. Prefer SSH/telnet-style entries when multiple targets
+	// share a host (e.g. a Linux server + a console-only Cisco at the same IP).
+	row := s.DB.QueryRow(`
+		SELECT id, name, kind, host, port, tier FROM targets
+		WHERE host = ?
+		ORDER BY CASE LOWER(COALESCE(connection_type,''))
+		           WHEN 'ssh' THEN 0
+		           WHEN 'telnet' THEN 1
+		           ELSE 2
+		         END, id
+		LIMIT 1`, ref)
+	if err = row.Scan(&tid, &name, &kind, &host, &port, &tier); err == nil {
+		return tid, name, kind, host, port, tier, nil
+	}
+	// Fallback: lookup by name.
 	err = s.DB.QueryRow(`SELECT id, name, kind, host, port, tier FROM targets WHERE name = ?`, ref).
 		Scan(&tid, &name, &kind, &host, &port, &tier)
 	if err != nil {

@@ -1101,15 +1101,20 @@ function esc(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// sshTargetRef returns a proxy-safe machine identifier. It prefers a
-// human-readable slug of the machine name (e.g. "linux-server") so the
-// connection string makes it obvious which device the session will hit, and
-// falls back to "#id" when the name contains characters that ssh cannot pass
-// through (spaces, @, etc.). Both forms resolve to the same target.
+// sshTargetRef returns a proxy-safe machine identifier. Order of preference:
+//   1. target.host (IP or hostname) — unambiguous, matches what an admin sees
+//      everywhere else in the portal, and is what they expect to type for
+//      Linux/Windows servers.
+//   2. ASCII-safe machine name slug — for devices where host is empty or
+//      not safe to embed in an SSH user@target string.
+//   3. #id fallback — for entries with both a non-ASCII name and no host.
+// Both name and #id are still accepted by the proxy for backward compatibility.
 function sshTargetRef(target) {
   if (typeof target !== "object" || target === null) {
     return "#" + target;
   }
+  const host = sshTargetSlug(target.host);
+  if (host) return host;
   const slug = sshTargetSlug(target.name);
   if (slug) return slug;
   return "#" + target.id;
