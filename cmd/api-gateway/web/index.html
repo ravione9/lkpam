@@ -241,25 +241,6 @@
           <thead><tr><th>Name</th><th>Platform</th><th>Connection</th><th>Address</th><th>Tier</th><th>Tags</th><th></th></tr></thead>
           <tbody id="targetRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
-        <div class="form-panel" id="targetConnectGuide" style="margin-top:16px">
-          <h4>How access works</h4>
-          <div id="targetConnectSsh">
-            <p class="muted">SSH machines: after access is approved, run from your workstation:</p>
-            <pre id="targetSshCmd">ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password user@machine-name@localhost</pre>
-          </div>
-          <div id="targetConnectRdp" style="display:none">
-            <p class="desc" style="margin:0 0 10px"><b>RDP (CyberArk-style)</b> — PAM does <em>not</em> create a Windows user for each portal login. Instead:</p>
-            <ol class="desc" style="margin:0;padding-left:20px;line-height:1.8">
-              <li>Admin registers the Windows server here (connection type <b>RDP</b>).</li>
-              <li>Admin creates a <b>privileged account</b> in Safes → Privileged Accounts linked to this machine (e.g. <code>Administrator</code> or <code>_PAM_RDP</code>). CPM rotates the password.</li>
-              <li>User submits <b>Request access</b> → approver grants JIT access.</li>
-              <li>User clicks <b>Launch</b> → PAM checks out the privileged credential and downloads a <code>.rdp</code> file + <code>Launch-RDP.ps1</code> helper.</li>
-              <li>On a Windows PC, run the script — it injects credentials and opens Remote Desktop. Delete the script when done.</li>
-            </ol>
-            <p class="muted" style="font-size:12px;margin-top:8px">See <b>Device Setup → Windows Server</b> for the one-time onboarding script to create the PAM-managed local account on the target.</p>
-          </div>
-          <p class="muted" style="font-size:12px;margin-top:10px">Tip: click <b>Request access</b> on a machine row, wait for admin approval, then connect.</p>
-        </div>
       </section>
 
       <!-- My Access (role + policy visibility for all users) -->
@@ -440,16 +421,16 @@
           <h3 style="margin:0">Approval Matrix</h3>
           <button class="primary" id="matrixAddBtn">+ Add Rule</button>
         </div>
-        <p class="desc">Define <b>who can approve</b> access requests and how many approvers are required, by target kind and tier. The most-specific enabled rule (lowest priority number) wins. If no rule matches, any admin may approve.</p>
+        <p class="desc">Map <b>requester groups</b> to <b>approver groups</b> by target kind and tier. Example: when members of <i>Network Ops</i> request Tier-0 Cisco access, require 2 approvals from <i>Security</i>. Leave requester groups empty to match any requester. Lowest priority number wins. If no rule matches, any admin may approve.</p>
         <table>
-          <thead><tr><th>Priority</th><th>Name</th><th>Target kind</th><th>Tier range</th><th>Required</th><th>Approver groups</th><th>Enabled</th><th></th></tr></thead>
-          <tbody id="matrixRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+          <thead><tr><th>Priority</th><th>Name</th><th>Target kind</th><th>Tier</th><th>Required</th><th>Requester groups</th><th>Approver groups</th><th>On</th><th></th></tr></thead>
+          <tbody id="matrixRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
         </table>
         <div class="form-panel hidden" id="matrixForm">
           <h4 id="matrixFormTitle">Add approval rule</h4>
           <input type="hidden" id="matrixId"/>
           <div class="form-grid">
-            <label>Rule name</label><input id="matrixName" placeholder="Tier-0 critical (2 sec approvers)"/>
+            <label>Rule name</label><input id="matrixName" placeholder="NetOps → Security (Tier 0)"/>
             <label>Target kind</label><select id="matrixKind"></select>
             <label>Tier range</label>
             <div class="row">
@@ -464,8 +445,16 @@
               </select>
             </div>
             <label>Required approvals</label><input id="matrixRequired" type="number" min="1" value="1" style="width:120px"/>
+            <label>Requester groups</label>
+            <div>
+              <div id="matrixRequesterChecks" class="muted" style="font-size:13px">Loading groups…</div>
+              <p class="muted" style="font-size:11px;margin:4px 0 0">Who is requesting access. Leave all unchecked = any user/group.</p>
+            </div>
             <label>Approver groups</label>
-            <div id="matrixGroupChecks" class="muted" style="font-size:13px">Loading groups…</div>
+            <div>
+              <div id="matrixApproverChecks" class="muted" style="font-size:13px">Loading groups…</div>
+              <p class="muted" style="font-size:11px;margin:4px 0 0">Who may approve requests matched by this rule. Leave empty = any admin.</p>
+            </div>
             <label>Priority <span class="muted">(lower wins)</span></label><input id="matrixPriority" type="number" value="100" style="width:120px"/>
             <label>Enabled</label><div><input type="checkbox" id="matrixEnabled" checked style="width:auto"/></div>
           </div>
@@ -696,6 +685,26 @@
           <div class="muted" style="font-size:12px">Pick a device kind to see step-by-step configuration</div>
         </div>
         <p class="desc">These snippets are tailored to <b>this</b> PAM deployment — the proxy hostname and SSH CA public key are auto-filled. Configure the target device first, then add it under <b>Machines</b> with the matching <i>kind</i>.</p>
+
+        <div class="form-panel" id="onboardAccessGuide" style="margin-bottom:18px">
+          <h4 style="margin-top:0">How access works</h4>
+          <div style="margin-bottom:16px">
+            <p class="desc" style="margin:0 0 8px"><b>SSH / CLI</b> — after access is approved, connect via the PAM SSH proxy:</p>
+            <pre id="onboardSshCmd">ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password user@machine-name@localhost</pre>
+          </div>
+          <div>
+            <p class="desc" style="margin:0 0 10px"><b>RDP (CyberArk-style)</b> — PAM does <em>not</em> create a Windows user for each portal login. Instead:</p>
+            <ol class="desc" style="margin:0;padding-left:20px;line-height:1.8">
+              <li>Admin registers the Windows server under <b>Machines</b> (connection type <b>RDP</b>).</li>
+              <li>Admin creates a <b>privileged account</b> in Safes → Privileged Accounts linked to this machine (e.g. <code>Administrator</code> or <code>_PAM_RDP</code>). CPM rotates the password.</li>
+              <li>User submits <b>Request access</b> → approver grants JIT access.</li>
+              <li>User clicks <b>Launch</b> → PAM checks out the privileged credential and downloads a <code>.rdp</code> file + <code>Launch-RDP.ps1</code> helper.</li>
+              <li>On a Windows PC, run the script — it injects credentials and opens Remote Desktop. Delete the script when done.</li>
+            </ol>
+            <p class="muted" style="font-size:12px;margin-top:8px">Select <b>Windows Server</b> below for the one-time onboarding script to create the PAM-managed local account on the target.</p>
+          </div>
+          <p class="muted" style="font-size:12px;margin-top:12px;margin-bottom:0">Tip: on the <b>Machines</b> tab, click <b>Request access</b> on a row, wait for admin approval, then connect.</p>
+        </div>
 
         <div class="form-grid" style="margin-bottom:14px">
           <label>PAM proxy host</label>
@@ -1167,6 +1176,14 @@ window.deleteRole = async id => {
 };
 
 // --- Approval Matrix ---
+function matrixGroupPills(ids, groupNames, emptyLabel) {
+  const list = (ids || []).map(id => groupNames[id] || `#${id}`);
+  const fallback = emptyLabel || "any";
+  return list.length
+    ? list.map(n => `<span class="pill accent" style="margin-right:4px">${esc(n)}</span>`).join("")
+    : `<span class="muted">${esc(fallback)}</span>`;
+}
+
 async function loadMatrix() {
   try {
     const [rules, groupList] = await Promise.all([api("/approval/matrix"), api("/auth/groups")]);
@@ -1174,18 +1191,18 @@ async function loadMatrix() {
     cache.groups = groupList || cache.groups;
     const groupNames = Object.fromEntries((cache.groups||[]).map(g => [g.id, g.name]));
     if (!cache.matrix.length) {
-      $("#matrixRows").innerHTML = `<tr><td colspan="8" class="muted">No rules. Click + Add Rule to create one. Without rules, any admin can approve any request.</td></tr>`;
+      $("#matrixRows").innerHTML = `<tr><td colspan="9" class="muted">No rules. Click + Add Rule to map requester groups → approver groups. Without rules, any admin can approve any request.</td></tr>`;
       return;
     }
     $("#matrixRows").innerHTML = cache.matrix.map(r => {
-      const groups = (r.approver_group_ids||[]).map(id => groupNames[id] || `#${id}`);
       return `<tr>
         <td>${r.priority}</td>
         <td><b>${esc(r.name)}</b></td>
         <td>${esc(r.target_kind)}</td>
         <td>${r.tier_min}—${r.tier_max}</td>
         <td><span class="pill ${r.required_approvals>1?'warn':''}">${r.required_approvals}</span></td>
-        <td>${groups.length ? groups.map(n => `<span class="pill accent" style="margin-right:4px">${esc(n)}</span>`).join("") : '<span class="muted">any admin</span>'}</td>
+        <td>${matrixGroupPills(r.requester_group_ids, groupNames, "any requester")}</td>
+        <td>${matrixGroupPills(r.approver_group_ids, groupNames, "any admin")}</td>
         <td>${r.enabled ? '<span class="pill ok">on</span>' : '<span class="pill">off</span>'}</td>
         <td class="actions">
           <button class="ghost" onclick="editMatrix(${r.id})">Edit</button>
@@ -1193,19 +1210,20 @@ async function loadMatrix() {
         </td>
       </tr>`;
     }).join("");
-  } catch (e) { $("#matrixRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
+  } catch (e) { $("#matrixRows").innerHTML = `<tr><td colspan="9" class="muted">${esc(e.message)}</td></tr>`; }
 }
 
-function renderMatrixGroupChecks(checkedIds) {
+function renderMatrixGroupChecks(containerId, checkedIds, prefix) {
+  const el = $(containerId);
   const ids = new Set(checkedIds || []);
   if (!(cache.groups||[]).length) {
-    $("#matrixGroupChecks").innerHTML = '<span class="muted">No groups defined. Create groups first.</span>';
+    el.innerHTML = '<span class="muted">No groups defined. Create groups first on the Groups tab.</span>';
     return;
   }
-  $("#matrixGroupChecks").innerHTML = cache.groups.map(g => `
+  el.innerHTML = cache.groups.map(g => `
     <label style="display:inline-block;margin:2px 12px 2px 0">
-      <input type="checkbox" data-gid="${g.id}" ${ids.has(g.id)?'checked':''} style="width:auto"/>
-      ${esc(g.name)} <span class="muted">→ ${esc(g.role)}</span>
+      <input type="checkbox" data-gid="${g.id}" data-role="${prefix}" ${ids.has(g.id)?'checked':''} style="width:auto"/>
+      ${esc(g.name)} <span class="muted">(${esc(g.role)})</span>
     </label>`).join("");
 }
 
@@ -1215,7 +1233,8 @@ function resetMatrixForm() {
   $("#matrixTierMin").value = "0"; $("#matrixTierMax").value = "3";
   $("#matrixRequired").value = "1"; $("#matrixPriority").value = "100";
   $("#matrixEnabled").checked = true;
-  renderMatrixGroupChecks([]);
+  renderMatrixGroupChecks("#matrixRequesterChecks", [], "requester");
+  renderMatrixGroupChecks("#matrixApproverChecks", [], "approver");
   $("#matrixForm").classList.add("hidden");
 }
 
@@ -1238,14 +1257,18 @@ window.editMatrix = async id => {
   $("#matrixRequired").value = r.required_approvals;
   $("#matrixPriority").value = r.priority;
   $("#matrixEnabled").checked = !!r.enabled;
-  renderMatrixGroupChecks(r.approver_group_ids || []);
+  renderMatrixGroupChecks("#matrixRequesterChecks", r.requester_group_ids || [], "requester");
+  renderMatrixGroupChecks("#matrixApproverChecks", r.approver_group_ids || [], "approver");
   $("#matrixFormTitle").textContent = "Edit approval rule";
   $("#matrixForm").classList.remove("hidden");
 };
 
-$("#matrixSaveBtn").onclick = async () => {
-  const checked = [...$("#matrixGroupChecks").querySelectorAll("input[data-gid]")]
+function matrixCheckedIds(containerId) {
+  return [...$(containerId).querySelectorAll("input[data-gid]")]
     .filter(b => b.checked).map(b => parseInt(b.dataset.gid, 10));
+}
+
+$("#matrixSaveBtn").onclick = async () => {
   const min = parseInt($("#matrixTierMin").value, 10), max = parseInt($("#matrixTierMax").value, 10);
   if (min > max) { toast("Tier range invalid (min > max)", "err"); return; }
   const body = {
@@ -1253,7 +1276,8 @@ $("#matrixSaveBtn").onclick = async () => {
     target_kind: $("#matrixKind").value,
     tier_min: min, tier_max: max,
     required_approvals: parseInt($("#matrixRequired").value, 10) || 1,
-    approver_group_ids: checked,
+    requester_group_ids: matrixCheckedIds("#matrixRequesterChecks"),
+    approver_group_ids: matrixCheckedIds("#matrixApproverChecks"),
     priority: parseInt($("#matrixPriority").value, 10) || 100,
     enabled: $("#matrixEnabled").checked,
   };
@@ -1506,7 +1530,6 @@ function applyConnectionTypeUI() {
   });
   $("#targetPort").value = DEFAULT_PORTS[ct] || 22;
   fillTargetKindSelect($("#targetKind"), $("#targetKind").value, {includeAny: false, forPolicy: false});
-  updateConnectGuide();
 }
 
 function openTargetModal(title) {
@@ -1516,14 +1539,6 @@ function openTargetModal(title) {
 
 function closeTargetModal() {
   $("#targetModal").classList.remove("show");
-}
-
-function updateConnectGuide() {
-  const hasRdp = (cache.targets || []).some(t => (t.connection_type||"") === "rdp");
-  const formRdp = $("#targetConn") && $("#targetConn").value === "rdp";
-  const showRdp = hasRdp || formRdp;
-  $("#targetConnectRdp").style.display = showRdp ? "" : "none";
-  $("#targetConnectSsh").style.display = showRdp ? "none" : "";
 }
 
 function connectionBadge(t) {
@@ -1565,13 +1580,6 @@ async function loadTargets() {
         <td class="muted">${esc(t.tags)}</td>
         <td class="actions">${tActions(t)}</td>
       </tr>`).join("");
-    if (currentUser) {
-      const t0 = cache.targets.find(t => (t.connection_type||"ssh") === "ssh") || cache.targets[0];
-      if (t0 && t0.connection_type !== "web" && t0.connection_type !== "https-api") {
-        $("#targetSshCmd").textContent = `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${currentUser.username}@${t0.name}@localhost`;
-      }
-      updateConnectGuide();
-    }
   } catch (e) { $("#targetRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
 }
 
@@ -3978,6 +3986,15 @@ window.copyOnboardStep = idx => {
 async function loadOnboard() {
   // Default proxy host if the user hasn't typed one.
   if (!$("#onboardHost").value) $("#onboardHost").value = detectedProxyHost();
+  if (currentUser && $("#onboardSshCmd")) {
+    if (!cache.targets.length) {
+      try { cache.targets = await api("/policy/targets") || []; } catch { /* ignore */ }
+    }
+    const t0 = cache.targets.find(t => (t.connection_type||"ssh") === "ssh") || cache.targets[0];
+    const machine = (t0 && t0.connection_type !== "web" && t0.connection_type !== "https-api") ? t0.name : "machine-name";
+    const host = detectedProxyHost();
+    $("#onboardSshCmd").textContent = `ssh -p 2222 -o PreferredAuthentications=keyboard-interactive,password ${currentUser.username}@${machine}@${host}`;
+  }
   // Fetch SSH CA pubkey once and cache; needed by Linux/Windows guides.
   if (!window._caPub) {
     try {

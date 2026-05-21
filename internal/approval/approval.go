@@ -131,7 +131,7 @@ func (s *Service) Decide(
 		return nil, ErrSelfApproval
 	}
 
-	// Lookup matrix rule for the target.
+	// Lookup matrix rule for the target + requester's groups.
 	required := 1
 	var approverGroupIDs []int64
 	if s.Matrix != nil {
@@ -139,7 +139,8 @@ func (s *Service) Decide(
 		if err != nil {
 			return nil, err
 		}
-		rule, err := s.Matrix.FindRule(ctx, targetKind, tier)
+		requesterGroups, _ := s.requesterGroups(ctx, req.UserID)
+		rule, err := s.Matrix.FindRule(ctx, targetKind, tier, requesterGroups)
 		if err != nil {
 			return nil, err
 		}
@@ -205,6 +206,13 @@ func (s *Service) targetMeta(ctx context.Context, targetID int64) (string, int, 
 		return "", 0, errors.New("target not found")
 	}
 	return kind, tier, nil
+}
+
+func (s *Service) requesterGroups(ctx context.Context, userID int64) ([]int64, error) {
+	if s.GroupMembers == nil {
+		return nil, nil
+	}
+	return s.GroupMembers.UserGroupIDs(ctx, userID)
 }
 
 func (s *Service) tally(ctx context.Context, id int64) (int, int, error) {
@@ -280,7 +288,8 @@ func (s *Service) RequiredApprovals(ctx context.Context, requestID int64) (int, 
 	if err != nil {
 		return 0, err
 	}
-	rule, err := s.Matrix.FindRule(ctx, kind, tier)
+	requesterGroups, _ := s.requesterGroups(ctx, req.UserID)
+	rule, err := s.Matrix.FindRule(ctx, kind, tier, requesterGroups)
 	if err != nil {
 		return 0, err
 	}

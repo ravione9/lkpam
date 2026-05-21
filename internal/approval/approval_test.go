@@ -135,6 +135,40 @@ func TestMatrixTwoApprovalsRequired(t *testing.T) {
 	}
 }
 
+func TestMatrixRequesterGroupRouting(t *testing.T) {
+	d := setupTestDB(t)
+	matrix := &MatrixService{DB: d}
+	ctx := context.Background()
+	now := db.Now()
+	// NetSec group (id 20) — requesters route to Security approvers only.
+	if _, err := d.Exec(`INSERT INTO user_groups(user_id, group_id, added_at) VALUES (1, 20, ?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	// Rule: NetSec requesters on tier 0 → Security approvers, 1 approval.
+	if _, err := matrix.Create(ctx, MatrixRule{
+		Name: "NetSec→Security", TargetKind: "*", TierMin: 0, TierMax: 0,
+		RequiredApprovals: 1, RequesterGroupIDs: []int64{20},
+		ApproverGroupIDs: []int64{10}, Priority: 5, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Catch-all: any requester → any admin group not needed, approver group 10 only for sec.
+	svc := &Service{DB: d, Matrix: matrix, GroupMembers: &fakeGroups{d}}
+
+	id, _ := svc.Create(ctx, 1, 2, "tier0 from netsec user", 0)
+	// admin uid 2 is not in Security group 10.
+	if _, err := svc.Decide(ctx, id, 2, "admin", true, ""); err != ErrNotApprover {
+		t.Fatalf("expected ErrNotApprover for non-security admin, got %v", err)
+	}
+	res, err := svc.Decide(ctx, id, 3, "admin", true, "ok")
+	if err != nil {
+		t.Fatalf("security approver: %v", err)
+	}
+	if res.Status != "approved" {
+		t.Fatalf("expected approved, got %s", res.Status)
+	}
+}
+
 func TestMatrixDenialFinalizes(t *testing.T) {
 	d := setupTestDB(t)
 	matrix := &MatrixService{DB: d}

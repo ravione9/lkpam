@@ -152,6 +152,7 @@ func (d *DB) migrate() error {
 			tier_min INTEGER NOT NULL DEFAULT 0,        -- inclusive
 			tier_max INTEGER NOT NULL DEFAULT 3,        -- inclusive
 			required_approvals INTEGER NOT NULL DEFAULT 1,
+			requester_group_ids TEXT NOT NULL DEFAULT '', -- CSV: requester groups (empty = any)
 			approver_group_ids TEXT NOT NULL DEFAULT '', -- CSV of group ids
 			priority INTEGER NOT NULL DEFAULT 100,      -- lower wins (most-specific)
 			enabled INTEGER NOT NULL DEFAULT 1,
@@ -273,6 +274,7 @@ func (d *DB) migrate() error {
 		`ALTER TABLE targets ADD COLUMN os_version TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN protocol TEXT NOT NULL DEFAULT 'ssh'`,
 		`ALTER TABLE sessions ADD COLUMN account_id INTEGER REFERENCES privileged_accounts(id)`,
+		`ALTER TABLE approval_matrix ADD COLUMN requester_group_ids TEXT NOT NULL DEFAULT ''`,
 	} {
 		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
 	}
