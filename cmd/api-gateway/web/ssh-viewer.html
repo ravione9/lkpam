@@ -13,12 +13,11 @@
     .toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 14px; min-width: 36px; }
     .toolbar button:hover { background: #475569; }
     #zoomLabel { font-size: 12px; color: #94a3b8; min-width: 48px; text-align: center; }
-    #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #000; position: relative; cursor: text; }
-    #display { outline: none; display: block; width: 100%; height: 100%; cursor: text; position: relative; }
-    #display.focused { box-shadow: inset 0 0 0 2px #38bdf8; z-index: 1; }
-    /* The actual Guacamole display element is transform: scaled() from JS so
-       we leave its intrinsic size alone — JS handles fitting it to the wrapper. */
-    #display canvas { cursor: text; image-rendering: optimizeSpeed; }
+    #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #0b1220; position: relative; cursor: text; display: flex; align-items: center; justify-content: center; }
+    #display { outline: none; display: block; cursor: text; position: relative; }
+    #display.focused { box-shadow: 0 0 0 2px #38bdf8; }
+    /* JS positions the Guacamole element with a transform; keep text crisp. */
+    #display canvas { cursor: text; image-rendering: auto; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
     #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
@@ -133,13 +132,16 @@
         }
         const ww = Math.max(displayWrap.clientWidth, 400);
         const wh = Math.max(displayWrap.clientHeight, 300);
-        // Non-uniform scale to FILL the wrapper exactly — no empty strips.
-        // Text gets stretched slightly when wrapper aspect ratio differs from
-        // the terminal grid, which is the expected trade-off for full fill.
-        const scaleX = (ww / cw) * zoom;
-        const scaleY = (wh / ch) * zoom;
-        guacScreen.style.transform = "scale(" + scaleX + ", " + scaleY + ")";
-        guacScreen.style.transformOrigin = "top left";
+        // Uniform scaling keeps the terminal font crisp. Pick the larger of
+        // width/height fit so one dimension fills exactly; the other may be
+        // slightly letterboxed but the canvas is centered in the wrapper via
+        // flexbox so it looks intentional rather than broken.
+        const fit = Math.max(ww / cw, wh / ch);
+        const scale = fit * zoom;
+        displayEl.style.width = cw + "px";
+        displayEl.style.height = ch + "px";
+        displayEl.style.transform = "scale(" + scale + ")";
+        displayEl.style.transformOrigin = "center center";
         zoomLabel.textContent = Math.round(zoom * 100) + "%";
       }
 
@@ -366,6 +368,26 @@
       pasteOverlay.addEventListener("click", e => {
         if (e.target === pasteOverlay) closePasteDialog();
       });
+      const fullscreenBtn = document.getElementById("fullscreenBtn");
+      fullscreenBtn.onclick = async () => {
+        try {
+          if (!document.fullscreenElement) {
+            await document.documentElement.requestFullscreen();
+            fullscreenBtn.textContent = "Exit FS";
+          } else {
+            await document.exitFullscreen();
+            fullscreenBtn.textContent = "Fullscreen";
+          }
+        } catch (e) {
+          statusEl.textContent = "Fullscreen blocked by browser: " + e.message;
+        }
+      };
+      document.addEventListener("fullscreenchange", () => {
+        fullscreenBtn.textContent = document.fullscreenElement ? "Exit FS" : "Fullscreen";
+        // Recompute scaling for the new window size.
+        setTimeout(applyZoom, 100);
+      });
+
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();
 
       displayWrap.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
