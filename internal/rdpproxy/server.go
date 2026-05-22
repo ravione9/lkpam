@@ -51,12 +51,14 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.RecordingDir == "" {
 		s.RecordingDir = "/recordings"
 	}
-	if err := os.MkdirAll(filepath.Join(s.RecordingDir, "rdp"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(s.RecordingDir, "rdp"), 0o777); err != nil {
 		return fmt.Errorf("rdpproxy: mkdir recordings: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(s.RecordingDir, "ssh"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(s.RecordingDir, "ssh"), 0o777); err != nil {
 		return fmt.Errorf("rdpproxy: mkdir ssh recordings: %w", err)
 	}
+	_ = os.Chmod(filepath.Join(s.RecordingDir, "rdp"), 0o777)
+	_ = os.Chmod(filepath.Join(s.RecordingDir, "ssh"), 0o777)
 	s.tunnels = make(map[string]guac.Tunnel)
 	s.guacdSSHHost, s.guacdSSHPort = discoverSSHProxyAddr(s.SSHProxyAddr)
 
@@ -293,9 +295,10 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 		params.RecDir = rdp.RecordingDirForSession(s.RecordingDir, sessionID)
 	}
 
-	if err := os.MkdirAll(params.RecDir, 0o700); err != nil {
+	if err := os.MkdirAll(params.RecDir, 0o777); err != nil {
 		return nil, err
 	}
+	_ = os.Chmod(params.RecDir, 0o777)
 	return params, nil
 }
 
