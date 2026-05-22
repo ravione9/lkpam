@@ -2313,14 +2313,21 @@ async function openMfaEnrollModal() {
   $("#mfaModal").classList.add("show");
 }
 
-// In-memory only: the portal password is held for the active tab so browser
-// SSH launches don't have to re-prompt. Never persisted, never sent over the
-// wire except as `portal_password` for ssh-launch (already required there).
-let portalPasswordCache = "";
+// Per-tab cache (sessionStorage): the portal password is held for the active
+// tab so browser SSH launches don't have to re-prompt, and survives F5 refresh
+// within the same tab. Cleared on sign-out and when the tab is closed. Never
+// written to localStorage / cookies / disk. Sent only as `portal_password` on
+// the ssh-launch API call (the same field the prompt was filling before).
+const PORTAL_PW_KEY = "pam.portal.pw";
 function rememberPortalPassword(pw) {
-  portalPasswordCache = typeof pw === "string" ? pw : "";
+  try {
+    if (typeof pw === "string" && pw) sessionStorage.setItem(PORTAL_PW_KEY, pw);
+    else sessionStorage.removeItem(PORTAL_PW_KEY);
+  } catch (_) { /* private mode: just no-op */ }
 }
-function getCachedPortalPassword() { return portalPasswordCache; }
+function getCachedPortalPassword() {
+  try { return sessionStorage.getItem(PORTAL_PW_KEY) || ""; } catch (_) { return ""; }
+}
 
 async function doLogin() {
   try {
@@ -3566,38 +3573,37 @@ function showSshLaunchModal(target) {
   modal.querySelector("#sshBrowserBtn").onclick = async () => {
     const reason = prompt("Reason for recorded browser session:", "Approved access");
     if (reason === null) return;
-    // Reuse the password the user already typed at login. SAML/SSO sessions
-    // and resumed tabs (no cached password) still fall back to a prompt so a
-    // missing privileged account doesn't silently break the launch.
-    let portalPassword = getCachedPortalPassword();
-    if (!portalPassword) {
-      portalPassword = prompt(
-        "Portal password for device login (same as your PAM sign-in).\nLeave blank only if a Privileged Account is linked to this target:",
-        ""
-      );
-      if (portalPassword === null) return;
-      if (portalPassword) rememberPortalPassword(portalPassword);
-    }
-    try {
+    // The server caches the AD/portal password in the vault at sign-in and
+    // automatically uses it when portal_password is empty. Only fall back to
+    // an inline prompt if the server rejects the launch as needing one.
+    const portalPassword = getCachedPortalPassword();
+    async function tryLaunch(pw) {
       const res = await api(`/auth/targets/${target.id}/ssh-launch`, {
         method: "POST",
-        body: JSON.stringify({
-          reason,
-          portal_password: portalPassword,
-        }),
+        body: JSON.stringify({ reason, portal_password: pw || "" }),
       });
       if (openPamViewer("ssh-viewer.html", res.session_id)) {
         toast("Recorded SSH session opened in browser", "ok");
       }
+    }
+    try {
+      await tryLaunch(portalPassword);
     } catch (e) {
       if (e.message && e.message.includes("approved")) {
         toast("Access not approved yet — submit Request access first", "err");
-      } else if (e.message && /password|auth/i.test(e.message)) {
-        rememberPortalPassword("");
-        toast("Portal password rejected — sign in again or retry", "err");
-      } else {
-        toast(e.message, "err");
+        return;
       }
+      const looksLikeAuth = e.message && /password|credential|auth/i.test(e.message);
+      if (!looksLikeAuth) {
+        toast(e.message, "err");
+        return;
+      }
+      // Server didn't have a usable cached password — ask once and retry.
+      rememberPortalPassword("");
+      const pw = prompt("Enter your PAM password to enable browser SSH (cached for this tab):", "");
+      if (!pw) return;
+      rememberPortalPassword(pw);
+      try { await tryLaunch(pw); } catch (e2) { toast(e2.message, "err"); }
     }
   };
   copyToClipboard(cmd);

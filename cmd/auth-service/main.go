@@ -48,7 +48,18 @@ const (
 	vaultLDAPBindPassword = "_ldap_bind_password"
 	vaultSAMLCert         = "_saml_sp_cert"
 	vaultSAMLKey          = "_saml_sp_key"
+
+	// userPassthroughPWTTL bounds how long an AD/local password kept for
+	// browser SSH passthrough remains usable. Refreshed on every login.
+	userPassthroughPWTTL = 12 * time.Hour
 )
+
+// vaultUserPassthroughKey returns the vault key used to cache the portal
+// password for a user. The password is encrypted with the vault master key
+// just like every other secret and is removed on sign-out.
+func vaultUserPassthroughKey(uid int64) string {
+	return "_user_passthrough_pw_" + strconv.FormatInt(uid, 10)
+}
 
 func main() {
 	dsn := config.Get("PAM_DB", "file:./data/pam.db?cache=shared&_pragma=foreign_keys(1)")
@@ -953,10 +964,18 @@ func main() {
 		role := r.Header.Get("X-PAM-Role")
 		user := r.Header.Get("X-PAM-User")
 		var in struct {
-			Reason          string `json:"reason"`
-			PortalPassword  string `json:"portal_password"`
+			Reason         string `json:"reason"`
+			PortalPassword string `json:"portal_password"`
 		}
 		_ = httpx.ReadJSON(r, &in)
+		// Fall back to the cached portal password stored at login. The browser
+		// usually omits the password now and lets the server use this cache so
+		// the user doesn't have to re-enter it.
+		if in.PortalPassword == "" && uid > 0 {
+			if pw, err := v.GetSecret(r.Context(), vaultUserPassthroughKey(uid)); err == nil && len(pw) > 0 {
+				in.PortalPassword = string(pw)
+			}
+		}
 		clientIP := r.Header.Get("X-Forwarded-For")
 		if clientIP == "" {
 			clientIP = r.RemoteAddr
@@ -1321,6 +1340,13 @@ func loginHandler(
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
+		}
+		// Cache the password so browser SSH launches do not re-prompt the
+		// user. Encrypted in vault, refreshed on each login, cleared on
+		// sign-out and on rotation.
+		if !deviceAuth && password != "" {
+			due := time.Now().Add(userPassthroughPWTTL)
+			_ = v.PutSecret(ctx, vaultUserPassthroughKey(u.ID), []byte(password), &due)
 		}
 		clientIP := r.Header.Get("X-Forwarded-For")
 		if clientIP == "" {
