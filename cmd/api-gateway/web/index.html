@@ -939,7 +939,6 @@
     <input id="p" type="password" placeholder="Password" autocomplete="current-password"/>
     <input id="otp" placeholder="MFA code (if enrolled)" style="display:none" autocomplete="one-time-code"/>
     <button class="primary" id="loginBtn">Sign in</button>
-    <p class="hint" id="loginHint">Use your Active Directory (LDAP) password or your local PAM account.</p>
     <div id="ssoOptions" style="display:none">
       <div style="text-align:center;color:var(--muted);font-size:11px;margin:14px 0 10px;letter-spacing:0.06em">— OR —</div>
       <button id="ssoBtn" style="width:100%;padding:10px;background:#fff;color:#1a1d23;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:10px">
@@ -1022,13 +1021,6 @@
             <svg class="chart" id="chartTiers" viewBox="0 0 600 80" preserveAspectRatio="none"></svg>
             <div class="muted" style="font-size:12px;margin-top:4px" id="tierBreakdown">—</div>
           </div>
-        </div>
-
-        <div class="card" style="margin:0">
-          <h3>Quick Start · Machine Access</h3>
-          <p class="muted">SSH: click <b>Launch</b> on a machine — command is copied for CMD/Terminal (port 2222). RDP opens in the browser.</p>
-          <pre id="sshHint">ssh -p 2222 … "user@#machine-id@host"</pre>
-          <p class="muted" style="font-size:12px;margin-top:8px">Password prompt = portal password · MFA prompt = 6-digit TOTP code</p>
         </div>
 
         <div class="card hidden" id="dashAccessProfile" style="margin:16px 0 0">
