@@ -36,9 +36,10 @@ var webFS embed.FS
 
 // claims is the verified JWT payload we get back from auth-service /verify.
 type claims struct {
-	UID  int64  `json:"uid"`
-	User string `json:"u"`
-	Role string `json:"r"`
+	UID   int64  `json:"uid"`
+	User  string `json:"u"`
+	Role  string `json:"r"`
+	Scope string `json:"scope,omitempty"`
 }
 
 type ctxKey struct{}
@@ -240,6 +241,9 @@ func serveAuthed(w http.ResponseWriter, r *http.Request, next http.Handler, auth
 	r2.Header.Set("X-PAM-User", c.User)
 	r2.Header.Set("X-PAM-Role", c.Role)
 	r2.Header.Set("X-PAM-UID", strconv.FormatInt(c.UID, 10))
+	if c.Scope != "" {
+		r2.Header.Set("X-PAM-Scope", c.Scope)
+	}
 	next.ServeHTTP(w, r2)
 }
 

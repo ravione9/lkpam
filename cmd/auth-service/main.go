@@ -98,6 +98,7 @@ func main() {
 	bus := events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085"))
 
 	bootstrap(svc, groupSvc, roleSvc, safeSvc)
+	bootstrapSettings(settingsStore)
 
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
@@ -329,6 +330,10 @@ func main() {
 	// --- MFA ---
 	mux.HandleFunc("POST /users/{id}/mfa/enroll", func(w http.ResponseWriter, r *http.Request) {
 		uid, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := checkMFAAccess(r, uid, true); err != nil {
+			httpx.Error(w, http.StatusForbidden, err)
+			return
+		}
 		secret, err := mfa.NewSecret()
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
@@ -355,6 +360,10 @@ func main() {
 	})
 	mux.HandleFunc("POST /users/{id}/mfa/verify", func(w http.ResponseWriter, r *http.Request) {
 		uid, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := checkMFAAccess(r, uid, true); err != nil {
+			httpx.Error(w, http.StatusForbidden, err)
+			return
+		}
 		var req struct{ Code string `json:"code"` }
 		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpx.Error(w, http.StatusBadRequest, err)
@@ -374,14 +383,53 @@ func main() {
 			return
 		}
 		bus.Publish(events.Event{Source: "auth", Kind: "mfa.enabled", Severity: "info", Actor: strconv.FormatInt(uid, 10)})
+		if r.Header.Get("X-PAM-Scope") == "mfa_enroll" {
+			u, err := svc.GetUserByID(r.Context(), uid)
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, err)
+				return
+			}
+			roles, _ := groupSvc.EffectiveRoles(r.Context(), u.ID, u.Role)
+			_ = svc.RecordLogin(r.Context(), u.ID)
+			tok, err := svc.IssueToken(u)
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, err)
+				return
+			}
+			httpx.JSON(w, http.StatusOK, map[string]any{
+				"status": "ok",
+				"token":  tok,
+				"user":   u,
+				"roles":  roles,
+			})
+			return
+		}
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("DELETE /users/{id}/mfa", func(w http.ResponseWriter, r *http.Request) {
 		uid, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
-		if err := svc.DisableMFA(r.Context(), uid); err != nil {
+		actorID, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		actorRole := r.Header.Get("X-PAM-Role")
+		if actorRole != "admin" {
+			if actorID != uid {
+				httpx.Error(w, http.StatusForbidden, errors.New("forbidden"))
+				return
+			}
+			pol, _ := settingsStore.Get(r.Context(), settingsKeyMFAPolicy)
+			if auth.EffectiveMFAPolicy(pol) == "required" {
+				httpx.Error(w, http.StatusForbidden, errors.New("MFA is required by policy — contact an administrator"))
+				return
+			}
+		}
+		exempt := actorRole == "admin"
+		if err := svc.DisableMFA(r.Context(), uid, exempt); err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
 		}
+		bus.Publish(events.Event{
+			Source: "auth", Kind: "mfa.disabled", Severity: "warn",
+			Actor: r.Header.Get("X-PAM-User"), Target: strconv.FormatInt(uid, 10),
+		})
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "disabled"})
 	})
 
@@ -1141,8 +1189,23 @@ func loginHandler(
 		}
 
 		mfaPolicy, _ := settingsStore.Get(ctx, settingsKeyMFAPolicy)
-		mfaRequired := u.MFAEnabled || mfaPolicy == "required"
-		if mfaRequired && u.MFAEnabled {
+		effectivePolicy := auth.EffectiveMFAPolicy(mfaPolicy)
+		dec := auth.LoginMFADecision(u, mfaPolicy)
+		if dec.RequireEnrollment {
+			tok, err := svc.IssueEnrollmentToken(u)
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, err)
+				return
+			}
+			httpx.JSON(w, http.StatusAccepted, map[string]any{
+				"mfa_enrollment_required": true,
+				"enrollment_token":        tok,
+				"user":                    u,
+				"mfa_policy":              effectivePolicy,
+			})
+			return
+		}
+		if dec.RequireOTP {
 			secret, _ := svc.GetMFASecret(ctx, u.ID)
 			if secret == "" {
 				httpx.Error(w, http.StatusUnauthorized, errors.New("MFA required but not enrolled"))
@@ -1152,6 +1215,7 @@ func loginHandler(
 				httpx.JSON(w, http.StatusAccepted, map[string]any{
 					"mfa_required": true,
 					"user_id":      u.ID,
+					"mfa_policy":   effectivePolicy,
 				})
 				return
 			}
@@ -1180,9 +1244,10 @@ func loginHandler(
 		// surfaced on the Threats tab.
 		go threatSvc.EvaluateLogin(context.Background(), u.ID, u.Username, clientIP, time.Now())
 		httpx.JSON(w, http.StatusOK, map[string]any{
-			"token": tok,
-			"user":  u,
-			"roles": roles,
+			"token":      tok,
+			"user":       u,
+			"roles":      roles,
+			"mfa_policy": effectivePolicy,
 		})
 	}
 }
@@ -1358,6 +1423,29 @@ func samlACSHandler(
   window.location.replace('/#sso=' + encodeURIComponent(tok));
 </script>
 <p>Signing in… if you are not redirected, <a href="/#sso=%s">click here</a>.</p>`, tok, tok)
+}
+
+func bootstrapSettings(s *settings.Store) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if v, _ := s.Get(ctx, settingsKeyMFAPolicy); v == "" {
+		_ = s.Set(ctx, settingsKeyMFAPolicy, "required")
+		log.Printf("bootstrap: default MFA policy set to required")
+	}
+}
+
+func checkMFAAccess(r *http.Request, targetUID int64, enrollOK bool) error {
+	actorUID, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+	if r.Header.Get("X-PAM-Role") == "admin" {
+		return nil
+	}
+	if actorUID != targetUID {
+		return errors.New("forbidden")
+	}
+	if r.Header.Get("X-PAM-Scope") == "mfa_enroll" && !enrollOK {
+		return errors.New("forbidden")
+	}
+	return nil
 }
 
 func bootstrap(svc *auth.Service, groupSvc *groups.Service, roleSvc *roles.Service, safeSvc *safes.Service) {

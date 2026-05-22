@@ -1761,12 +1761,13 @@
         </div>
 
         <h4 style="margin-top:24px">Multi-factor authentication</h4>
+        <p class="desc" style="margin-bottom:10px">Default is <b>Required</b> — users must enroll MFA before signing in. Admins can exempt individual users on the <b>Users</b> tab.</p>
         <div class="form-grid">
           <label>Policy</label>
           <select id="mfaPolicy">
             <option value="off">Off (no MFA)</option>
             <option value="optional">Optional (per user)</option>
-            <option value="required">Required (all users)</option>
+            <option value="required" selected>Required (all users)</option>
           </select>
         </div>
         <div class="row" style="margin-top:10px"><button class="primary" id="mfaPolicySaveBtn">Save</button></div>
@@ -1941,6 +1942,7 @@ const TAB_KEY = "pam.activeTab";
 const SSH_PROXY_PORT = 2222;
 let pendingMFAUserID = null;
 let cache = { targets: [], users: [], groups: [], roles: [], matrix: [], safes: [], accounts: [], apps: [] };
+let mfaPolicyGlobal = "required";
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
@@ -2186,6 +2188,17 @@ function showTab(name) {
 }
 
 // --- Login ---
+async function openMfaEnrollModal() {
+  if (!currentUser) return;
+  const r = await api("/auth/users/"+currentUser.id+"/mfa/enroll", {method:"POST"});
+  $("#mfaQrImg").src = r.qr_data_uri || "";
+  $("#mfaQrImg").alt = "Scan to add PAM Platform MFA for " + (currentUser.username || "your account");
+  $("#mfaUriBox").textContent = r.otpauth_uri;
+  $("#mfaSecretBox").textContent = (r.secret.match(/.{1,4}/g) || []).join(" ");
+  $("#mfaCode").value = "";
+  $("#mfaModal").classList.add("show");
+}
+
 async function doLogin() {
   try {
     const data = await api("/auth/login", {
@@ -2196,7 +2209,16 @@ async function doLogin() {
         OTP: $("#otp").value,
       })
     });
+    if (data._accepted && data._accepted.mfa_enrollment_required) {
+      await persistToken(data._accepted.enrollment_token);
+      currentUser = data._accepted.user;
+      mfaPolicyGlobal = data._accepted.mfa_policy || "required";
+      toast("Set up MFA to continue", "ok");
+      await openMfaEnrollModal();
+      return;
+    }
     if (data._accepted && data._accepted.mfa_required) {
+      mfaPolicyGlobal = data._accepted.mfa_policy || "required";
       $("#otp").style.display = "block";
       $("#otp").focus();
       toast("Enter your MFA code", "ok");
@@ -2204,6 +2226,7 @@ async function doLogin() {
     }
     await persistToken(data.token);
     currentUser = data.user;
+    mfaPolicyGlobal = data.mfa_policy || "required";
     enterApp();
   } catch (e) { toast(e.message, "err"); }
 }
@@ -3582,12 +3605,12 @@ async function loadUsers() {
         <td>${esc(u.email)}</td>
         <td><span class="pill">${esc(u.role)}</span>${u.role_locked ? ' <span class="pill accent" title="Role pinned by admin — AD login will not overwrite">pinned</span>' : ''}</td>
         <td><span class="pill ${u.source==='ldap'?'accent':''}">${esc(u.source||'local')}</span></td>
-        <td>${u.mfa_enabled ? '<span class="pill ok">enabled</span>' : '<span class="pill">off</span>'}</td>
+        <td>${userMfaStatus(u)}</td>
         <td>${u.disabled ? '<span class="pill err">disabled</span>' : '<span class="pill ok">active</span>'}</td>
         <td class="muted">${fmtTime(u.last_login)}</td>
         <td class="actions">
           <button class="ghost" onclick="editUser(${u.id})">Edit</button>
-          ${u.mfa_enabled ? `<button class="ghost danger" onclick="disableUserMFA(${u.id})">Disable MFA</button>` : ''}
+          ${userMfaDisableBtn(u)}
           ${currentUser && currentUser.id === u.id ? '' : `<button class="ghost danger" onclick="deleteUser(${u.id})">Delete</button>`}
         </td>
       </tr>`).join("");
@@ -3683,9 +3706,23 @@ $("#userSaveBtn").onclick = async () => {
     resetUserForm(); loadUsers();
   } catch (e) { toast(e.message, "err"); }
 };
+function userMfaStatus(u) {
+  if (u.mfa_enabled) return '<span class="pill ok">enabled</span>';
+  if (u.mfa_exempt) return '<span class="pill warn">exempt</span>';
+  return '<span class="pill">off</span>';
+}
+function userMfaDisableBtn(u) {
+  if (!isAdmin()) return '';
+  if (u.mfa_exempt && !u.mfa_enabled) return '';
+  return `<button class="ghost danger" onclick="disableUserMFA(${u.id})">Disable MFA</button>`;
+}
 window.disableUserMFA = async id => {
   const u = cache.users.find(x => x.id === id);
-  if (!confirm(`Disable MFA for ${u.username}?`)) return;
+  if (!u) return;
+  const msg = u.mfa_enabled
+    ? `Disable MFA for "${u.username}"? They will be exempt from the required MFA policy.`
+    : `Exempt "${u.username}" from required MFA? They can sign in without enrolling.`;
+  if (!confirm(msg)) return;
   try { await api("/auth/users/"+id+"/mfa", {method:"DELETE"}); toast("MFA disabled", "ok"); loadUsers(); }
   catch (e) { toast(e.message, "err"); }
 };
@@ -6131,7 +6168,8 @@ async function loadSettings() {
     if (isAdmin()) await loadLDAPSyncSelection();
 
     const all = await api("/auth/settings");
-    $("#mfaPolicy").value = all.mfa_policy || "off";
+    $("#mfaPolicy").value = all.mfa_policy || "required";
+    mfaPolicyGlobal = all.mfa_policy || "required";
   } catch (e) { toast(e.message, "err"); }
 }
 $("#ldapSaveBtn").onclick = async () => {
@@ -6341,26 +6379,45 @@ $("#mfaPolicySaveBtn").onclick = async () => {
 $("#manageMfaBtn").onclick = async () => {
   if (!currentUser) return;
   if (currentUser.mfa_enabled) {
+    if (mfaPolicyGlobal === "required" && !isAdmin()) {
+      toast("MFA is required by policy. Contact an administrator.", "err");
+      return;
+    }
     if (!confirm("MFA is currently enabled for your account. Disable it?")) return;
-    try { await api("/auth/users/"+currentUser.id+"/mfa", {method:"DELETE"}); toast("MFA disabled", "ok"); currentUser.mfa_enabled = false; $("#me").textContent = currentUser.username + " · " + currentUser.role; }
+    try {
+      await api("/auth/users/"+currentUser.id+"/mfa", {method:"DELETE"});
+      toast("MFA disabled", "ok");
+      currentUser.mfa_enabled = false;
+      currentUser.mfa_exempt = !isAdmin();
+      $("#me").textContent = currentUser.username + " · " + currentUser.role;
+    }
     catch (e) { toast(e.message, "err"); }
     return;
   }
-  try {
-    const r = await api("/auth/users/"+currentUser.id+"/mfa/enroll", {method:"POST"});
-    $("#mfaQrImg").src = r.qr_data_uri || "";
-    $("#mfaQrImg").alt = "Scan to add PAM Platform MFA for " + (currentUser.username || "your account");
-    $("#mfaUriBox").textContent = r.otpauth_uri;
-    $("#mfaSecretBox").textContent = (r.secret.match(/.{1,4}/g) || []).join(" ");
-    $("#mfaCode").value = "";
-    $("#mfaModal").classList.add("show");
-  } catch (e) { toast(e.message, "err"); }
+  try { await openMfaEnrollModal(); }
+  catch (e) { toast(e.message, "err"); }
 };
 $("#mfaVerifyBtn").onclick = async () => {
   try {
-    await api("/auth/users/"+currentUser.id+"/mfa/verify", {method:"POST", body: JSON.stringify({code: $("#mfaCode").value.trim()})});
+    const r = await api("/auth/users/"+currentUser.id+"/mfa/verify", {method:"POST", body: JSON.stringify({code: $("#mfaCode").value.trim()})});
+    if (r.token) {
+      await persistToken(r.token);
+      currentUser = r.user;
+      currentUser.mfa_enabled = true;
+      mfaPolicyGlobal = mfaPolicyGlobal || "required";
+      $("#login-wrap").style.display = "none";
+      $("#app").style.display = "grid";
+      $("#me").textContent = currentUser.username + " · " + currentUser.role + " · MFA ✓";
+      $("#mfaModal").classList.remove("show");
+      $("#mfaQrImg").removeAttribute("src");
+      applyRoleUI();
+      showTab("dash");
+      toast("MFA enabled — signed in", "ok");
+      return;
+    }
     toast("MFA enabled", "ok");
     currentUser.mfa_enabled = true;
+    currentUser.mfa_exempt = false;
     $("#me").textContent = currentUser.username + " · " + currentUser.role + " · MFA ✓";
     $("#mfaModal").classList.remove("show");
     $("#mfaQrImg").removeAttribute("src");

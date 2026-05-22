@@ -26,6 +26,7 @@ type User struct {
 	Disabled   bool   `json:"disabled"`
 	Source     string `json:"source"`
 	MFAEnabled bool   `json:"mfa_enabled"`
+	MFAExempt  bool   `json:"mfa_exempt"`
 	RoleLocked bool   `json:"role_locked"`
 	LastLogin  int64  `json:"last_login,omitempty"`
 }
@@ -44,7 +45,43 @@ type Claims struct {
 	UserID   int64  `json:"uid"`
 	Username string `json:"u"`
 	Role     string `json:"r"`
+	Scope    string `json:"scope,omitempty"`
 	jwt.RegisteredClaims
+}
+
+// EffectiveMFAPolicy returns the active MFA policy; empty/unset defaults to required.
+func EffectiveMFAPolicy(policy string) string {
+	switch policy {
+	case "off", "optional", "required":
+		return policy
+	default:
+		return "required"
+	}
+}
+
+// MFALoginDecision describes MFA handling during login.
+type MFALoginDecision struct {
+	RequireOTP        bool
+	RequireEnrollment bool
+}
+
+// LoginMFADecision decides whether OTP or enrollment is needed for a user.
+func LoginMFADecision(u *User, policy string) MFALoginDecision {
+	if u.MFAExempt {
+		return MFALoginDecision{}
+	}
+	switch EffectiveMFAPolicy(policy) {
+	case "required":
+		if !u.MFAEnabled {
+			return MFALoginDecision{RequireEnrollment: true}
+		}
+		return MFALoginDecision{RequireOTP: true}
+	case "optional":
+		if u.MFAEnabled {
+			return MFALoginDecision{RequireOTP: true}
+		}
+	}
+	return MFALoginDecision{}
 }
 
 // CreateUser inserts a new user with an Argon2id password hash.
@@ -106,8 +143,8 @@ func (s *Service) FindByLoginID(ctx context.Context, loginID string) (*User, err
 	}
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT id, username, COALESCE(email,''), role, disabled,
-		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
-		       COALESCE(role_locked,0)
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(mfa_exempt,0),
+		       COALESCE(last_login,0), COALESCE(role_locked,0)
 		FROM users WHERE lower(username)=lower(?)`, loginID)
 	if u, err := scanUserRow(row); err == nil {
 		return u, nil
@@ -117,8 +154,8 @@ func (s *Service) FindByLoginID(ctx context.Context, loginID string) (*User, err
 	// Prefer active directory-backed accounts when email is reused.
 	row = s.DB.QueryRowContext(ctx, `
 		SELECT id, username, COALESCE(email,''), role, disabled,
-		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
-		       COALESCE(role_locked,0)
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(mfa_exempt,0),
+		       COALESCE(last_login,0), COALESCE(role_locked,0)
 		FROM users
 		WHERE lower(email)=lower(?) AND source IN ('ldap','saml') AND disabled=0
 		ORDER BY id LIMIT 1`, loginID)
@@ -129,8 +166,8 @@ func (s *Service) FindByLoginID(ctx context.Context, loginID string) (*User, err
 	}
 	row = s.DB.QueryRowContext(ctx, `
 		SELECT id, username, COALESCE(email,''), role, disabled,
-		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
-		       COALESCE(role_locked,0)
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(mfa_exempt,0),
+		       COALESCE(last_login,0), COALESCE(role_locked,0)
 		FROM users WHERE lower(email)=lower(?)
 		ORDER BY id LIMIT 1`, loginID)
 	return scanUserRow(row)
@@ -138,13 +175,14 @@ func (s *Service) FindByLoginID(ctx context.Context, loginID string) (*User, err
 
 func scanUserRow(row *sql.Row) (*User, error) {
 	var u User
-	var disabled, mfa, roleLocked int
+	var disabled, mfa, exempt, roleLocked int
 	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled,
-		&u.Source, &mfa, &u.LastLogin, &roleLocked); err != nil {
+		&u.Source, &mfa, &exempt, &u.LastLogin, &roleLocked); err != nil {
 		return nil, err
 	}
 	u.Disabled = disabled != 0
 	u.MFAEnabled = mfa != 0
+	u.MFAExempt = exempt != 0
 	u.RoleLocked = roleLocked != 0
 	return &u, nil
 }
@@ -152,18 +190,19 @@ func scanUserRow(row *sql.Row) (*User, error) {
 func (s *Service) loadUser(ctx context.Context, username string) (*User, string, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT id, username, COALESCE(email,''), password_hash, role, disabled,
-		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
-		       COALESCE(role_locked,0)
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(mfa_exempt,0),
+		       COALESCE(last_login,0), COALESCE(role_locked,0)
 		FROM users WHERE username = ?`, username)
 	var u User
 	var pwHash string
-	var disabled, mfa, roleLocked int
+	var disabled, mfa, exempt, roleLocked int
 	if err := row.Scan(&u.ID, &u.Username, &u.Email, &pwHash, &u.Role, &disabled,
-		&u.Source, &mfa, &u.LastLogin, &roleLocked); err != nil {
+		&u.Source, &mfa, &exempt, &u.LastLogin, &roleLocked); err != nil {
 		return nil, "", err
 	}
 	u.Disabled = disabled != 0
 	u.MFAEnabled = mfa != 0
+	u.MFAExempt = exempt != 0
 	u.RoleLocked = roleLocked != 0
 	return &u, pwHash, nil
 }
@@ -219,20 +258,26 @@ func (s *Service) GetMFASecret(ctx context.Context, userID int64) (string, error
 // SetMFASecret stores a TOTP secret but leaves mfa_enabled = 0 until verified.
 func (s *Service) SetMFASecret(ctx context.Context, userID int64, secret string) error {
 	_, err := s.DB.ExecContext(ctx,
-		`UPDATE users SET mfa_secret=?, mfa_enabled=0 WHERE id=?`, secret, userID)
+		`UPDATE users SET mfa_secret=?, mfa_enabled=0, mfa_exempt=0 WHERE id=?`, secret, userID)
 	return err
 }
 
-// EnableMFA confirms TOTP enrollment.
+// EnableMFA confirms TOTP enrollment and clears any admin exemption.
 func (s *Service) EnableMFA(ctx context.Context, userID int64) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE users SET mfa_enabled=1 WHERE id=?`, userID)
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE users SET mfa_enabled=1, mfa_exempt=0 WHERE id=?`, userID)
 	return err
 }
 
-// DisableMFA clears the TOTP secret and disables MFA.
-func (s *Service) DisableMFA(ctx context.Context, userID int64) error {
+// DisableMFA clears MFA enrollment. When exempt is true the user may skip MFA
+// even if the global policy is required (admin override).
+func (s *Service) DisableMFA(ctx context.Context, userID int64, exempt bool) error {
+	ex := 0
+	if exempt {
+		ex = 1
+	}
 	_, err := s.DB.ExecContext(ctx,
-		`UPDATE users SET mfa_secret=NULL, mfa_enabled=0 WHERE id=?`, userID)
+		`UPDATE users SET mfa_secret=NULL, mfa_enabled=0, mfa_exempt=? WHERE id=?`, ex, userID)
 	return err
 }
 
@@ -249,6 +294,26 @@ func (s *Service) IssueToken(u *User) (string, error) {
 			Subject:   fmt.Sprintf("%d", u.ID),
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.JWTTTL)),
+		},
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
+	return tok.SignedString(s.JWTSecret)
+}
+
+// IssueEnrollmentToken signs a short-lived JWT used only for MFA setup during login.
+func (s *Service) IssueEnrollmentToken(u *User) (string, error) {
+	now := time.Now()
+	c := Claims{
+		UserID:   u.ID,
+		Username: u.Username,
+		Role:     u.Role,
+		Scope:    "mfa_enroll",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    s.JWTIssuer,
+			Audience:  []string{s.JWTAudience},
+			Subject:   fmt.Sprintf("%d", u.ID),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
 		},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
@@ -277,8 +342,8 @@ func (s *Service) VerifyToken(raw string) (*Claims, error) {
 func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT id, username, COALESCE(email,''), role, disabled,
-		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
-		       COALESCE(role_locked,0)
+		       COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(mfa_exempt,0),
+		       COALESCE(last_login,0), COALESCE(role_locked,0)
 		FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
@@ -287,13 +352,14 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		var disabled, mfa, roleLocked int
+		var disabled, mfa, exempt, roleLocked int
 		if err := rows.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled,
-			&u.Source, &mfa, &u.LastLogin, &roleLocked); err != nil {
+			&u.Source, &mfa, &exempt, &u.LastLogin, &roleLocked); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
 		u.MFAEnabled = mfa != 0
+		u.MFAExempt = exempt != 0
 		u.RoleLocked = roleLocked != 0
 		out = append(out, u)
 	}
@@ -356,20 +422,25 @@ func (s *Service) UpdateUser(ctx context.Context, id int64, in UpdateUserInput) 
 	return err
 }
 
+func (s *Service) GetUserByID(ctx context.Context, id int64) (*User, error) {
+	return s.getUserByID(ctx, id)
+}
+
 func (s *Service) getUserByID(ctx context.Context, id int64) (*User, error) {
 	row := s.DB.QueryRowContext(ctx,
 		`SELECT id, username, COALESCE(email,''), role, disabled,
-		        COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(last_login,0),
-		        COALESCE(role_locked,0)
+		        COALESCE(source,'local'), COALESCE(mfa_enabled,0), COALESCE(mfa_exempt,0),
+		        COALESCE(last_login,0), COALESCE(role_locked,0)
 		 FROM users WHERE id = ?`, id)
 	var u User
-	var disabled, mfa, roleLocked int
+	var disabled, mfa, exempt, roleLocked int
 	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.Role, &disabled,
-		&u.Source, &mfa, &u.LastLogin, &roleLocked); err != nil {
+		&u.Source, &mfa, &exempt, &u.LastLogin, &roleLocked); err != nil {
 		return nil, errors.New("user not found")
 	}
 	u.Disabled = disabled != 0
 	u.MFAEnabled = mfa != 0
+	u.MFAExempt = exempt != 0
 	u.RoleLocked = roleLocked != 0
 	return &u, nil
 }
