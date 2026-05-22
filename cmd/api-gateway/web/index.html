@@ -946,7 +946,62 @@
   .modal-machine .form-grid input,
   .modal-machine .form-grid select { max-width: none; }
 
+  /* Device Setup guide modal (sticky until Close) */
+  .modal-onboard-guide {
+    max-width: 860px;
+    width: min(96vw, 860px);
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    max-height: 90vh;
+  }
+  .modal-onboard-guide .modal-body {
+    padding: 16px 22px 20px;
+    overflow-y: auto;
+    flex: 1;
+  }
+  .onboard-step {
+    margin: 10px 0;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    background: var(--surface-2);
+  }
+  .onboard-step-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .onboard-step-head h4 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .onboard-step pre {
+    margin: 0;
+    font-size: 11.5px;
+    line-height: 1.5;
+    max-height: 220px;
+  }
+  #onboardKindBar .onboard-kind-btn {
+    font-size: 11.5px;
+    padding: 5px 10px;
+    white-space: nowrap;
+  }
+  #onboardKindBar .onboard-kind-btn.active {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
   /* ===== Misc polish ===== */
+  body.modal-open { overflow: hidden; }
   hr { border: none; border-top: 1px solid var(--divider); margin: 16px 0; }
   ::selection { background: var(--brand-200); color: var(--brand-700); }
 
@@ -1428,7 +1483,7 @@
       <!-- Sessions -->
       <section class="card tab" id="tab-sessions" style="display:none">
         <h3>Live Sessions</h3>
-        <p class="desc">SSH and RDP sessions are recorded. SSH uses keystroke logs; RDP uses Guacamole .guac recordings via the browser launcher. Admins can terminate active sessions.</p>
+        <p class="desc">Active SSH, RDP, and web sessions only. SSH uses keystroke logs; RDP uses Guacamole .guac recordings. Admins can terminate live sessions. Ended sessions appear in Audit Log.</p>
         <table>
           <thead><tr><th>Started</th><th>Protocol</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th><th></th></tr></thead>
           <tbody id="sessionRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
@@ -1698,9 +1753,7 @@
 
         <div class="row" style="gap:6px;flex-wrap:wrap" id="onboardKindBar"></div>
 
-        <div id="onboardContent" style="margin-top:18px">
-          <p class="muted">Select a device kind above to view its integration guide.</p>
-        </div>
+        <p class="muted" style="margin:12px 0 0;font-size:11.5px">Click a device type above to open its integration guide in a popup. The guide stays open until you click <b>Close</b>.</p>
       </section>
 
       <!-- Settings -->
@@ -1736,7 +1789,7 @@
 
         <div class="card" style="margin-top:20px;padding:16px" id="ldapSyncPanel">
           <h4 style="margin:0 0 8px">AD user &amp; group sync</h4>
-          <p class="desc" style="margin-bottom:12px">Search Active Directory, select only the users and groups to import, then sync. When at least one user is selected, <b>only those users</b> may sign in with AD credentials.</p>
+          <p class="desc" style="margin-bottom:12px">Search Active Directory, select users and groups to import, then run sync. Synced users can sign in with their AD credentials — no separate allowlist is required at login.</p>
           <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
             <div>
               <div class="row" style="margin-bottom:8px">
@@ -1885,6 +1938,23 @@
   </div>
 </div>
 
+<!-- Device Setup integration guide (opens on device button click; close button only) -->
+<div class="modal-backdrop modal-sticky" id="onboardGuideModal" aria-hidden="true">
+  <div class="modal modal-lg modal-onboard-guide" role="dialog" aria-modal="true" aria-labelledby="onboardModalTitle">
+    <div class="modal-machine-header">
+      <div>
+        <h3 id="onboardModalTitle">Device integration guide</h3>
+        <p class="modal-subtitle" id="onboardModalIntro"></p>
+      </div>
+      <button type="button" class="modal-close" id="onboardModalClose" title="Close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="onboardModalBody"></div>
+    <div class="modal-footer">
+      <button type="button" class="primary" id="onboardModalCloseBtn">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="groupMembersModal">
   <div class="modal">
     <h3 id="gmTitle">Group members</h3>
@@ -1928,7 +1998,7 @@
 <div class="modal-backdrop" id="adSyncModal">
   <div class="modal modal-lg" style="max-width:760px">
     <h3>Sync users &amp; groups from Active Directory</h3>
-    <p class="muted" id="adSyncIntro" style="font-size:12px">Search Active Directory, select the users and groups to import, then sync. When at least one user is selected, <b>only those users</b> may sign in with AD credentials.</p>
+    <p class="muted" id="adSyncIntro" style="font-size:12px">Search Active Directory, select users and groups to import, then run sync. Synced users can sign in with their AD credentials.</p>
     <div id="adSyncDisabled" class="pill warn" style="display:none;margin-bottom:12px">Active Directory is not enabled — configure it in <b>Settings → Active Directory / LDAP</b> first.</div>
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
       <div>
@@ -2189,6 +2259,7 @@ function showTab(name) {
   // Non-admins are silently redirected to the dashboard if they try to open
   // an admin tab via stale state.
   if (!isAdmin() && ADMIN_TABS.has(name)) name = "dash";
+  if (name !== "onboard") closeOnboardModal();
   $$(".tab").forEach(el => el.style.display = "none");
   const tab = $("#tab-" + name);
   if (tab) tab.style.display = "block";
@@ -4085,8 +4156,8 @@ async function loadSessions() {
     if (!cache.users.length) cache.users = await api("/auth/users");
     const um = Object.fromEntries(cache.users.map(u => [u.id, u.username]));
     const tm = Object.fromEntries(cache.targets.map(t => [t.id, t.name]));
-    const rows = await api("/audit/sessions?limit=200");
-    if (!(rows||[]).length) { $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">No sessions yet.</td></tr>`; return; }
+    const rows = (await api("/audit/sessions?limit=200")).filter(s => !s.ended_at);
+    if (!rows.length) { $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">No active sessions.</td></tr>`; return; }
     const tbody = $("#sessionRows");
     tbody.innerHTML = "";
     for (const s of rows) {
@@ -6104,9 +6175,6 @@ function copyToClipboard(text) {
 }
 
 function renderOnboardKindBar() {
-  // Group the kind picker by the same categories used in DEVICE_CATALOG, so
-  // operators can find their device in a familiar taxonomy. Kinds present in
-  // DEVICE_GUIDES but not in any category get an "Other" bucket.
   const grouped = new Map();
   const seen = new Set();
   for (const [cat, devices] of Object.entries(DEVICE_CATALOG)) {
@@ -6120,10 +6188,10 @@ function renderOnboardKindBar() {
 
   let html = "";
   for (const [cat, kinds] of grouped) {
-    html += `<div style="width:100%;font-size:11px;color:var(--muted);margin:8px 0 4px;letter-spacing:.05em;text-transform:uppercase">${esc(cat)}</div>`;
+    html += `<div style="width:100%;font-size:10px;color:var(--muted);margin:8px 0 4px;letter-spacing:.05em;text-transform:uppercase">${esc(cat)}</div>`;
     html += `<div style="display:flex;flex-wrap:wrap;gap:6px;width:100%">` +
       kinds.map(k => `
-        <button class="ghost ${k===_onboardCurrent?'primary':''}" data-kind="${esc(k)}" onclick="selectOnboard('${esc(k)}')">
+        <button type="button" class="ghost onboard-kind-btn ${k === _onboardCurrent ? "active" : ""}" data-kind="${esc(k)}" onclick="selectOnboard('${esc(k)}')">
           ${esc(DEVICE_GUIDES[k].label || k)}
         </button>`).join("") +
       `</div>`;
@@ -6131,40 +6199,61 @@ function renderOnboardKindBar() {
   $("#onboardKindBar").innerHTML = html;
 }
 
-window.selectOnboard = kind => {
-  if (!DEVICE_GUIDES[kind]) return;
-  _onboardCurrent = kind;
-  renderOnboardKindBar();
-  renderOnboardGuide();
-};
-
-function renderOnboardGuide() {
-  const g = DEVICE_GUIDES[_onboardCurrent];
-  if (!g) { $("#onboardContent").innerHTML = ""; return; }
-  const prereqs = (g.prereqs||[]).map(p => `<li>${onboardSubstitute(p)}</li>`).join("");
-  const steps = (g.steps||[]).map((s, i) => {
+function buildOnboardGuideBody(kind) {
+  const g = DEVICE_GUIDES[kind];
+  if (!g) return "";
+  const prereqs = (g.prereqs || []).map(p => `<li>${onboardSubstitute(p)}</li>`).join("");
+  const steps = (g.steps || []).map((s, i) => {
     const code = onboardSubstitute(s.code);
-    const codeAttr = code.replace(/&/g,"&amp;").replace(/'/g,"&#39;").replace(/"/g,"&quot;");
     return `
-      <div class="card" style="margin:12px 0;padding:14px">
-        <div class="row" style="justify-content:space-between;align-items:flex-start">
-          <h4 style="margin:0 0 8px">${esc(s.title)}</h4>
-          <button class="ghost" data-copy-idx="${i}" onclick="copyOnboardStep(${i})">Copy</button>
+      <div class="onboard-step">
+        <div class="onboard-step-head">
+          <h4>${esc(s.title)}</h4>
+          <button type="button" class="ghost" onclick="copyOnboardStep(${i})">Copy</button>
         </div>
-        <pre id="onboardStep-${i}" style="white-space:pre-wrap;word-break:break-all;background:#0f1116;color:#e6e8eb;padding:12px;border-radius:6px;overflow-x:auto;font-size:12px">${esc(code)}</pre>
+        <pre id="onboardStep-${i}">${esc(code)}</pre>
       </div>`;
   }).join("");
-  $("#onboardContent").innerHTML = `
-    <h3 style="margin-bottom:4px">${esc(g.label)}</h3>
-    <p class="muted">${g.intro}</p>
-    ${prereqs ? `<h4 style="margin-top:14px">Prerequisites</h4><ul class="desc">${prereqs}</ul>` : ""}
-    ${steps}`;
+  return `${prereqs ? `<h4 style="margin:0 0 8px">Prerequisites</h4><ul class="desc" style="margin:0 0 14px">${prereqs}</ul>` : ""}${steps}`;
 }
 
+function openOnboardModal(kind) {
+  const g = DEVICE_GUIDES[kind];
+  if (!g) return;
+  _onboardCurrent = kind;
+  renderOnboardKindBar();
+  $("#onboardModalTitle").textContent = g.label || kind;
+  $("#onboardModalIntro").textContent = g.intro || "";
+  $("#onboardModalBody").innerHTML = buildOnboardGuideBody(kind);
+  const modal = $("#onboardGuideModal");
+  modal.classList.add("show");
+  modal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeOnboardModal() {
+  const modal = $("#onboardGuideModal");
+  modal.classList.remove("show");
+  modal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+}
+
+function refreshOnboardModalIfOpen() {
+  const modal = $("#onboardGuideModal");
+  if (!modal || !modal.classList.contains("show")) return;
+  $("#onboardModalBody").innerHTML = buildOnboardGuideBody(_onboardCurrent);
+}
+
+window.selectOnboard = kind => openOnboardModal(kind);
+
 window.copyOnboardStep = idx => {
-  const el = document.getElementById("onboardStep-" + idx);
+  const el = document.querySelector(`#onboardModalBody #onboardStep-${idx}`);
   if (el) copyToClipboard(el.textContent);
 };
+
+$("#onboardModalClose")?.addEventListener("click", closeOnboardModal);
+$("#onboardModalCloseBtn")?.addEventListener("click", closeOnboardModal);
+// Sticky modal: do not close when clicking the backdrop — only Close button.
 
 async function loadOnboard() {
   // Default proxy host if the user hasn't typed one.
@@ -6186,16 +6275,15 @@ async function loadOnboard() {
     } catch { /* ignore — guide will show a placeholder */ }
   }
   renderOnboardKindBar();
-  renderOnboardGuide();
 }
 
 $("#onboardHostReset")?.addEventListener("click", () => {
   $("#onboardHost").value = detectedProxyHost();
-  renderOnboardGuide();
+  refreshOnboardModalIfOpen();
 });
 ["onboardHost","onboardSshPort","onboardTacPort","onboardSecret"].forEach(id => {
   const el = document.getElementById(id);
-  if (el) el.addEventListener("input", () => renderOnboardGuide());
+  if (el) el.addEventListener("input", () => refreshOnboardModalIfOpen());
 });
 
 // --- Settings ---
