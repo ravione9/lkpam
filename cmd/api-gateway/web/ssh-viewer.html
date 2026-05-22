@@ -117,11 +117,9 @@
       let terminalHasFocus = false;
       const typedKeysyms = [];
 
-      // The Guacamole canvas has an intrinsic pixel size set by guacd (terminal
-      // cols × font width). To make it actually fill the wrapper regardless of
-      // what guacd chose, JS computes a transform: scale() factor and applies
-      // it directly to the display element. The zoom slider multiplies that
-      // base "fit" factor.
+      // Keep layout full-bleed at all times: canvas fills wrapper exactly.
+      // Zoom changes terminal density (rows/cols) via sendSize instead of
+      // shrinking the visible area.
       function applyZoom() {
         const cw = guacDisplay.getWidth();
         const ch = guacDisplay.getHeight();
@@ -131,18 +129,27 @@
         }
         const ww = Math.max(displayWrap.clientWidth, 400);
         const wh = Math.max(displayWrap.clientHeight, 300);
-        // Non-uniform scale fills the whole wrapper. Text gets slightly
-        // stretched when the wrapper aspect ratio differs from the SSH grid,
-        // but the user prefers full-window fill over crisp-but-letterboxed.
-        const scaleX = (ww / cw) * zoom;
-        const scaleY = (wh / ch) * zoom;
+        // Always fill wrapper; zoom is applied through requestZoomSize().
+        const scaleX = ww / cw;
+        const scaleY = wh / ch;
         guacScreen.style.transform = "scale(" + scaleX + ", " + scaleY + ")";
         guacScreen.style.transformOrigin = "top left";
         zoomLabel.textContent = Math.round(zoom * 100) + "%";
       }
 
+      function requestZoomSize() {
+        if (!connected) return;
+        const ww = Math.max(displayWrap.clientWidth, 400);
+        const wh = Math.max(displayWrap.clientHeight, 300);
+        // Lower zoom => larger virtual terminal => smaller font, more rows.
+        const virtualW = Math.max(Math.round(ww / zoom), 320);
+        const virtualH = Math.max(Math.round(wh / zoom), 240);
+        client.sendSize(virtualW, virtualH);
+      }
+
       function setZoom(z) {
         zoom = Math.min(2.0, Math.max(0.5, Math.round(z * 10) / 10));
+        requestZoomSize();
         applyZoom();
         displayEl.focus();
       }
@@ -279,13 +286,12 @@
         client.sendKeyEvent(0, keysym);
       };
 
-      function sendDisplaySize() {
-        applyZoom();
-      }
+      function sendDisplaySize() { requestZoomSize(); }
 
       client.onstatechange = state => {
         if (state === Guacamole.Client.State.CONNECTED) {
           connected = true;
+          sendDisplaySize();
           setTimeout(() => {
             applyZoom();
             displayEl.focus();
@@ -381,7 +387,7 @@
       document.addEventListener("fullscreenchange", () => {
         fullscreenBtn.textContent = document.fullscreenElement ? "Exit FS" : "Fullscreen";
         // Recompute scaling for the new window size.
-        setTimeout(applyZoom, 100);
+        setTimeout(() => { sendDisplaySize(); applyZoom(); }, 100);
       });
 
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();
