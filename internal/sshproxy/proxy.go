@@ -539,7 +539,7 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		case "priv-account":
 			return fmt.Sprintf("PAM: could not log in to %s as %s (privileged account).\r\nCheck the password in Privileged Accounts, or remove the account to use your portal credentials.\r\nUnderlying error: %v\r\n", host, out.user, out.err)
 		case "provision", "provisioned":
-			return fmt.Sprintf("PAM: could not open a personal Linux session on %s as %s.\r\nEnsure privileged account pam-svc (or similar) has sudo to run useradd/chpasswd, and that PasswordAuthentication is enabled.\r\nUnderlying error: %v\r\n", host, out.user, out.err)
+			return fmt.Sprintf("PAM: could not open a personal Linux session on %s as %s.\r\nEnsure bootstrap account pam-svc has passwordless sudo (sudo -n): NOPASSWD for useradd, chpasswd, tee /etc/sudoers.d/*.\r\nEnable PasswordAuthentication in sshd_config.\r\nDetails: %v\r\n", host, out.user, out.err)
 		case "passthrough":
 			hint := fmt.Sprintf("For Linux: PAM logs you in as your own account (%s), not the shared bootstrap user. PasswordAuthentication must be enabled in sshd_config.\r\n", out.user)
 			if isNetworkAppliance {
