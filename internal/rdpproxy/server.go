@@ -117,6 +117,9 @@ type sessionParams struct {
 	PrivateKey []byte
 	RecDir    string
 	route     string // browser SSH: direct-target | ssh-proxy | ssh-proxy-fallback
+	// Clipboard permissions for browser SSH (default allow).
+	ClipboardCopyAllowed  bool
+	ClipboardPasteAllowed bool
 }
 
 type recordingTunnel struct {
@@ -179,8 +182,8 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 			"server-alive-interval":  "30",
 			"timeout":                "120",
 			"backspace":              "127",
-			"disable-copy":           "false",
-			"disable-paste":          "false",
+			"disable-copy":           strconv.FormatBool(!params.ClipboardCopyAllowed),
+			"disable-paste":          strconv.FormatBool(!params.ClipboardPasteAllowed),
 		}
 		if len(params.PrivateKey) > 0 {
 			config.Parameters["private-key"] = string(params.PrivateKey)
@@ -294,6 +297,8 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 		Protocol:  protocol,
 		Host:      host,
 		Port:      port,
+		ClipboardCopyAllowed:  true,
+		ClipboardPasteAllowed: true,
 	}
 
 	switch protocol {
@@ -308,6 +313,8 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 				return nil, err
 			}
 			params.route = route
+			params.ClipboardCopyAllowed = creds.ClipboardCopyAllowed()
+			params.ClipboardPasteAllowed = creds.ClipboardPasteAllowed()
 		} else {
 			if port <= 0 {
 				port = 22

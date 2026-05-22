@@ -18,14 +18,16 @@ import (
 
 // LaunchResult is returned when a user starts a browser SSH session.
 type LaunchResult struct {
-	SessionID    string `json:"session_id"`
-	TargetName   string `json:"target_name"`
-	Host         string `json:"host"`
-	Port         int    `json:"port"`
-	Username     string `json:"username"`
-	BrowserURL   string `json:"browser_url"`
-	Recorded     bool   `json:"recorded"`
-	Instructions string `json:"instructions"`
+	SessionID      string `json:"session_id"`
+	TargetName     string `json:"target_name"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	Username       string `json:"username"`
+	BrowserURL     string `json:"browser_url"`
+	Recorded       bool   `json:"recorded"`
+	ClipboardCopy  bool   `json:"clipboard_copy"`
+	ClipboardPaste bool   `json:"clipboard_paste"`
+	Instructions   string `json:"instructions"`
 }
 
 // Service wires policy, approval, cert issuance, and session audit for SSH.
@@ -47,6 +49,32 @@ var (
 )
 
 const downstreamUser = "pam-user"
+
+func boolPtr(v bool) *bool { return &v }
+
+// clipboardPermissions derives browser clipboard permissions from policy
+// command deny-list markers.
+//
+// Supported markers in denied_commands:
+//   - clipboard.none  => disable copy + paste
+//   - clipboard.copy  => disable copy only
+//   - clipboard.paste => disable paste only
+func clipboardPermissions(dec policy.Decision) (copyAllowed, pasteAllowed bool) {
+	copyAllowed, pasteAllowed = true, true
+	for _, d := range dec.DeniedCmds {
+		k := strings.ToLower(strings.TrimSpace(d))
+		switch k {
+		case "clipboard.none", "clipboard":
+			copyAllowed = false
+			pasteAllowed = false
+		case "clipboard.copy":
+			copyAllowed = false
+		case "clipboard.paste":
+			pasteAllowed = false
+		}
+	}
+	return copyAllowed, pasteAllowed
+}
 
 // Launch authorizes the caller and prepares a recorded browser SSH session.
 // portalPassword is optional: same password you enter at the PuTTY/ssh proxy prompt
@@ -104,6 +132,7 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 			return nil, ErrApprovalRequired
 		}
 	}
+	clipboardCopy, clipboardPaste := clipboardPermissions(dec)
 
 	principals := []string{userRole, downstreamUser}
 	_ = principals // reserved for future direct-to-target cert auth
@@ -126,6 +155,8 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		UserID: userID, TargetID: targetID,
 		SessionID: sessionID,
 		PassthroughPW: strings.TrimSpace(portalPassword),
+		ClipboardCopy:  boolPtr(clipboardCopy),
+		ClipboardPaste: boolPtr(clipboardPaste),
 	})
 	if err != nil {
 		return nil, err
@@ -163,6 +194,8 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		Username:   downstreamUser,
 		BrowserURL: browserURL,
 		Recorded:   true,
+		ClipboardCopy:  clipboardCopy,
+		ClipboardPaste: clipboardPaste,
 		Instructions: "Browser session opens a recorded terminal in your browser (guacd). " +
 			"Use the same @target as PuTTY (host or machine name). Provide your portal password at launch for switches without a privileged account.",
 	}, nil

@@ -11,11 +11,23 @@ type SessionCreds struct {
 	Mode       string `json:"mode"` // browser
 	Token      string `json:"token"`
 	PortalUser string `json:"portal_user"`
-	TargetRef      string `json:"target_ref"` // host/name slug or #id (same as PuTTY -l)
-	UserID         int64  `json:"user_id"`
-	TargetID       int64  `json:"target_id"`
-	SessionID      string `json:"session_id"`
-	PassthroughPW  string `json:"passthrough_pw,omitempty"` // optional portal password for device login
+	TargetRef   string `json:"target_ref"` // host/name slug or #id (same as PuTTY -l)
+	UserID      int64  `json:"user_id"`
+	TargetID    int64  `json:"target_id"`
+	SessionID   string `json:"session_id"`
+	PassthroughPW string `json:"passthrough_pw,omitempty"` // optional portal password for device login
+	// Optional clipboard permissions for browser SSH.
+	// nil means "default allow" for backward compatibility with older sessions.
+	ClipboardCopy  *bool `json:"clipboard_copy,omitempty"`
+	ClipboardPaste *bool `json:"clipboard_paste,omitempty"`
+}
+
+func (c SessionCreds) ClipboardCopyAllowed() bool {
+	return c.ClipboardCopy == nil || *c.ClipboardCopy
+}
+
+func (c SessionCreds) ClipboardPasteAllowed() bool {
+	return c.ClipboardPaste == nil || *c.ClipboardPaste
 }
 
 // BrowserTokenVaultKey is the vault lookup key for ssh-proxy one-time auth.

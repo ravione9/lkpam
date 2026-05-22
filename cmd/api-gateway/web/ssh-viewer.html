@@ -76,6 +76,8 @@
     const params = new URLSearchParams(location.search);
     const sessionId = params.get("session");
     const token = params.get("token");
+    const clipboardCopyAllowed = params.get("clipboard_copy") !== "0";
+    const clipboardPasteAllowed = params.get("clipboard_paste") !== "0";
     const statusEl = document.getElementById("status");
     const labelEl = document.getElementById("sessionLabel");
     const fallbackEl = document.getElementById("fallback");
@@ -95,6 +97,13 @@
         msg + " Use Open in Terminal or Open in PuTTY from the Launch dialog in the portal.";
     }
 
+    function clipboardPolicySuffix() {
+      if (clipboardCopyAllowed && clipboardPasteAllowed) return "";
+      if (!clipboardCopyAllowed && !clipboardPasteAllowed) return " Clipboard disabled by policy.";
+      if (!clipboardCopyAllowed) return " Copy disabled by policy.";
+      return " Paste disabled by policy.";
+    }
+
     if (typeof Guacamole === "undefined") {
       showFallback("Guacamole client library failed to load (/vendor/guacamole-common.min.js). Redeploy api-gateway.");
     } else if (!sessionId || !token) {
@@ -110,6 +119,11 @@
       const guacDisplay = client.getDisplay();
       const guacScreen = guacDisplay.getElement();
       displayEl.appendChild(guacScreen);
+      const pasteBtn = document.getElementById("pasteBtn");
+      if (!clipboardPasteAllowed) {
+        pasteBtn.disabled = true;
+        pasteBtn.title = "Paste disabled by policy";
+      }
 
       let connected = false;
       let zoom = 1;
@@ -176,12 +190,13 @@
           statusEl.textContent = "Enable: PAM is sending the password — wait for # prompt.";
           setTimeout(() => {
             enableInputLock = false;
-            if (connected) statusEl.textContent = "Connected — click terminal, then type. Paste / Ctrl+V for clipboard.";
+            if (connected) statusEl.textContent = "Connected — click terminal, then type. Paste / Ctrl+V for clipboard." + clipboardPolicySuffix();
           }, 2500);
         }
       }
 
       function pasteToSession(text) {
+        if (!clipboardPasteAllowed) return;
         const normalized = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
         // Send keystrokes with a tiny delay between characters. Some SSH targets
         // (Cisco IOS, FortiGate) drop input when keysyms arrive in one burst.
@@ -205,6 +220,10 @@
       }
 
       async function openPasteDialog() {
+        if (!clipboardPasteAllowed) {
+          statusEl.textContent = "Paste is disabled by policy for this session.";
+          return;
+        }
         pasteArea.value = "";
         pasteOverlay.classList.add("open");
         // Try the modern clipboard API first (works on HTTPS); if it fails,
@@ -226,7 +245,7 @@
       function closePasteDialog() {
         pasteOverlay.classList.remove("open");
         if (connected) {
-          statusEl.textContent = "Connected — click terminal, then type. Paste / Ctrl+V for clipboard.";
+          statusEl.textContent = "Connected — click terminal, then type. Paste / Ctrl+V for clipboard." + clipboardPolicySuffix();
           displayEl.focus();
         }
       }
@@ -251,6 +270,7 @@
         let text = "";
         reader.ontext = chunk => { text += chunk; };
         reader.onend = () => {
+          if (!clipboardCopyAllowed) return;
           if (!text) return;
           const ta = document.createElement("textarea");
           ta.value = text;
@@ -296,7 +316,7 @@
             applyZoom();
             displayEl.focus();
           }, 200);
-          statusEl.textContent = "Connected — click terminal, then type. Paste / Ctrl+V for clipboard.";
+          statusEl.textContent = "Connected — click terminal, then type. Paste / Ctrl+V for clipboard." + clipboardPolicySuffix();
           statusEl.className = "";
           fallbackEl.style.display = "none";
         }
