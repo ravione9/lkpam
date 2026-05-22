@@ -17,6 +17,12 @@
     #fallback h2 { font-size: 16px; margin-bottom: 8px; }
     #fallback p { font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 1.5; }
     #fallback a { color: #38bdf8; }
+    #clipPanel { padding: 8px 16px; background: #020617; border-top: 1px solid #334155; font-family: system-ui, sans-serif; font-size: 12px; display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 8px; align-items: start; }
+    #clipPanel label { color: #94a3b8; grid-column: span 2; }
+    #clipPanel textarea { width: 100%; min-height: 44px; resize: vertical; background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 6px 8px; font: inherit; }
+    #clipPanel button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; align-self: end; }
+    #clipHint { grid-column: 1 / -1; color: #64748b; font-size: 11px; }
+    #display:focus { outline: 1px solid #38bdf8; outline-offset: -1px; }
   </style>
   <script>window.module={exports:{}};</script>
   <script src="/vendor/guacamole-common.min.js"></script>
@@ -29,11 +35,20 @@
     </div>
     <button id="disconnectBtn" style="padding:6px 14px;border-radius:6px;border:1px solid #475569;background:#334155;color:#e2e8f0;cursor:pointer;font-family:system-ui,sans-serif">Disconnect</button>
   </header>
-  <div id="display"></div>
+  <div id="display" tabindex="0" title="Click here, then paste (Ctrl+V) or use the panel below"></div>
   <div id="fallback">
     <h2>Browser session could not connect</h2>
     <p id="fallbackMsg">Use Terminal or PuTTY from the PAM portal Launch dialog instead — those use the same SSH proxy path and work without guacd in the browser.</p>
     <p><a href="/">← Back to PAM portal</a></p>
+  </div>
+  <div id="clipPanel">
+    <label>Paste into device (type or paste text, then Send)</label>
+    <textarea id="clipPaste" placeholder="Paste from your PC here…"></textarea>
+    <button type="button" id="clipSendBtn">Send to device</button>
+    <label>Copied from device (select text in terminal above)</label>
+    <textarea id="clipLocal" readonly placeholder="Selection from switch appears here…"></textarea>
+    <button type="button" id="clipCopyBtn">Copy to PC</button>
+    <div id="clipHint">Tip: focus the terminal and paste with Ctrl+V, or Ctrl+Shift+V. HTTP sites may block automatic copy — use “Copy to PC”. PuTTY-style copy: select in terminal first.</div>
   </div>
   <div id="status">Session is recorded by PAM for audit.</div>
   <script>
@@ -44,6 +59,31 @@
     const labelEl = document.getElementById("sessionLabel");
     const fallbackEl = document.getElementById("fallback");
     const displayEl = document.getElementById("display");
+    const clipPaste = document.getElementById("clipPaste");
+    const clipLocal = document.getElementById("clipLocal");
+
+    function writeLocalClipboard(text) {
+      if (!text) return;
+      clipLocal.value = text;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      }
+    }
+
+    function copyLocalToPC() {
+      const text = clipLocal.value;
+      if (!text) return;
+      clipLocal.select();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(
+          () => { statusEl.textContent = "Copied to your PC clipboard."; },
+          () => { document.execCommand("copy"); statusEl.textContent = "Copied (fallback)."; }
+        );
+      } else {
+        document.execCommand("copy");
+        statusEl.textContent = "Copied (select + copy).";
+      }
+    }
 
     function showFallback(msg) {
       statusEl.textContent = msg;
@@ -70,6 +110,28 @@
       displayEl.appendChild(client.getDisplay().getElement());
 
       let connected = false;
+
+      function sendToDevice(text) {
+        if (!connected || !text) return;
+        const data = String(text).replace(/\r\n/g, "\n");
+        if (typeof client.setClipboard === "function") {
+          client.setClipboard(data);
+          return;
+        }
+        const stream = client.createClipboardStream("text/plain", "clip");
+        const writer = new Guacamole.StringWriter(stream);
+        writer.sendText(data);
+        writer.sendEnd();
+      }
+
+      client.onclipboard = function(stream, mimetype) {
+        if (!/^text\//.test(mimetype || "")) return;
+        const reader = new Guacamole.StringReader(stream);
+        let text = "";
+        reader.ontext = chunk => { text += chunk; };
+        reader.onend = () => writeLocalClipboard(text);
+      };
+
       function sendDisplaySize() {
         const w = Math.max(displayEl.clientWidth || 0, 800);
         const h = Math.max(displayEl.clientHeight || 0, 480);
@@ -83,6 +145,7 @@
           statusEl.className = "";
           fallbackEl.style.display = "none";
           displayEl.style.display = "";
+          displayEl.focus();
         }
         if (state === Guacamole.Client.State.DISCONNECTED) {
           statusEl.textContent = connected
@@ -120,10 +183,40 @@
         showFallback(msg);
       };
 
-      requestAnimationFrame(() => {
-        sendDisplaySize();
-        connect();
+      document.getElementById("clipSendBtn").onclick = () => {
+        sendToDevice(clipPaste.value);
+        clipPaste.value = "";
+        displayEl.focus();
+      };
+      clipPaste.addEventListener("keydown", e => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          sendToDevice(clipPaste.value);
+          clipPaste.value = "";
+          displayEl.focus();
+        }
       });
+      document.getElementById("clipCopyBtn").onclick = copyLocalToPC;
+
+      displayEl.addEventListener("paste", e => {
+        if (!connected) return;
+        e.preventDefault();
+        const text = (e.clipboardData && e.clipboardData.getData("text/plain")) || "";
+        if (text) sendToDevice(text);
+      });
+      displayEl.addEventListener("keydown", e => {
+        if (!connected) return;
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "v" || e.key === "V")) {
+          e.preventDefault();
+          if (navigator.clipboard && navigator.clipboard.readText) {
+            navigator.clipboard.readText().then(sendToDevice).catch(() => clipPaste.focus());
+          } else {
+            clipPaste.focus();
+          }
+        }
+      });
+
+      requestAnimationFrame(() => connect());
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();
     }
   </script>

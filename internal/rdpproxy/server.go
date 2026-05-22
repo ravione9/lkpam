@@ -179,6 +179,8 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 			"server-alive-interval":  "30",
 			"timeout":                "120",
 			"backspace":              "127",
+			"disable-copy":           "false",
+			"disable-paste":          "false",
 		}
 		if len(params.PrivateKey) > 0 {
 			config.Parameters["private-key"] = string(params.PrivateKey)
