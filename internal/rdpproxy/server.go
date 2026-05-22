@@ -172,7 +172,7 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 			"recording-path":         params.RecDir,
 			"recording-name":         params.SessionID,
 			"create-recording-path":  "true",
-			"font-size":              "14",
+			"font-size":              "10",
 			"color-scheme":           "gray-black",
 			"terminal-type":          "vt100",
 			"scrollback":             "1000",

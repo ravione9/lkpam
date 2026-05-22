@@ -13,18 +13,16 @@
     .toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 14px; min-width: 36px; }
     .toolbar button:hover { background: #475569; }
     #zoomLabel { font-size: 12px; color: #94a3b8; min-width: 48px; text-align: center; }
-    #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #000; position: relative; cursor: text; }
-    #display { outline: none; display: block; width: 100%; height: 100%; position: relative; cursor: text; }
-    #display.focused::after { content: ""; position: absolute; inset: 0; border: 2px solid #38bdf8; pointer-events: none; box-sizing: border-box; }
-    #zoomSizer { position: absolute; top: 0; left: 0; transform-origin: top left; line-height: 0; pointer-events: none; }
-    #zoomSizer canvas { pointer-events: none; cursor: text; }
+    #displayWrap { flex: 1; min-height: 320px; overflow: auto; background: #000; position: relative; cursor: text; }
+    #display { outline: none; display: inline-block; cursor: text; vertical-align: top; }
+    #display.focused { box-shadow: inset 0 0 0 2px #38bdf8; }
+    #display canvas { display: block; cursor: text; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
     #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
     #fallback h2 { font-size: 16px; margin-bottom: 8px; }
     #fallback p { font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 1.5; }
     #fallback a { color: #38bdf8; }
-    #display:focus { outline: none; }
     #pasteOverlay { display: none; position: fixed; inset: 0; background: rgba(2, 6, 23, 0.75); z-index: 10000; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
     #pasteOverlay.open { display: flex; }
     .paste-dialog { background: #1e293b; border: 1px solid #475569; border-radius: 10px; padding: 16px; width: min(520px, 92vw); box-shadow: 0 16px 48px rgba(0,0,0,0.5); }
@@ -54,9 +52,7 @@
     </div>
   </header>
   <div id="displayWrap">
-    <div id="display" tabindex="0" aria-label="SSH terminal">
-      <div id="zoomSizer"></div>
-    </div>
+    <div id="display" tabindex="0" aria-label="SSH terminal"></div>
   </div>
   <div id="pasteOverlay" role="dialog" aria-labelledby="pasteTitle">
     <div class="paste-dialog">
@@ -83,25 +79,11 @@
     const labelEl = document.getElementById("sessionLabel");
     const fallbackEl = document.getElementById("fallback");
     const displayEl = document.getElementById("display");
-    const zoomSizer = document.getElementById("zoomSizer");
+    const displayWrap = document.getElementById("displayWrap");
     const zoomLabel = document.getElementById("zoomLabel");
     const pasteOverlay = document.getElementById("pasteOverlay");
     const pasteArea = document.getElementById("pasteArea");
     const KEYSYM_RETURN = 0xFF0D;
-
-    function copyToPC(text) {
-      if (!text) return;
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.cssText = "position:fixed;left:-9999px";
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand("copy"); } catch (_) {}
-      document.body.removeChild(ta);
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {});
-      }
-    }
 
     function showFallback(msg) {
       statusEl.textContent = msg;
@@ -126,53 +108,37 @@
       const client = new Guacamole.Client(tunnel);
       const guacDisplay = client.getDisplay();
       const guacScreen = guacDisplay.getElement();
-      zoomSizer.appendChild(guacScreen);
-      const displayWrap = document.getElementById("displayWrap");
+      displayEl.appendChild(guacScreen);
 
       let connected = false;
-      let zoom = 0.6; // default: 60% — shows more terminal rows out of the box.
+      let zoom = 1;
       let enableInputLock = false;
-      let canvasW = 800;
-      let canvasH = 480;
+      let terminalHasFocus = false;
       const typedKeysyms = [];
 
-      function wrapperSize() {
-        return {
-          w: Math.max(displayWrap.clientWidth, 400),
-          h: Math.max(displayWrap.clientHeight, 300),
-        };
-      }
-
-      // The Guacamole SSH canvas pixel size is locked at the size passed to
-      // client.connect(). We connect with size = wrapper / zoom so the SSH
-      // terminal grid has more rows/cols, then CSS-scale the canvas to fit the
-      // wrapper. Effect: a smaller zoom = smaller-looking font, same window.
-      function applyZoomLayout() {
-        zoomSizer.style.transform = "scale(" + zoom + ")";
-        zoomSizer.style.width = canvasW + "px";
-        zoomSizer.style.height = canvasH + "px";
+      function applyZoom() {
+        guacScreen.style.transform = "scale(" + zoom + ")";
+        guacScreen.style.transformOrigin = "top left";
+        // Reserve enough layout space so scrolling works at large zoom levels.
+        const w = guacDisplay.getWidth() * zoom;
+        const h = guacDisplay.getHeight() * zoom;
+        displayEl.style.width = (w > 0 ? Math.ceil(w) : displayWrap.clientWidth) + "px";
+        displayEl.style.height = (h > 0 ? Math.ceil(h) : displayWrap.clientHeight) + "px";
         zoomLabel.textContent = Math.round(zoom * 100) + "%";
       }
 
       function setZoom(z) {
-        zoom = Math.min(2.0, Math.max(0.5, Math.round(z * 10) / 10));
-        applyZoomLayout();
+        zoom = Math.min(2.5, Math.max(0.5, Math.round(z * 10) / 10));
+        applyZoom();
         displayEl.focus();
       }
 
-      guacDisplay.onresize = function(w, h) {
-        if (w > 0 && h > 0) {
-          canvasW = w;
-          canvasH = h;
-          applyZoomLayout();
-        }
-      };
+      guacDisplay.onresize = () => applyZoom();
 
       function rememberKeysym(keysym) {
         typedKeysyms.push(keysym);
         if (typedKeysyms.length > 24) typedKeysyms.shift();
       }
-
       function recentAscii() {
         let s = "";
         for (const k of typedKeysyms) {
@@ -180,7 +146,6 @@
         }
         return s;
       }
-
       function maybeStartEnableLock(keysym) {
         if (keysym !== KEYSYM_RETURN) return;
         const tail = recentAscii().trim().toLowerCase();
@@ -188,11 +153,9 @@
           enableInputLock = true;
           typedKeysyms.length = 0;
           statusEl.textContent = "Enable: PAM is sending the password — wait for # prompt.";
-          // PAM injects the secret in <1s; lift the lock quickly so a missed
-          // # detection on the server cannot keep the user from typing.
           setTimeout(() => {
             enableInputLock = false;
-            if (connected) statusEl.textContent = "Connected — type commands; Paste button for clipboard.";
+            if (connected) statusEl.textContent = "Connected — click terminal, then type. Paste / Ctrl+V for clipboard.";
           }, 2500);
         }
       }
@@ -224,17 +187,15 @@
         pasteArea.value = "";
         pasteOverlay.classList.add("open");
         statusEl.textContent = "Paste dialog open — Ctrl+V into the box, then Send to terminal.";
-        setTimeout(() => { pasteArea.focus(); }, 50);
+        setTimeout(() => pasteArea.focus(), 50);
       }
-
       function closePasteDialog() {
         pasteOverlay.classList.remove("open");
         if (connected) {
-          statusEl.textContent = "Connected — Paste button or Ctrl+V opens paste box. Type en only for enable.";
+          statusEl.textContent = "Connected — click terminal, then type. Paste / Ctrl+V for clipboard.";
           displayEl.focus();
         }
       }
-
       function submitPaste() {
         const text = pasteArea.value;
         if (!text) {
@@ -258,14 +219,22 @@
         const reader = new Guacamole.StringReader(stream);
         let text = "";
         reader.ontext = chunk => { text += chunk; };
-        reader.onend = () => copyToPC(text);
+        reader.onend = () => {
+          if (!text) return;
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.cssText = "position:fixed;left:-9999px";
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand("copy"); } catch (_) {}
+          document.body.removeChild(ta);
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(() => {});
+          }
+        };
       };
 
-      // Bind keyboard to the display element so form inputs (paste textarea,
-      // dialog buttons) keep working when focused. Guacamole.Keyboard on the
-      // document intercepted Ctrl+V inside the paste box.
       const keyboard = new Guacamole.Keyboard(displayEl);
-      let terminalHasFocus = false;
       displayEl.addEventListener("focus", () => {
         terminalHasFocus = true;
         displayEl.classList.add("focused");
@@ -286,24 +255,20 @@
         client.sendKeyEvent(0, keysym);
       };
 
-      // SSH does not use the remote mouse and CSS transform for zoom would
-      // misalign Guacamole.Mouse coordinates anyway. Skip mouse forwarding;
-      // click-to-focus is handled by the displayEl mousedown listener below.
-
       function sendDisplaySize() {
-        applyZoomLayout();
+        const w = Math.max(displayWrap.clientWidth, 400);
+        const h = Math.max(displayWrap.clientHeight, 300);
+        client.sendSize(w, h);
       }
 
       client.onstatechange = state => {
         if (state === Guacamole.Client.State.CONNECTED) {
           connected = true;
-          // Guacamole.Display.onresize gives us the real canvas size; if it
-          // hasn't fired yet, force a layout pass from the connect dims.
           setTimeout(() => {
-            applyZoomLayout();
+            applyZoom();
             displayEl.focus();
-          }, 250);
-          statusEl.textContent = "Connected — click the terminal to type. Paste / Ctrl+V for clipboard.";
+          }, 200);
+          statusEl.textContent = "Connected — click terminal, then type. Paste / Ctrl+V for clipboard.";
           statusEl.className = "";
           fallbackEl.style.display = "none";
         }
@@ -320,16 +285,13 @@
       };
 
       function connect() {
-        const dim = wrapperSize();
-        // Connect with a virtual canvas of wrapper / zoom so the SSH grid is
-        // larger and our CSS scale brings it back to the visible wrapper size.
-        canvasW = Math.round(dim.w / zoom);
-        canvasH = Math.round(dim.h / zoom);
+        const w = Math.max(displayWrap.clientWidth, 800);
+        const h = Math.max(displayWrap.clientHeight, 480);
         client.connect(
           "session=" + encodeURIComponent(sessionId)
           + "&token=" + encodeURIComponent(token)
-          + "&width=" + canvasW
-          + "&height=" + canvasH
+          + "&width=" + w
+          + "&height=" + h
         );
       }
 
@@ -337,7 +299,7 @@
       window.addEventListener("resize", () => {
         if (!connected) return;
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(applyZoomLayout, 200);
+        resizeTimer = setTimeout(() => { sendDisplaySize(); applyZoom(); }, 200);
       });
 
       tunnel.onerror = status => {
@@ -352,8 +314,6 @@
         showFallback(msg);
       };
 
-      // Global shortcut: Ctrl+V opens the paste dialog (works only when terminal has focus
-      // since textarea Ctrl+V is handled natively by the browser).
       displayEl.addEventListener("keydown", e => {
         if (!connected) return;
         if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "v" || e.key === "V")) {
@@ -374,8 +334,8 @@
         statusEl.textContent = "Text pasted — click Send to terminal when ready.";
       });
 
-      document.getElementById("zoomInBtn").onclick = () => { setZoom(zoom + 0.1); displayEl.focus(); };
-      document.getElementById("zoomOutBtn").onclick = () => { setZoom(zoom - 0.1); displayEl.focus(); };
+      document.getElementById("zoomInBtn").onclick = () => setZoom(zoom + 0.1);
+      document.getElementById("zoomOutBtn").onclick = () => setZoom(zoom - 0.1);
       document.getElementById("pasteBtn").onclick = () => openPasteDialog();
       document.getElementById("pasteSendBtn").onclick = () => submitPaste();
       document.getElementById("pasteCancelBtn").onclick = () => closePasteDialog();
@@ -384,7 +344,6 @@
       });
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();
 
-      // Click anywhere on the terminal area should give it focus so typing works.
       displayWrap.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
       displayEl.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
 
