@@ -91,6 +91,30 @@ func TestCmdGateFilterDownstreamRedactsEnableSecret(t *testing.T) {
 	}
 }
 
+func TestCmdGateClearsEnableStateAtHashPromptWithoutNewline(t *testing.T) {
+	// Cisco IOS prints the privileged prompt without a trailing newline.
+	// Before this fix, expectEnablePass stayed true and the next Enter from the
+	// user re-injected the enable secret as a command at the # prompt.
+	var up, down bytes.Buffer
+	gate := newCmdGate(&up, &down, nil, nil, nil, "Rescue@9897", "", nil)
+
+	_, _ = gate.Write([]byte("en\r"))
+	gate.noteOutput([]byte("\r\nPassword: "))
+	gate.noteOutput([]byte("\r\nok\r\nMonitoringSwitch#"))
+
+	if gate.waitingForEnablePassword() {
+		t.Fatalf("expected enable flow cleared after # prompt without trailing newline")
+	}
+	upBefore := up.Len()
+	_, _ = gate.Write([]byte("show ver\r"))
+	if !strings.Contains(up.String()[upBefore:], "show ver") {
+		t.Fatalf("subsequent keystrokes must reach upstream, got %q", up.String()[upBefore:])
+	}
+	if strings.Contains(up.String()[upBefore:], "Rescue@9897") {
+		t.Fatalf("must not re-inject enable secret at # prompt: %q", up.String()[upBefore:])
+	}
+}
+
 func TestCmdGateFilterDownstreamMasksByteByByteEcho(t *testing.T) {
 	// Simulate the real device echoing the Password: prompt and then the password
 	// one byte at a time, which is what showed plaintext in the browser session.

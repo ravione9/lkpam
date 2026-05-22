@@ -116,12 +116,24 @@ func (g *cmdGate) noteOutput(p []byte) {
 		}
 	}
 	trim := strings.TrimSpace(strings.ToLower(string(g.devLine)))
+	// Cisco/IOS prints the prompt WITHOUT a trailing newline. Detect privileged
+	// (#) and unprivileged (>) prompts here so handlePasswordKeystroke doesn't
+	// keep injecting the enable secret as a command at the # prompt.
+	if strings.HasSuffix(trim, "#") {
+		g.execPrivileged = true
+		g.resetEnableFlow()
+	} else if strings.HasSuffix(trim, ">") {
+		g.execPrivileged = false
+		if g.expectEnablePass {
+			g.resetEnableFlow()
+		}
+	}
 	if strings.Contains(trim, "password:") ||
 		strings.Contains(trim, "passphrase:") ||
 		strings.Contains(trim, "secret:") {
 		g.ignoreLine = true
 		// Auto-inject once per enable (first Password: prompt only).
-		if g.expectEnablePass && g.credentialForEnable() != "" && !g.enableInjected {
+		if g.expectEnablePass && !g.execPrivileged && g.credentialForEnable() != "" && !g.enableInjected {
 			g.injectEnableOnEnter = true
 			autoInject = true
 		}

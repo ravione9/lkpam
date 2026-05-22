@@ -191,8 +191,13 @@
         if (tail === "en" || tail.endsWith(" en") || /\ben$/.test(tail)) {
           enableInputLock = true;
           typedKeysyms.length = 0;
-          statusEl.textContent = "Enable: wait for # prompt — do not type or paste the enable password.";
-          setTimeout(() => { enableInputLock = false; }, 20000);
+          statusEl.textContent = "Enable: PAM is sending the password — wait for # prompt.";
+          // PAM injects the secret in <1s; lift the lock quickly so a missed
+          // # detection on the server cannot keep the user from typing.
+          setTimeout(() => {
+            enableInputLock = false;
+            if (connected) statusEl.textContent = "Connected — type commands; Paste button for clipboard.";
+          }, 2500);
         }
       }
 
@@ -260,7 +265,7 @@
         reader.onend = () => copyToPC(text);
       };
 
-      const keyboard = new Guacamole.Keyboard(displayEl);
+      const keyboard = new Guacamole.Keyboard(document);
       keyboard.onkeydown = keysym => {
         if (!connected || enableInputLock || pasteOverlay.classList.contains("open")) return;
         rememberKeysym(keysym);
