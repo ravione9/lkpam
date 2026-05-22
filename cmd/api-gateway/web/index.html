@@ -2313,14 +2313,24 @@ async function openMfaEnrollModal() {
   $("#mfaModal").classList.add("show");
 }
 
+// In-memory only: the portal password is held for the active tab so browser
+// SSH launches don't have to re-prompt. Never persisted, never sent over the
+// wire except as `portal_password` for ssh-launch (already required there).
+let portalPasswordCache = "";
+function rememberPortalPassword(pw) {
+  portalPasswordCache = typeof pw === "string" ? pw : "";
+}
+function getCachedPortalPassword() { return portalPasswordCache; }
+
 async function doLogin() {
   try {
     const otpRaw = ($("#otp").value || "").replace(/\D/g, "").slice(0, 6);
+    const submittedPW = $("#p").value;
     const data = await api("/auth/login", {
       method: "POST",
       body: JSON.stringify({
         Username: $("#u").value.trim(),
-        Password: $("#p").value,
+        Password: submittedPW,
         OTP: otpRaw,
       })
     });
@@ -2328,6 +2338,7 @@ async function doLogin() {
       await persistToken(data._accepted.enrollment_token);
       currentUser = data._accepted.user;
       mfaPolicyGlobal = data._accepted.mfa_policy || "required";
+      rememberPortalPassword(submittedPW);
       toast("Set up MFA to continue", "ok");
       await openMfaEnrollModal();
       return;
@@ -2342,6 +2353,7 @@ async function doLogin() {
     await persistToken(data.token);
     currentUser = data.user;
     mfaPolicyGlobal = data.mfa_policy || "required";
+    rememberPortalPassword(submittedPW);
     $("#otp").value = "";
     enterApp();
   } catch (e) { toast(e.message, "err"); }
@@ -2351,7 +2363,7 @@ $("#loginBtn").onclick = doLogin;
 $("#p").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 $("#otp").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
 $("#u").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
-$("#signout").onclick = async () => { await persistToken(null); location.reload(); };
+$("#signout").onclick = async () => { rememberPortalPassword(""); await persistToken(null); location.reload(); };
 $$("aside nav button[data-tab]").forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 // --- Dashboard ---
@@ -3554,11 +3566,18 @@ function showSshLaunchModal(target) {
   modal.querySelector("#sshBrowserBtn").onclick = async () => {
     const reason = prompt("Reason for recorded browser session:", "Approved access");
     if (reason === null) return;
-    const portalPassword = prompt(
-      "Portal password for device login (same as PuTTY SSH prompt).\nLeave blank only if a Privileged Account is linked to this target:",
-      ""
-    );
-    if (portalPassword === null) return;
+    // Reuse the password the user already typed at login. SAML/SSO sessions
+    // and resumed tabs (no cached password) still fall back to a prompt so a
+    // missing privileged account doesn't silently break the launch.
+    let portalPassword = getCachedPortalPassword();
+    if (!portalPassword) {
+      portalPassword = prompt(
+        "Portal password for device login (same as your PAM sign-in).\nLeave blank only if a Privileged Account is linked to this target:",
+        ""
+      );
+      if (portalPassword === null) return;
+      if (portalPassword) rememberPortalPassword(portalPassword);
+    }
     try {
       const res = await api(`/auth/targets/${target.id}/ssh-launch`, {
         method: "POST",
@@ -3573,6 +3592,9 @@ function showSshLaunchModal(target) {
     } catch (e) {
       if (e.message && e.message.includes("approved")) {
         toast("Access not approved yet — submit Request access first", "err");
+      } else if (e.message && /password|auth/i.test(e.message)) {
+        rememberPortalPassword("");
+        toast("Portal password rejected — sign in again or retry", "err");
       } else {
         toast(e.message, "err");
       }
