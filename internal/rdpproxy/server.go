@@ -35,6 +35,9 @@ type Server struct {
 	SSHProxyAddr string // dial address for browser SSH via ssh-proxy (e.g. ssh-proxy:2222)
 	RecordingDir string
 	ListenAddr   string
+	// guacdSSHHost/Port is the address passed to guacd for browser SSH (discovered at startup).
+	guacdSSHHost string
+	guacdSSHPort int
 
 	mu      sync.Mutex
 	tunnels map[string]guac.Tunnel
@@ -55,6 +58,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("rdpproxy: mkdir ssh recordings: %w", err)
 	}
 	s.tunnels = make(map[string]guac.Tunnel)
+	s.guacdSSHHost, s.guacdSSHPort = discoverSSHProxyAddr(s.SSHProxyAddr)
 
 	ws := guac.NewWebsocketServer(s.doConnect)
 
@@ -62,6 +66,14 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.HandleFunc("GET /health/deps", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		gh, gp := splitHostPort(s.GuacdAddr, 4822)
+		guacdOK := tcpOpen(gh, gp)
+		sshOK := tcpOpen(s.guacdSSHHost, s.guacdSSHPort)
+		_, _ = fmt.Fprintf(w, `{"guacd_tcp":%t,"ssh_proxy_tcp":%t,"guacd_ssh_host":%q,"guacd_ssh_port":%d}`,
+			guacdOK, sshOK, s.guacdSSHHost, s.guacdSSHPort)
 	})
 	mux.Handle("/websocket-tunnel", ws)
 	mux.Handle("/websocket-tunnel/", ws)
@@ -78,8 +90,7 @@ func (s *Server) Run(ctx context.Context) error {
 		srv.Close()
 	}()
 
-	sshHost, sshPort := sshProxyAddrForGuacd(s.SSHProxyAddr)
-	log.Printf("rdp-proxy listening on %s (guacd=%s, browser-ssh-via=%s:%d)", s.ListenAddr, s.GuacdAddr, sshHost, sshPort)
+	log.Printf("rdp-proxy listening on %s (guacd=%s, browser-ssh-via=%s:%d)", s.ListenAddr, s.GuacdAddr, s.guacdSSHHost, s.guacdSSHPort)
 	err := srv.ListenAndServe()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -257,9 +268,8 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 			return nil, fmt.Errorf("session credentials expired or missing")
 		}
 		if creds, perr := sshlaunch.ParseSessionCreds(key); perr == nil && creds.Mode == "browser" {
-			proxyHost, proxyPort := sshProxyAddrForGuacd(s.SSHProxyAddr)
-			params.Host = proxyHost
-			params.Port = proxyPort
+			params.Host = s.guacdSSHHost
+			params.Port = s.guacdSSHPort
 			params.Username = creds.PortalUser + "@" + creds.TargetRef
 			params.Password = creds.Token
 		} else {

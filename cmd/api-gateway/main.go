@@ -118,7 +118,7 @@ func main() {
 	mux.Handle("/api/audit/", gated(http.StripPrefix("/api/audit", reverse(auditURL)), authURL))
 	// RDP proxy validates JWT via token query param on WebSocket connect.
 	rdpURL := mustURL(config.Get("PAM_RDP_PROXY_URL", "http://localhost:8086"))
-	mux.Handle("/api/rdp/", http.StripPrefix("/api/rdp", reverse(rdpURL)))
+	mux.Handle("/api/rdp/", http.StripPrefix("/api/rdp", reverseWebSocket(rdpURL)))
 
 	// Session viewer pages must never fall back to index.html (that shows the login UI).
 	for _, page := range []string{"rdp-viewer.html", "ssh-viewer.html", "web-viewer.html"} {
@@ -149,7 +149,28 @@ func main() {
 }
 
 func reverse(target *url.URL) http.Handler {
+	return configureReverseProxy(httputil.NewSingleHostReverseProxy(target))
+}
+
+// reverseWebSocket proxies to rdp-proxy with HTTP/1.1 (required for WebSocket upgrade).
+func reverseWebSocket(target *url.URL) http.Handler {
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	return configureReverseProxy(proxy)
+}
+
+func configureReverseProxy(proxy *httputil.ReverseProxy) http.Handler {
 	orig := proxy.Director
 	proxy.Director = func(r *http.Request) {
 		orig(r)
