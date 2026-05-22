@@ -522,11 +522,13 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		case "passthrough":
 			hint := fmt.Sprintf("For Linux: ensure user %s exists on the server, PasswordAuthentication is enabled in sshd_config, and the password matches your PAM login.\r\n", out.user)
 			if isNetworkAppliance {
-				hint = "FortiGate/Cisco/network devices do not accept your portal AD password over SSH.\r\n" +
-					"Add a Privileged Account (Safes tab) with the device admin username + password,\r\n" +
-					"or configure TACACS+ on the device to authenticate portal users.\r\n"
+				hint = "This device does not know your portal user. Two options to fix:\r\n" +
+					"  1. Add a Privileged Account in the Safes tab with the device admin username/password.\r\n" +
+					"     PAM will use that account to log you in (recommended for Cisco/FortiGate).\r\n" +
+					"  2. Configure TACACS+ on the device so it asks PAM to authenticate your portal user.\r\n" +
+					"     See Machines -> Device Setup for the exact CLI/GUI commands.\r\n"
 			}
-			return fmt.Sprintf("PAM: could not log in to %s as %s using your portal credentials.\r\n%sOr add a Privileged Account with the device username + password.\r\nUnderlying error: %v\r\n", host, out.user, hint, out.err)
+			return fmt.Sprintf("PAM: could not log in to %s as %s using your portal credentials.\r\n%sUnderlying error: %v\r\n", host, out.user, hint, out.err)
 		default:
 			return fmt.Sprintf("PAM: could not connect to %s.\r\nAdd a privileged account for this target in the Privileged Accounts tab so PAM can log in for you.\r\nUnderlying error: %v\r\n", host, out.err)
 		}
@@ -547,14 +549,22 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		}
 		defer rec.Close()
 
-		if _, err := s.DB.Exec(`
-		INSERT INTO sessions(id, user_id, target_id, started_at, recording_path, client_ip)
-		VALUES(?, ?, ?, ?, ?, ?)`,
-			sessionID,
-			mustAtoi(sconn.Permissions.Extensions["user-id"]),
-			mustAtoi(sconn.Permissions.Extensions["target-id"]),
-			time.Now().Unix(), recPath, nc.RemoteAddr().String()); err != nil {
-			log.Printf("insert session: %v", err)
+		for attempt := 0; attempt < 5; attempt++ {
+			if _, err := s.DB.Exec(`
+			INSERT INTO sessions(id, user_id, target_id, started_at, recording_path, client_ip)
+			VALUES(?, ?, ?, ?, ?, ?)`,
+				sessionID,
+				mustAtoi(sconn.Permissions.Extensions["user-id"]),
+				mustAtoi(sconn.Permissions.Extensions["target-id"]),
+				time.Now().Unix(), recPath, nc.RemoteAddr().String()); err == nil {
+				break
+			} else {
+				log.Printf("insert session (attempt %d): %v", attempt+1, err)
+				if attempt == 4 {
+					break
+				}
+				time.Sleep(time.Duration(200*(attempt+1)) * time.Millisecond)
+			}
 		}
 	} else {
 		rec, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)

@@ -23,11 +23,22 @@ type DB struct {
 // Open opens (and migrates) the database at the given DSN.
 // Example DSN for sqlite: "file:./data/pam.db?cache=shared&_pragma=foreign_keys(1)"
 func Open(dsn string) (*DB, error) {
+	// busy_timeout (5s) lets writes from multiple services queue instead of
+	// failing immediately with SQLITE_BUSY. WAL is set in the DSN.
+	if !containsParam(dsn, "_pragma=busy_timeout") {
+		sep := "?"
+		if containsRune(dsn, '?') {
+			sep = "&"
+		}
+		dsn = dsn + sep + "_pragma=busy_timeout(5000)"
+	}
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db open: %w", err)
 	}
 	sqlDB.SetMaxOpenConns(1) // sqlite likes single-writer
+	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetConnMaxLifetime(time.Hour)
 	if err := sqlDB.PingContext(context.Background()); err != nil {
 		return nil, fmt.Errorf("db ping: %w", err)
 	}
@@ -36,6 +47,24 @@ func Open(dsn string) (*DB, error) {
 		return nil, fmt.Errorf("db migrate: %w", err)
 	}
 	return d, nil
+}
+
+func containsParam(dsn, name string) bool {
+	for i := 0; i+len(name) <= len(dsn); i++ {
+		if dsn[i:i+len(name)] == name {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRune(s string, r rune) bool {
+	for _, c := range s {
+		if c == r {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *DB) migrate() error {
