@@ -2272,6 +2272,7 @@ function showTab(name) {
   if (tab) tab.style.display = "block";
   $$("aside nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   $("#pageTitle").textContent = TAB_TITLES[name] || name;
+  if (name !== "sessions") stopSessionAutoRefresh();
   // Preload privileged accounts when admin lands on Machines so the SSH
   // launch modal can warn if a target has no account linked.
   if (name === "targets" && isAdmin() && !(cache.accounts && cache.accounts.length)) {
@@ -2282,7 +2283,7 @@ function showTab(name) {
     users: loadUsers, groups: loadGroups, roles: loadRoles,
     secrets: loadSecrets, policies: loadPolicies, matrix: loadMatrix,
     requests: loadRequests,
-    sessions: loadSessions, audit: loadAudit, proxy: loadProxy, ca: loadCA,
+    sessions: () => { loadSessions(); startSessionAutoRefresh(); }, audit: loadAudit, proxy: loadProxy, ca: loadCA,
     onboard: loadOnboard,
     safes: loadSafes, accounts: loadAccounts, checkouts: loadCheckouts,
     apps: loadApps, threats: loadThreats, reports: loadReports,
@@ -4161,6 +4162,7 @@ $("#reqSubmitBtn").onclick = async () => {
 // --- Sessions ---
 let sessionView = "live";
 let sessionCache = [];
+let sessionAutoTimer = null;
 
 function setSessionView(mode) {
   sessionView = mode;
@@ -4170,7 +4172,7 @@ function setSessionView(mode) {
   $("#sessionViewHistory").classList.toggle("ghost", mode !== "history");
   $("#sessionEndedCol").style.display = mode === "history" ? "" : "none";
   $("#sessionDesc").textContent = mode === "live"
-    ? "Active SSH, RDP, and web sessions. Admins can terminate live sessions."
+    ? "Active SSH, RDP, and web sessions. Auto-refreshing every 5 seconds. Admins can terminate live sessions."
     : "Ended sessions with SSH keystroke logs and RDP/web .guac recordings. Use View log or Download.";
   renderSessions();
 }
@@ -4179,9 +4181,27 @@ async function loadSessions() {
   try {
     if (!cache.targets.length) cache.targets = await api("/policy/targets");
     if (!cache.users.length) cache.users = await api("/auth/users");
-    sessionCache = await api("/audit/sessions?limit=200") || [];
+    sessionCache = await api("/audit/sessions?limit=200&_=" + Date.now()) || [];
     renderSessions();
   } catch (e) { $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+function startSessionAutoRefresh() {
+  stopSessionAutoRefresh();
+  sessionAutoTimer = setInterval(() => {
+    if (document.getElementById("tab-sessions")?.style.display !== "none") {
+      loadSessions();
+    } else {
+      stopSessionAutoRefresh();
+    }
+  }, 5000);
+}
+
+function stopSessionAutoRefresh() {
+  if (sessionAutoTimer) {
+    clearInterval(sessionAutoTimer);
+    sessionAutoTimer = null;
+  }
 }
 
 function renderSessions() {
