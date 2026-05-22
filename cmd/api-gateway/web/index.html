@@ -1399,7 +1399,7 @@
               <option value="sudo">sudo — NOPASSWD sudo for all commands</option>
               <option value="root">root — same as sudo (full elevation)</option>
             </select>
-            <span class="muted" style="grid-column:2">Applies when SSH creates a per-user Linux account (not shared pam-svc).</span>
+            <span class="muted" style="grid-column:2">Applies when SSH creates a per-user Linux account (not shared pam-svc). <code>sudo</code>/<code>root</code> writes <code>/etc/sudoers.d/pam-&lt;user&gt;</code> on each login — user must reconnect after changing this.</span>
           </div>
           <div class="row" style="margin-top:12px">
             <button class="primary" id="policySaveBtn">Save</button>
