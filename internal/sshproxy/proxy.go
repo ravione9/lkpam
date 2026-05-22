@@ -686,7 +686,7 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 					endNativeSession()
 				}
 			}()
-			s.pipeSession(ch, upClient, rec, sessionID, user, targetName, buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode),
+			s.pipeSession(ch, upClient, rec, sessionID, user, targetName, sessionBannerWithEnableHint(buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode), enableSecret),
 				parseCSV(sconn.Permissions.Extensions["allow-csv"]),
 				parseCSV(sconn.Permissions.Extensions["deny-csv"]),
 				enableSecret,
