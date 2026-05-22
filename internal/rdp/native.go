@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 )
 
 // NativeArtifacts holds optional native mstsc launch files (password embedded in script).
