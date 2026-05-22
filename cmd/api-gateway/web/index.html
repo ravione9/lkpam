@@ -1482,11 +1482,18 @@
 
       <!-- Sessions -->
       <section class="card tab" id="tab-sessions" style="display:none">
-        <h3>Live Sessions</h3>
-        <p class="desc">Active SSH, RDP, and web sessions only. SSH uses keystroke logs; RDP uses Guacamole .guac recordings. Admins can terminate live sessions. Ended sessions appear in Audit Log.</p>
+        <div class="row" style="justify-content:space-between;margin-bottom:12px;align-items:center">
+          <h3 style="margin:0">Sessions</h3>
+          <div class="row">
+            <button class="ghost" id="sessionViewLive" type="button">Live</button>
+            <button class="ghost" id="sessionViewHistory" type="button">History</button>
+            <button class="ghost" id="sessionRefreshBtn" type="button">Refresh</button>
+          </div>
+        </div>
+        <p class="desc" id="sessionDesc">Active SSH, RDP, and web sessions. Admins can terminate live sessions.</p>
         <table>
-          <thead><tr><th>Started</th><th>Protocol</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th>Recording</th><th></th></tr></thead>
-          <tbody id="sessionRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+          <thead><tr><th>Started</th><th id="sessionEndedCol" style="display:none">Ended</th><th>Protocol</th><th>User</th><th>Target</th><th>Client IP</th><th>Status</th><th></th></tr></thead>
+          <tbody id="sessionRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
         </table>
       </section>
 
@@ -4150,71 +4157,108 @@ $("#reqSubmitBtn").onclick = async () => {
 };
 
 // --- Sessions ---
+let sessionView = "live";
+let sessionCache = [];
+
+function setSessionView(mode) {
+  sessionView = mode;
+  $("#sessionViewLive").classList.toggle("primary", mode === "live");
+  $("#sessionViewLive").classList.toggle("ghost", mode !== "live");
+  $("#sessionViewHistory").classList.toggle("primary", mode === "history");
+  $("#sessionViewHistory").classList.toggle("ghost", mode !== "history");
+  $("#sessionEndedCol").style.display = mode === "history" ? "" : "none";
+  $("#sessionDesc").textContent = mode === "live"
+    ? "Active SSH, RDP, and web sessions. Admins can terminate live sessions."
+    : "Ended sessions with SSH keystroke logs and RDP/web .guac recordings. Use View log or Download.";
+  renderSessions();
+}
+
 async function loadSessions() {
   try {
     if (!cache.targets.length) cache.targets = await api("/policy/targets");
     if (!cache.users.length) cache.users = await api("/auth/users");
-    const um = Object.fromEntries(cache.users.map(u => [u.id, u.username]));
-    const tm = Object.fromEntries(cache.targets.map(t => [t.id, t.name]));
-    const rows = (await api("/audit/sessions?limit=200")).filter(s => !s.ended_at);
-    if (!rows.length) { $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">No active sessions.</td></tr>`; return; }
-    const tbody = $("#sessionRows");
-    tbody.innerHTML = "";
-    for (const s of rows) {
-      const active = !s.ended_at;
-      const proto = (s.protocol || "ssh").toUpperCase();
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${fmtTime(s.started_at)}</td>
-        <td><span class="pill ${proto==='RDP'?'warn':''}">${esc(proto)}</span></td>
-        <td>${esc(um[s.user_id] || s.user_id)}</td>
-        <td>${esc(tm[s.target_id] || s.target_id)}</td>
-        <td class="muted">${esc(s.client_ip) || '—'}</td>
-        <td>${active ? '<span class="pill ok">active</span>' : `<span class="pill">${esc(s.ended_reason || 'ended')}</span>`}</td>
-        <td class="muted" style="font-size:11px">${esc(s.recording_path) || '—'}</td>
-        <td class="actions"></td>`;
-      const actions = tr.querySelector(".actions");
-      if (active && isAdmin()) {
-        const tBtn = document.createElement("button");
-        tBtn.className = "ghost danger";
-        tBtn.textContent = "Terminate";
-        tBtn.addEventListener("click", () => terminateSession(s.id));
-        actions.appendChild(tBtn);
-      }
-      if (!active && s.recording_path) {
-        const isLog = /\.log$/i.test(s.recording_path);
-        if (isLog) {
-          const vBtn = document.createElement("button");
-          vBtn.className = "ghost";
-          vBtn.textContent = "View log";
-          vBtn.addEventListener("click", () => viewLogRecording(s.id));
-          actions.appendChild(vBtn);
-          const dBtn = document.createElement("button");
-          dBtn.className = "ghost";
-          dBtn.style.marginLeft = "6px";
-          dBtn.textContent = "Download";
-          dBtn.addEventListener("click", () => downloadRecording(s.id));
-          actions.appendChild(dBtn);
-        } else {
-          const dBtn = document.createElement("button");
-          dBtn.className = "ghost";
-          dBtn.style.marginLeft = "6px";
-          dBtn.textContent = "Recording";
-          dBtn.addEventListener("click", () => downloadRecording(s.id));
-          actions.appendChild(dBtn);
-        }
-      } else if (active && (proto === "RDP" || proto === "SSH")) {
-        const span = document.createElement("span");
-        span.className = "muted";
-        span.style.fontSize = "11px";
-        span.style.marginLeft = "6px";
-        span.textContent = "recording…";
-        actions.appendChild(span);
-      }
-      tbody.appendChild(tr);
-    }
+    sessionCache = await api("/audit/sessions?limit=200") || [];
+    renderSessions();
   } catch (e) { $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
 }
+
+function renderSessions() {
+  const um = Object.fromEntries(cache.users.map(u => [u.id, u.username]));
+  const tm = Object.fromEntries(cache.targets.map(t => [t.id, t.name]));
+  const rows = sessionView === "live"
+    ? sessionCache.filter(s => !s.ended_at)
+    : sessionCache.filter(s => s.ended_at);
+  if (!rows.length) {
+    $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">${sessionView === "live" ? "No active sessions." : "No session history yet."}</td></tr>`;
+    return;
+  }
+  const tbody = $("#sessionRows");
+  tbody.innerHTML = "";
+  for (const s of rows) {
+    const active = !s.ended_at;
+    const proto = (s.protocol || "ssh").toUpperCase();
+    const tr = document.createElement("tr");
+    const endedCell = sessionView === "history"
+      ? `<td class="muted">${fmtTime(s.ended_at)}</td>` : "";
+    tr.innerHTML = `
+      <td>${fmtTime(s.started_at)}</td>
+      ${endedCell}
+      <td><span class="pill ${proto==='RDP'?'warn':''}">${esc(proto)}</span></td>
+      <td>${esc(um[s.user_id] || s.user_id)}</td>
+      <td>${esc(tm[s.target_id] || s.target_id)}</td>
+      <td class="muted">${esc(s.client_ip) || '—'}</td>
+      <td>${active ? '<span class="pill ok">active</span>' : `<span class="pill ${s.ended_reason==='failed'?'err':''}">${esc(s.ended_reason || 'ended')}</span>`}</td>
+      <td class="actions"></td>`;
+    const actions = tr.querySelector(".actions");
+    if (active && isAdmin()) {
+      const tBtn = document.createElement("button");
+      tBtn.className = "ghost danger";
+      tBtn.textContent = "Terminate";
+      tBtn.addEventListener("click", () => terminateSession(s.id));
+      actions.appendChild(tBtn);
+    }
+    if (!active && s.recording_path) {
+      const isLog = /\.log$/i.test(s.recording_path);
+      if (isLog) {
+        const vBtn = document.createElement("button");
+        vBtn.className = "ghost";
+        vBtn.textContent = "View log";
+        vBtn.addEventListener("click", () => viewLogRecording(s.id));
+        actions.appendChild(vBtn);
+        const dBtn = document.createElement("button");
+        dBtn.className = "ghost";
+        dBtn.style.marginLeft = "6px";
+        dBtn.textContent = "Download";
+        dBtn.addEventListener("click", () => downloadRecording(s.id));
+        actions.appendChild(dBtn);
+      } else {
+        const dBtn = document.createElement("button");
+        dBtn.className = "ghost";
+        dBtn.textContent = "Recording";
+        dBtn.addEventListener("click", () => downloadRecording(s.id));
+        actions.appendChild(dBtn);
+      }
+    } else if (active && (proto === "RDP" || proto === "SSH")) {
+      const span = document.createElement("span");
+      span.className = "muted";
+      span.style.fontSize = "11px";
+      span.textContent = "recording…";
+      actions.appendChild(span);
+    } else if (!active && !s.recording_path) {
+      const span = document.createElement("span");
+      span.className = "muted";
+      span.style.fontSize = "11px";
+      span.textContent = "—";
+      actions.appendChild(span);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+$("#sessionViewLive").onclick = () => setSessionView("live");
+$("#sessionViewHistory").onclick = () => setSessionView("history");
+$("#sessionRefreshBtn").onclick = loadSessions;
+setSessionView("live");
 
 window.downloadRecording = async sid => {
   try {
@@ -5116,7 +5160,7 @@ test authentication authentication-profile PAM-AUTH username <user> password <pw
 
   "fortinet-fortigate": {
     label: "Fortinet FortiGate (CLI + GUI)",
-    intro: "FortiOS authenticates admins against the PAM TACACS+ server and maps remote group members to an admin profile. FortiGate does not send per-command TACACS authorization — use a read-only <code>accprofile</code> on the firewall for command restrictions. PAM denied-command policies apply to Cisco/Arista-style <code>aaa authorization commands</code> devices and to SSH proxy sessions.",
+    intro: "FortiOS authenticates admins against the PAM TACACS+ server and maps remote group members to an admin profile. FortiGate does not send per-command TACACS authorization — use a read-only <code>accprofile</code> on the firewall for command restrictions. PAM denied-command policies apply to Cisco/Arista-style <code>aaa authorization commands</code> devices and to SSH proxy sessions. <b>MFA:</b> when a PAM user has MFA enrolled, append the 6-digit authenticator code directly to the password (no space) in the FortiGate login field — e.g. <code>MyAdPassword482913</code>. FortiGate TACACS cannot show a separate MFA prompt.",
     prereqs: [
       "FortiOS 6.4 or later",
       "Mgmt path to <code>{{HOST}}</code>:<code>{{TAC_PORT}}</code>",
@@ -5153,9 +5197,20 @@ end` },
 end` },
       { title: "4. Test",
         code:
-`# From the FortiGate CLI
-diagnose test authserver tacacs+ PAM-TAC <user> <password>` },
-      { title: "5. GUI alternative (FortiOS web)",
+`# From the FortiGate CLI — append MFA code to password if enrolled:
+diagnose test authserver tacacs+ PAM-TAC <user> <password><6-digit-MFA>
+# Example (password "Secret1!" + MFA 482913):
+diagnose test authserver tacacs+ PAM-TAC ravi.verma1 Secret1!482913` },
+      { title: "5. MFA on FortiGate GUI login",
+        code:
+`# FortiGate web admin login uses the same TACACS password field.
+# If the PAM user has MFA enrolled, type password + 6-digit code together:
+#   Password field:  MyAdPassword482913
+#   (no space between password and authenticator code)
+#
+# Users without MFA enrolled use their normal AD/local password only.
+# SSH via PAM proxy can instead use keyboard-interactive for a separate MFA prompt.` },
+      { title: "6. GUI alternative (FortiOS web)",
         code:
 `# Same configuration via the FortiGate GUI:
 #   System  ->  Settings  ->  Administrators  ->  Settings (top right)
@@ -5176,7 +5231,7 @@ diagnose test authserver tacacs+ PAM-TAC <user> <password>` },
 #
 # Verify by signing out, then signing in as a PAM user — FortiOS will redirect
 # the auth to the PAM TACACS+ server.` },
-      { title: "6. Register in PAM (web GUI access)",
+      { title: "7. Register in PAM (web GUI access)",
         code:
 `# Then in the PAM console:
 #   Machines -> + Add Machine

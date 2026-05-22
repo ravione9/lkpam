@@ -156,16 +156,21 @@ func (s *Server) checkPassword(user, pass string) bool {
 	if user == "" || pass == "" {
 		return false
 	}
+	pw, otp := authclient.SplitAppendedOTP(pass)
 	if s.Auth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
-		res, err := s.Auth.Login(ctx, user, pass, "", true)
+		res, err := s.Auth.Login(ctx, user, pw, otp, true)
 		if err == nil && res != nil && res.User != nil {
 			return true
 		}
 		if err != nil {
 			log.Printf("tacacs auth-service login for %q: %v", user, err)
 		}
+		if res != nil && res.MFARequired {
+			log.Printf("tacacs auth-service login for %q: MFA required (append 6-digit code to password)", user)
+		}
+		return false
 	}
 	var hash string
 	err := s.DB.QueryRow(`

@@ -1166,8 +1166,7 @@ func loginHandler(
 			httpx.Error(w, http.StatusBadRequest, errors.New("username and password required"))
 			return
 		}
-		// Internal data-plane callers (SSH proxy, TACACS) set device_auth to skip
-		// portal MFA — LDAP/local password is enough for machine access.
+		// Internal data-plane callers (SSH proxy, TACACS) set device_auth.
 		deviceAuth := req.DeviceAuth || r.Header.Get("X-PAM-Device-Auth") == "1"
 
 		ctx := r.Context()
@@ -1190,15 +1189,16 @@ func loginHandler(
 
 		mfaPolicy, _ := settingsStore.Get(ctx, settingsKeyMFAPolicy)
 		effectivePolicy := auth.EffectiveMFAPolicy(mfaPolicy)
-		var dec auth.MFALoginDecision
-		if !deviceAuth {
-			dec, err = svc.LoginMFADecisionForUser(ctx, u, mfaPolicy)
-			if err != nil {
-				httpx.Error(w, http.StatusInternalServerError, err)
-				return
-			}
+		dec, err := svc.LoginMFADecisionForUser(ctx, u, mfaPolicy)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
 		}
 		if dec.RequireEnrollment {
+			if deviceAuth {
+				httpx.Error(w, http.StatusUnauthorized, errors.New("MFA enrollment required — sign in to the PAM portal and complete MFA setup first"))
+				return
+			}
 			tok, err := svc.IssueEnrollmentToken(u)
 			if err != nil {
 				httpx.Error(w, http.StatusInternalServerError, err)
@@ -1219,6 +1219,10 @@ func loginHandler(
 				return
 			}
 			if req.OTP == "" {
+				if deviceAuth {
+					httpx.Error(w, http.StatusUnauthorized, errors.New("MFA required — append your 6-digit authenticator code to the password (no space), or use SSH keyboard-interactive for a separate MFA prompt"))
+					return
+				}
 				httpx.JSON(w, http.StatusAccepted, map[string]any{
 					"mfa_required": true,
 					"user_id":      u.ID,

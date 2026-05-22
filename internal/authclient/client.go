@@ -56,7 +56,7 @@ type LoginResult struct {
 // Login attempts password (and optionally TOTP) authentication. Returns
 // MFARequired=true if the user must supply an OTP — the caller should prompt,
 // then call Login again with otp set.
-// DeviceAuth skips portal MFA gates (used by SSH proxy / TACACS).
+// DeviceAuth marks machine access (SSH/TACACS); MFA is still enforced when enrolled.
 func (c *Client) Login(ctx context.Context, username, password, otp string, deviceAuth bool) (*LoginResult, error) {
 	body, _ := json.Marshal(map[string]any{
 		"Username":    username,
@@ -137,4 +137,20 @@ func (c *Client) Verify(ctx context.Context, token string) (*TokenClaims, error)
 		return nil, err
 	}
 	return &claims, nil
+}
+
+// SplitAppendedOTP extracts a 6-digit TOTP code appended to a password with no
+// separator. Used for TACACS/FortiGate GUI login where a second prompt is unavailable.
+func SplitAppendedOTP(password string) (base, otp string) {
+	password = strings.TrimSpace(password)
+	if len(password) <= 6 {
+		return password, ""
+	}
+	suffix := password[len(password)-6:]
+	for _, c := range suffix {
+		if c < '0' || c > '9' {
+			return password, ""
+		}
+	}
+	return password[:len(password)-6], suffix
 }

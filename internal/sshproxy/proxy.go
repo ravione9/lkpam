@@ -137,8 +137,8 @@ func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInte
 	} else {
 		resolvedHint = target + " — unknown machine (will fail authorization)"
 	}
-	answers, err := ch(user, fmt.Sprintf("PAM Platform → %s\r\nAuthenticate with your portal credentials (AD or local). MFA is requested if enrolled.", resolvedHint),
-		[]string{"Password: ", "MFA code (blank if not enrolled): "},
+	answers, err := ch(user, fmt.Sprintf("PAM Platform → %s\r\nAuthenticate with your portal credentials (AD or local). MFA is required when enrolled.", resolvedHint),
+		[]string{"Password: ", "MFA code (required if enrolled): "},
 		[]bool{false, true})
 	if err != nil {
 		return nil, err
@@ -203,6 +203,11 @@ type authedUser struct {
 // authenticate prefers auth-service (local + LDAP + MFA) and falls back to the
 // legacy local-DB hash check if no client is configured.
 func (s *Server) authenticate(username, password, otp string) (*authedUser, error) {
+	if otp == "" {
+		if base, appended := authclient.SplitAppendedOTP(password); appended != "" {
+			password, otp = base, appended
+		}
+	}
 	if s.Auth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
