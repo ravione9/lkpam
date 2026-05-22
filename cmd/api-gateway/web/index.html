@@ -4970,7 +4970,7 @@ async function loadReports() {
 const DEVICE_GUIDES = {
   "cisco-ios": {
     label: "Cisco IOS / IOS-XE",
-    intro: "Use TACACS+ for AAA (authentication, authorization, command accounting). Cisco devices send every login + command through PAM, which logs them in the audit trail.",
+    intro: "Use TACACS+ for AAA with <b>local fallback</b>. The method list <code>LOCAL-TACACS-BOTH</code> tries PAM (TACACS+) first, then the device local user database — so console/local break-glass still works if TACACS is down. SSH via PAM proxy and per-command policy still apply.",
     prereqs: [
       "IOS 15.x / IOS-XE 16.x or later",
       "Reachable network path from device to <code>{{HOST}}</code> on port <code>{{TAC_PORT}}</code>",
@@ -4989,18 +4989,22 @@ tacacs server PAM-TAC
 !
 aaa group server tacacs+ PAM
  server name PAM-TAC` },
-      { title: "2. Enable AAA model and bind to VTY",
+      { title: "2. LOCAL + TACACS (both) — AAA method list",
         code:
-`aaa new-model
-aaa authentication login PAM-AUTH group PAM local
-aaa authentication enable default group PAM enable
+`! Method list name: LOCAL-TACACS-BOTH  (TACACS/PAM first, then local users)
+aaa new-model
+aaa authentication login LOCAL-TACACS-BOTH group PAM local
+aaa authentication enable LOCAL-TACACS-BOTH group PAM local enable
 aaa authorization exec PAM-EXEC group PAM local if-authenticated
-aaa authorization commands 15 PAM-CMD group PAM none
+aaa authorization commands 15 PAM-CMD group PAM local none
 aaa accounting exec PAM-ACCT start-stop group PAM
 aaa accounting commands 15 PAM-CMD start-stop group PAM
 !
+line con 0
+ login authentication LOCAL-TACACS-BOTH
+!
 line vty 0 15
- login authentication PAM-AUTH
+ login authentication LOCAL-TACACS-BOTH
  authorization exec PAM-EXEC
  authorization commands 15 PAM-CMD
  accounting exec PAM-ACCT
@@ -5009,17 +5013,23 @@ line vty 0 15
 !
 ip ssh version 2
 ip ssh server algorithm authentication publickey password keyboard-interactive` },
-      { title: "3. Verify",
+      { title: "3. Verify LOCAL-TACACS-BOTH",
         code:
-`! On the device
+`! On the device — test PAM (TACACS) user
 test aaa group PAM <pam-username> <pam-password> new-code
+test aaa authentication LOCAL-TACACS-BOTH <pam-username> <pam-password> new-code
+!
+! Test local-only user (should succeed via "local" in the list)
+test aaa authentication LOCAL-TACACS-BOTH <local-username> <local-password> new-code
+!
 show tacacs
-show aaa servers` },
+show aaa servers
+show aaa method-lists` },
       { title: "4. GUI alternative (Cisco IOS web UI / Web Services Manager)",
         code:
 `! Enable the embedded HTTPS server (IOS XE 16.x+)
 ip http secure-server
-ip http authentication aaa login-authentication PAM-AUTH
+ip http authentication aaa login-authentication LOCAL-TACACS-BOTH
 ip http authentication aaa exec-authorization PAM-EXEC
 no ip http server          ! HTTPS only
 

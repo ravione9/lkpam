@@ -5,7 +5,8 @@
 //   aaa new-model
 //   aaa group server tacacs+ PAM
 //    server-private 10.20.30.40 key STRONG-SECRET
-//   aaa authentication login default group PAM local
+//   aaa authentication login LOCAL-TACACS-BOTH group PAM local
+//   aaa authentication enable LOCAL-TACACS-BOTH group PAM local enable
 //   aaa authorization commands 15 default group PAM none
 //   aaa accounting commands 15 default start-stop group PAM
 package main
