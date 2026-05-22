@@ -58,7 +58,7 @@ type Service struct {
 
 // SessionSecretName returns the vault key for a web session's credentials.
 func SessionSecretName(sessionID string) string {
-	return "_web_session_" + sessionID
+	return sessions.WebVaultSecretName(sessionID)
 }
 
 // SessionCreds is the vault payload for a web session.

@@ -22,7 +22,6 @@ import (
 	"github.com/example/pam-platform/internal/httpx"
 	"github.com/example/pam-platform/internal/sessions"
 	"github.com/example/pam-platform/internal/vault"
-	"github.com/example/pam-platform/internal/weblaunch"
 )
 
 func errStr(s string) error { return errors.New(s) }
@@ -403,7 +402,7 @@ func cleanupPendingSessions(ctx context.Context, d *db.DB, v *vault.Vault) {
 		if err := webRows.Scan(&id, &started); err != nil {
 			continue
 		}
-		_, vaultErr := v.GetSecret(ctx, weblaunch.SessionSecretName(id))
+		_, vaultErr := v.GetSecret(ctx, sessions.WebVaultSecretName(id))
 		reason := ""
 		if vaultErr != nil {
 			reason = "orphaned"

@@ -7,8 +7,12 @@ import (
 
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/vault"
-	"github.com/example/pam-platform/internal/weblaunch"
 )
+
+// WebVaultSecretName is the vault key for browser-proxied web console credentials.
+func WebVaultSecretName(sessionID string) string {
+	return "_web_session_" + sessionID
+}
 
 // End marks a session ended in the database and removes web vault credentials when applicable.
 // Returns true if the session was active and is now ended.
@@ -29,7 +33,7 @@ func End(ctx context.Context, d *db.DB, v *vault.Vault, sessionID, reason string
 		return false, nil
 	}
 	if v != nil && strings.HasPrefix(sessionID, "web-") {
-		_ = v.DeleteSecret(ctx, weblaunch.SessionSecretName(sessionID))
+		_ = v.DeleteSecret(ctx, WebVaultSecretName(sessionID))
 	}
 	return true, nil
 }
