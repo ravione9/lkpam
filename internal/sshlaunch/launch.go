@@ -160,8 +160,8 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		Username:   downstreamUser,
 		BrowserURL: browserURL,
 		Recorded:   true,
-		Instructions: "Browser session connects through the PAM SSH proxy (same path as CMD/PuTTY) and is recorded. " +
-			"For native clients, use Open in Terminal or PuTTY from the launch dialog.",
+		Instructions: "Browser session opens a recorded terminal in your browser (guacd). " +
+			"Requires a privileged account on this target. For per-command policy on the proxy, use Open in Terminal or PuTTY.",
 	}, nil
 }
 

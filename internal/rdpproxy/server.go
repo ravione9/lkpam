@@ -268,10 +268,9 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 			return nil, fmt.Errorf("session credentials expired or missing")
 		}
 		if creds, perr := sshlaunch.ParseSessionCreds(key); perr == nil && creds.Mode == "browser" {
-			params.Host = s.guacdSSHHost
-			params.Port = s.guacdSSHPort
-			params.Username = creds.PortalUser + "@" + creds.TargetRef
-			params.Password = creds.Token
+			if err := s.fillBrowserSSHSession(ctx, params, creds, targetID, host, port); err != nil {
+				return nil, err
+			}
 		} else {
 			if port <= 0 {
 				port = 22

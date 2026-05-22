@@ -105,7 +105,7 @@
       tunnel.onerror = status => {
         let msg = "Tunnel error — ";
         if (status && status.code === 519) {
-          msg += "guacd could not reach the PAM SSH proxy. On the server run: docker compose ps guacd rdp-proxy ssh-proxy — all must be Up. Set PAM_SSH_PROXY_DIAL_ADDR=ssh-proxy:2222 (not localhost).";
+          msg += "guacd could not reach the target. Ensure guacd is running, a privileged account is linked to this machine, and the target allows SSH from the PAM server.";
         } else if (status && status.message) {
           msg += status.message;
         } else {
