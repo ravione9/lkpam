@@ -24,6 +24,7 @@ import (
 	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/policy"
 	"github.com/example/pam-platform/internal/tacacs"
+	"github.com/example/pam-platform/internal/vault"
 )
 
 func main() {
@@ -33,6 +34,11 @@ func main() {
 		log.Fatalf("tacacs: db: %v", err)
 	}
 	defer d.Close()
+
+	v, err := vault.New(d, config.Get("PAM_MASTER_KEY", ""))
+	if err != nil {
+		log.Fatalf("tacacs: vault: %v", err)
+	}
 
 	secret := []byte(config.Get("PAM_TACACS_SECRET", "change-me"))
 	if string(secret) == "change-me" {
@@ -47,6 +53,7 @@ func main() {
 		Groups: &groups.Service{DB: d},
 		Bus:    events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085")),
 		Auth:   authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
+		Vault:  v,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

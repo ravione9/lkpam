@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example/pam-platform/internal/accounts"
 	"github.com/example/pam-platform/internal/authclient"
 	"github.com/example/pam-platform/internal/cryptox"
 	"github.com/example/pam-platform/internal/db"
+	"github.com/example/pam-platform/internal/vault"
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/mfa"
@@ -30,6 +32,8 @@ type Server struct {
 	// users authenticate the same way they do everywhere else. Falls back to
 	// the local password hash check when nil.
 	Auth *authclient.Client
+	// Vault resolves privileged-account passwords for enable / device-level TACACS auth.
+	Vault *vault.Vault
 }
 
 // Run starts the TCP listener and blocks until ctx is done.
@@ -134,7 +138,7 @@ func passwordFromAuthenStart(start *AuthenStart) string {
 
 func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP string) {
 	h.SeqNo++ // REPLY seq_no must be request seq_no + 1 (RFC 8907 §4.4)
-	ok := s.checkPassword(user, pass)
+	ok := s.checkPassword(user, pass, clientIP)
 	status := AuthenStatusFail
 	msg := "auth failed"
 	if ok {
@@ -152,7 +156,7 @@ func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP strin
 	_ = WritePacket(c, h, rep.Bytes(), s.Secret)
 }
 
-func (s *Server) checkPassword(user, pass string) bool {
+func (s *Server) checkPassword(user, pass, nasAddr string) bool {
 	user = strings.TrimSpace(user)
 	if user == "" || pass == "" {
 		return false
@@ -171,16 +175,35 @@ func (s *Server) checkPassword(user, pass string) bool {
 		if res != nil && res.MFARequired {
 			log.Printf("tacacs auth-service login for %q: MFA required (append 6-digit code to password)", user)
 		}
+	} else {
+		var hash string
+		err := s.DB.QueryRow(`
+			SELECT password_hash FROM users
+			WHERE lower(username)=lower(?) AND disabled=0`, user).Scan(&hash)
+		if err == nil && hash != "" && cryptox.VerifyPassword(pass, hash) {
+			return true
+		}
+	}
+	// Cisco enable (and similar) sends the enable secret to TACACS — not the portal password.
+	if s.checkDevicePassword(pass, nasAddr) {
+		log.Printf("tacacs authen: device credential accepted for user=%q nas=%q", user, hostPart(nasAddr))
+		return true
+	}
+	return false
+}
+
+func (s *Server) checkDevicePassword(pass, nasAddr string) bool {
+	if s.Vault == nil || s.DB == nil {
 		return false
 	}
-	var hash string
-	err := s.DB.QueryRow(`
-		SELECT password_hash FROM users
-		WHERE lower(username)=lower(?) AND disabled=0`, user).Scan(&hash)
-	if err != nil || hash == "" {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	acctSvc := &accounts.Service{DB: s.DB, Vault: s.Vault}
+	devicePW, err := acctSvc.DevicePasswordForHost(ctx, nasAddr)
+	if err != nil || devicePW == "" {
 		return false
 	}
-	return cryptox.VerifyPassword(pass, hash)
+	return pass == devicePW
 }
 
 // ---- Authorization (per-command) ----

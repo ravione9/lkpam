@@ -647,9 +647,14 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 			defer termCancel()
 			go s.watchTermination(termCtx, sessionID, sconn, upClient)
 		}
+		enableSecret := ""
+		if _, privPW, ok := s.lookupPrivilegedAccount(targetID); ok {
+			enableSecret = privPW
+		}
 		go s.pipeSession(newChan, upClient, rec, sessionID, user, targetName, buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode),
 			parseCSV(sconn.Permissions.Extensions["allow-csv"]),
-			parseCSV(sconn.Permissions.Extensions["deny-csv"]))
+			parseCSV(sconn.Permissions.Extensions["deny-csv"]),
+			enableSecret)
 	}
 
 	// Mark session closed (browser sessions are ended by rdp-proxy when guacd disconnects).
@@ -717,7 +722,7 @@ func buildSessionBanner(name, kind, host, port, tier, downUser, authMode string)
 	return header + body + footer
 }
 
-func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string, banner string, allowCmds, denyCmds []string) {
+func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string, banner string, allowCmds, denyCmds []string, enableSecret string) {
 	downCh, downReqs, err := newChan.Accept()
 	if err != nil {
 		log.Printf("accept down chan: %v", err)
@@ -758,7 +763,7 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 				"command":    cmd,
 			},
 		})
-	})
+	}, enableSecret)
 
 	// downstream (user)  ───►   recorder (input)  ───►   upstream (target)
 	go func() {
