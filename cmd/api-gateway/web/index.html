@@ -732,14 +732,16 @@
   #targetsTable .cell-tier .pill { padding: 1px 6px; font-size: 9.5px; }
   #targetsTable .cell-tags { color: var(--muted); font-size: 11px; }
   /* act-bar — NOT .actions (global .actions has flex-wrap:wrap and stacks buttons vertically) */
-  #targetsTable td.act-cell { overflow: visible; white-space: nowrap; padding: 3px 6px; }
+  #targetsTable td.act-cell { overflow: visible; white-space: nowrap; padding: 3px 8px; min-width: 240px; }
   #targetsTable .act-bar {
     display: inline-flex;
     flex-wrap: nowrap;
     align-items: center;
     justify-content: flex-end;
-    gap: 4px;
-    width: 100%;
+    gap: 5px;
+    width: max-content;
+    max-width: 100%;
+    margin-left: auto;
   }
   #targetsTable .act-btn {
     display: inline-flex;
@@ -766,6 +768,11 @@
     padding: 0 10px;
   }
   #targetsTable .act-btn.launch:hover { background: var(--accent-hover); }
+  #targetsTable .act-btn.request {
+    padding: 0 9px;
+    font-size: 10px;
+    font-weight: 600;
+  }
   #targetsTable .act-btn.icon {
     width: 22px;
     padding: 0;
@@ -2831,13 +2838,13 @@ const targetsState = {
 };
 
 const TARGETS_COL_DEF = [
-  { id: "name",       label: "Name",     sort: "name",       width: 19, min: 10, hideable: false },
-  { id: "platform",   label: "Platform", sort: "platform",   width: 20, min: 10, hideable: true },
-  { id: "connection", label: "Conn",     sort: "connection", width: 8,  min: 6,  hideable: true },
-  { id: "address",    label: "Address",  sort: "address",    width: 15, min: 10, hideable: true },
+  { id: "name",       label: "Name",     sort: "name",       width: 17, min: 10, hideable: false },
+  { id: "platform",   label: "Platform", sort: "platform",   width: 18, min: 10, hideable: true },
+  { id: "connection", label: "Conn",     sort: "connection", width: 7,  min: 6,  hideable: true },
+  { id: "address",    label: "Address",  sort: "address",    width: 14, min: 10, hideable: true },
   { id: "tier",       label: "Tier",     sort: "tier",       width: 9,  min: 6,  hideable: true },
-  { id: "tags",       label: "Tags",     sort: "tags",       width: 8,  min: 6,  hideable: true },
-  { id: "actions",    label: "Actions",  sort: null,         width: 21, min: 14, hideable: false, align: "right" },
+  { id: "tags",       label: "Tags",     sort: "tags",       width: 7,  min: 6,  hideable: true },
+  { id: "actions",    label: "Actions",  sort: null,         width: 28, min: 22, hideable: false, align: "right" },
 ];
 const TARGETS_COL_STORAGE = "pam.targets.columns";
 
@@ -2859,7 +2866,9 @@ const targetsColPrefs = (() => {
   const widths = {};
   TARGETS_COL_DEF.forEach(c => {
     visibility[c.id] = saved?.visibility?.[c.id] !== false;
-    widths[c.id] = saved?.widths?.[c.id] ?? c.width;
+    let w = saved?.widths?.[c.id] ?? c.width;
+    if (c.id === "actions" && w < c.min) w = c.width;
+    widths[c.id] = w;
   });
   return { visibility, widths };
 })();
@@ -3160,7 +3169,7 @@ function targetConnCell(t) {
 
 function targetActBar(t, admin) {
   const launch = `<button type="button" class="act-btn launch" onclick="launchTarget(${t.id})">Launch</button>`;
-  const req = `<button type="button" class="act-btn" onclick="requestForTarget(${t.id})">Req</button>`;
+  const req = `<button type="button" class="act-btn request" onclick="requestForTarget(${t.id})">Request access</button>`;
   const adm = admin
     ? `<button type="button" class="act-btn icon" onclick="editTarget(${t.id})" title="Edit">${ICON_EDIT}</button>` +
       `<button type="button" class="act-btn icon danger" onclick="deleteTarget(${t.id})" title="Delete">${ICON_TRASH}</button>`
