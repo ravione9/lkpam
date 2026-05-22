@@ -934,11 +934,12 @@
   <div id="login">
     <h2>PAM Platform</h2>
     <div class="brand">Privileged Access Management</div>
-    <input id="u" placeholder="username or email" value="admin"/>
-    <input id="p" type="password" placeholder="password" value="admin"/>
-    <input id="otp" placeholder="MFA code (if enrolled)" style="display:none"/>
+    <p class="hint" style="margin:0 0 20px;text-align:center">Sign in with your LDAP or local account</p>
+    <input id="u" placeholder="Username or email" autocomplete="username"/>
+    <input id="p" type="password" placeholder="Password" autocomplete="current-password"/>
+    <input id="otp" placeholder="MFA code (if enrolled)" style="display:none" autocomplete="one-time-code"/>
     <button class="primary" id="loginBtn">Sign in</button>
-    <p class="hint" id="loginHint">LDAP users: use your AD password (sAMAccountName or email).</p>
+    <p class="hint" id="loginHint">Use your Active Directory (LDAP) password or your local PAM account.</p>
     <div id="ssoOptions" style="display:none">
       <div style="text-align:center;color:var(--muted);font-size:11px;margin:14px 0 10px;letter-spacing:0.06em">— OR —</div>
       <button id="ssoBtn" style="width:100%;padding:10px;background:#fff;color:#1a1d23;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;display:flex;align-items:center;justify-content:center;gap:10px">
@@ -946,7 +947,6 @@
         <span id="ssoBtnLabel">Sign in with Google</span>
       </button>
     </div>
-    <div class="hint">Default credentials on first run: <b>admin / admin</b></div>
   </div>
 </div>
 
@@ -1924,6 +1924,7 @@
 let token = null;
 let currentUser = null;
 const TOKEN_KEY = "pam_token";
+const TAB_KEY = "pam.activeTab";
 const SSH_PROXY_PORT = 2222;
 let pendingMFAUserID = null;
 let cache = { targets: [], users: [], groups: [], roles: [], matrix: [], safes: [], accounts: [], apps: [] };
@@ -1986,6 +1987,22 @@ const TAB_TITLES = {
 
 const ADMIN_TABS_SET = ["users","groups","roles","policies","matrix","secrets","audit","proxy","ca","settings",
                          "safes","apps","threats","reports"];
+
+function tabFromLocation() {
+  const hash = (location.hash || "").replace(/^#/, "").trim();
+  if (hash && TAB_TITLES[hash]) return hash;
+  try {
+    const saved = sessionStorage.getItem(TAB_KEY);
+    if (saved && TAB_TITLES[saved]) return saved;
+  } catch { /* private browsing */ }
+  return "dash";
+}
+
+function rememberTab(name) {
+  try { sessionStorage.setItem(TAB_KEY, name); } catch { /* ignore */ }
+  const hash = "#" + name;
+  if (location.hash !== hash) history.replaceState(null, "", hash);
+}
 
 function toast(msg, kind) {
   const el = $("#toast");
@@ -2083,7 +2100,11 @@ function openPamViewer(viewerPage, sessionId) {
 async function persistToken(tok) {
   token = tok;
   if (tok) sessionStorage.setItem(TOKEN_KEY, tok);
-  else sessionStorage.removeItem(TOKEN_KEY);
+  else {
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TAB_KEY);
+    if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  }
 }
 
 async function restoreSession() {
@@ -2111,7 +2132,7 @@ function enterApp() {
   $("#me").textContent = currentUser.username + " · " + currentUser.role + (currentUser.mfa_enabled ? " · MFA ✓" : "");
   applyRoleUI();
   ensureRoles();
-  showTab("dash");
+  showTab(tabFromLocation());
 }
 
 function tierLabel(t) {
@@ -2148,6 +2169,7 @@ function showTab(name) {
     settings: loadSettings,
   };
   if (loaders[name]) loaders[name]();
+  rememberTab(name);
 }
 
 // --- Login ---
