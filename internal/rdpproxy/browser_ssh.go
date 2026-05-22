@@ -11,24 +11,53 @@ import (
 	"github.com/example/pam-platform/internal/sshlaunch"
 )
 
-// browserSSHViaProxy enables guacd → ssh-proxy → target (command policy on proxy).
-// Default is false: guacd connects directly to the target with the linked privileged
-// account, which is more reliable when guacd runs in a separate container.
+// browserSSHViaProxy forces guacd → ssh-proxy → target (same path as PuTTY/Terminal).
 func browserSSHViaProxy() bool {
 	v := strings.TrimSpace(strings.ToLower(config.Get("PAM_BROWSER_SSH_VIA_PROXY", "")))
 	return v == "1" || v == "true" || v == "yes"
 }
 
-func (s *Server) fillBrowserSSHSession(ctx context.Context, params *sessionParams, creds sshlaunch.SessionCreds, targetID int64, host string, port int) error {
+func browserSSHForceDirect() bool {
+	v := strings.TrimSpace(strings.ToLower(config.Get("PAM_BROWSER_SSH_DIRECT_ONLY", "")))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+func (s *Server) fillBrowserSSHViaProxy(params *sessionParams, creds sshlaunch.SessionCreds) {
+	params.Host = s.guacdSSHHost
+	params.Port = s.guacdSSHPort
+	params.Username = creds.PortalUser + "@" + creds.TargetRef
+	params.Password = creds.Token
+	params.PrivateKey = nil
+}
+
+func (s *Server) fillBrowserSSHSession(ctx context.Context, params *sessionParams, creds sshlaunch.SessionCreds, targetID int64, host string, port int) (route string, err error) {
 	if browserSSHViaProxy() {
-		params.Host = s.guacdSSHHost
-		params.Port = s.guacdSSHPort
-		params.Username = creds.PortalUser + "@" + creds.TargetRef
-		params.Password = creds.Token
-		params.PrivateKey = nil
-		return nil
+		s.fillBrowserSSHViaProxy(params, creds)
+		return "ssh-proxy", nil
 	}
-	return s.fillBrowserSSHDirect(ctx, params, targetID, host, port)
+	if !browserSSHForceDirect() {
+		if err := s.fillBrowserSSHDirect(ctx, params, targetID, host, port); err == nil {
+			return "direct-target", nil
+		} else if !isBrowserSSHDirectFallback(err) {
+			return "", err
+		}
+		// No privileged vault creds — use ssh-proxy (same as PuTTY) instead of failing in browser.
+		s.fillBrowserSSHViaProxy(params, creds)
+		return "ssh-proxy-fallback", nil
+	}
+	if err := s.fillBrowserSSHDirect(ctx, params, targetID, host, port); err != nil {
+		return "", err
+	}
+	return "direct-target", nil
+}
+
+func isBrowserSSHDirectFallback(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no privileged account") ||
+		strings.Contains(msg, "password not available in vault")
 }
 
 func (s *Server) fillBrowserSSHDirect(ctx context.Context, params *sessionParams, targetID int64, host string, port int) error {

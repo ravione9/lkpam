@@ -60,7 +60,7 @@
       showFallback("Missing session or token — launch SSH from the PAM portal.");
     } else {
       labelEl.textContent = "Session: " + sessionId;
-      statusEl.textContent = "Connecting to target via PAM SSH proxy…";
+      statusEl.textContent = "Connecting via PAM (guacd + SSH proxy)…";
       const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
       // Base URL must have no query string — Guacamole.Client.connect() appends "?..." itself.
       const wsBase = wsProto + "//" + location.host + "/api/rdp/websocket-tunnel";
@@ -105,7 +105,7 @@
       tunnel.onerror = status => {
         let msg = "Tunnel error — ";
         if (status && status.code === 519) {
-          msg += "guacd could not reach the target. Ensure guacd is running, a privileged account is linked to this machine, and the target allows SSH from the PAM server.";
+          msg += "guacd could not open SSH (upstream unreachable or auth failed). Ensure guacd and ssh-proxy are running; launch a new session from the portal; try Terminal/PuTTY to confirm the target works.";
         } else if (status && status.message) {
           msg += status.message;
         } else {

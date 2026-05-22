@@ -114,6 +114,7 @@ type sessionParams struct {
 	Password  string
 	PrivateKey []byte
 	RecDir    string
+	route     string // browser SSH: direct-target | ssh-proxy | ssh-proxy-fallback
 }
 
 type recordingTunnel struct {
@@ -132,6 +133,7 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 	q := r.URL.Query()
 	sessionID := q.Get("session")
 	token := q.Get("token")
+	log.Printf("rdp-proxy: websocket connect session=%s remote=%s", sessionID, r.RemoteAddr)
 	if sessionID == "" || token == "" {
 		return nil, errors.New("session and token query parameters required")
 	}
@@ -228,8 +230,12 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 
 	go s.pollTermination(sessionID, rt)
 
-	log.Printf("rdp-proxy: session %s started (%s) → %s:%d as %s (recording %s)",
-		sessionID, params.Protocol, params.Host, params.Port, params.Username, params.RecDir)
+	route := params.route
+	if route == "" {
+		route = params.Protocol
+	}
+	log.Printf("rdp-proxy: session %s started (%s route=%s) → %s:%d as %s (recording %s)",
+		sessionID, params.Protocol, route, params.Host, params.Port, params.Username, params.RecDir)
 	return rt, nil
 }
 
@@ -275,9 +281,11 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 			return nil, fmt.Errorf("session credentials expired or missing")
 		}
 		if creds, perr := sshlaunch.ParseSessionCreds(key); perr == nil && creds.Mode == "browser" {
-			if err := s.fillBrowserSSHSession(ctx, params, creds, targetID, host, port); err != nil {
+			route, err := s.fillBrowserSSHSession(ctx, params, creds, targetID, host, port)
+			if err != nil {
 				return nil, err
 			}
+			params.route = route
 		} else {
 			if port <= 0 {
 				port = 22

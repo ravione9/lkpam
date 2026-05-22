@@ -152,8 +152,10 @@ services:
       PAM_RDP_PROXY_ADDR: ":8086"
       PAM_GUACD_ADDR: "guacd:4822"
       PAM_SSH_PROXY_DIAL_ADDR: "ssh-proxy:2222"
-      # Set to true only if guacd can reach ssh-proxy on the Docker network (command policy on proxy).
-      PAM_BROWSER_SSH_VIA_PROXY: "${PAM_BROWSER_SSH_VIA_PROXY:-false}"
+      # true = always guacd→ssh-proxy (PuTTY path). false = try privileged direct, else ssh-proxy.
+      PAM_BROWSER_SSH_VIA_PROXY: "${PAM_BROWSER_SSH_VIA_PROXY:-true}"
+      # true = never fall back to ssh-proxy (requires privileged account on every target).
+      PAM_BROWSER_SSH_DIRECT_ONLY: "${PAM_BROWSER_SSH_DIRECT_ONLY:-false}"
       PAM_AUTH_URL: "http://auth:8081"
     depends_on:
       guacd:
