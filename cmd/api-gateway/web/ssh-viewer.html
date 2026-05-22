@@ -183,11 +183,8 @@
       };
       keyboard.onkeyup = keysym => {
         if (!connected) return;
-        if (Date.now() < suppressKeysUntil) {
-          maybeStartEnableLock(keysym);
-          return;
-        }
         maybeStartEnableLock(keysym);
+        if (Date.now() < suppressKeysUntil) return;
         client.sendKeyEvent(0, keysym);
       };
 

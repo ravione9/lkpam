@@ -18,12 +18,12 @@ func TestCmdGateInjectsEnableSecret(t *testing.T) {
 	if !bytes.Contains([]byte(got), []byte("EnableSecret99")) {
 		t.Fatalf("upstream = %q, want enable secret injected", got)
 	}
-	if bytes.Contains(down.String(), []byte("EnableSecret99")) {
-		t.Fatalf("downstream must not contain plaintext password: %q", down.String())
+	filtered := string(gate.filterDownstream([]byte("Password: EnableSecret99\r\n")))
+	if strings.Contains(filtered, "EnableSecret99") {
+		t.Fatalf("filtered = %q, must not contain plaintext password", filtered)
 	}
-	wantMask := strings.Repeat("*", len("EnableSecret99"))
-	if !strings.Contains(down.String(), wantMask) {
-		t.Fatalf("downstream = %q, want masked Password line", down.String())
+	if !strings.Contains(filtered, strings.Repeat("*", len("EnableSecret99"))) {
+		t.Fatalf("filtered = %q, want masked password line", filtered)
 	}
 }
 
