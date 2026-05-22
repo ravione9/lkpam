@@ -16,7 +16,10 @@
     #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #000; position: relative; cursor: text; }
     #display { outline: none; display: block; width: 100%; height: 100%; cursor: text; position: relative; }
     #display.focused { box-shadow: inset 0 0 0 2px #38bdf8; }
-    #display canvas { display: block; cursor: text; width: 100% !important; height: 100% !important; object-fit: fill; image-rendering: -webkit-optimize-contrast; }
+    /* Guacamole renders into nested divs with fixed pixel dimensions. Force the
+       whole tree to stretch to the wrapper so there is no empty area. */
+    #display > div { width: 100% !important; height: 100% !important; position: absolute !important; top: 0 !important; left: 0 !important; }
+    #display canvas { display: block !important; width: 100% !important; height: 100% !important; cursor: text; image-rendering: pixelated; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
     #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
@@ -165,25 +168,25 @@
 
       function pasteToSession(text) {
         const normalized = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-        if (typeof client.createClipboardStream === "function") {
-          try {
-            const stream = client.createClipboardStream("text/plain");
-            const writer = new Guacamole.StringWriter(stream);
-            writer.sendText(normalized);
-            writer.sendEnd();
-          } catch (_) {}
-        }
-        for (const ch of normalized) {
+        // Send keystrokes with a tiny delay between characters. Some SSH targets
+        // (Cisco IOS, FortiGate) drop input when keysyms arrive in one burst.
+        let i = 0;
+        function sendNext() {
+          if (i >= normalized.length || !connected) return;
+          const ch = normalized[i++];
           if (ch === "\n") {
             client.sendKeyEvent(1, KEYSYM_RETURN);
             client.sendKeyEvent(0, KEYSYM_RETURN);
-            continue;
+          } else {
+            const code = ch.charCodeAt(0);
+            if (code >= 0x20 && code <= 0xff) {
+              client.sendKeyEvent(1, code);
+              client.sendKeyEvent(0, code);
+            }
           }
-          const code = ch.charCodeAt(0);
-          if (code < 0x20 || code > 0xff) continue;
-          client.sendKeyEvent(1, code);
-          client.sendKeyEvent(0, code);
+          setTimeout(sendNext, 8);
         }
+        sendNext();
       }
 
       function openPasteDialog() {
