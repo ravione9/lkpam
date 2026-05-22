@@ -198,6 +198,33 @@ docker compose -f deploy/docker/docker-compose.yml down -v
 # set PAM_MASTER_KEY in .env, then up again
 ```
 
+**Browser SSH: “Tunnel error” / guacd Permission denied on recordings**
+
+The `guacd` image runs as user `guacd`; PAM must not `chown` the shared
+`pam-rec` volume to `pam` only. After `git pull`, recreate services and fix
+permissions once as root:
+
+```bash
+cd /opt/lkpam && git pull
+docker compose -f deploy/docker/docker-compose.yml up -d --force-recreate guacd rdp-proxy gateway auth vault policy approval audit ssh-proxy
+docker compose -f deploy/docker/docker-compose.yml exec -u 0 guacd sh -c 'chmod -R 0777 /recordings && ls -la /recordings'
+docker logs pam-guacd --tail 3   # expect: guacd-entrypoint: /recordings permissions set
+docker logs pam-rdp-proxy --tail 2   # expect: browser-ssh=direct-target
+```
+
+Check rdp-proxy can reach guacd (8086 is internal only):
+
+```bash
+docker exec pam-rdp-proxy wget -qO- http://127.0.0.1:8086/health/deps
+```
+
+On connect, `docker logs pam-rdp-proxy --tail 5` should show
+`→ <target-host>:22 as <privileged-user>`. Link a **privileged account** to
+the target in the UI. Ensure the target allows SSH from the PAM host IP.
+
+Do not set `PAM_BROWSER_SSH_VIA_PROXY=true` unless you intentionally route
+browser SSH through `ssh-proxy` (default is direct from guacd to target).
+
 ## Production notes
 
 This compose file is suitable for **dev / lab / PoC**. Before production:
