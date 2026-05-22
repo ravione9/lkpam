@@ -654,7 +654,8 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		go s.pipeSession(newChan, upClient, rec, sessionID, user, targetName, buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode),
 			parseCSV(sconn.Permissions.Extensions["allow-csv"]),
 			parseCSV(sconn.Permissions.Extensions["deny-csv"]),
-			enableSecret)
+			enableSecret,
+			ptPassword)
 	}
 
 	// Mark session closed (browser sessions are ended by rdp-proxy when guacd disconnects).
@@ -722,7 +723,7 @@ func buildSessionBanner(name, kind, host, port, tier, downUser, authMode string)
 	return header + body + footer
 }
 
-func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string, banner string, allowCmds, denyCmds []string, enableSecret string) {
+func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string, banner string, allowCmds, denyCmds []string, enableSecret, portalPassword string) {
 	downCh, downReqs, err := newChan.Accept()
 	if err != nil {
 		log.Printf("accept down chan: %v", err)
@@ -754,6 +755,13 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 	// Tee user input → upstream, and log it as the keystroke stream.
 	var wg sync.WaitGroup
 	wg.Add(2)
+	var closeOnce sync.Once
+	closeSession := func() {
+		closeOnce.Do(func() {
+			_ = upCh.Close()
+			_ = downCh.Close()
+		})
+	}
 	gate := newCmdGate(upCh, downCh, allowCmds, denyCmds, func(cmd string) {
 		s.Bus.Publish(events.Event{
 			Source: "ssh-proxy", Kind: "cmd.deny", Severity: "warn",
@@ -763,7 +771,7 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 				"command":    cmd,
 			},
 		})
-	}, enableSecret)
+	}, enableSecret, portalPassword, closeSession)
 
 	// downstream (user)  ───►   recorder (input)  ───►   upstream (target)
 	go func() {
@@ -774,7 +782,7 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 		}
 		tee := io.MultiWriter(up, &prefixedWriter{w: rec, prefix: "IN  "})
 		_, _ = io.Copy(tee, downCh)
-		upCh.CloseWrite()
+		closeSession()
 	}()
 	// upstream (target)  ───►   recorder (output) ───►   downstream (user)
 	go func() {
@@ -785,7 +793,7 @@ func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *
 		}
 		tee := io.MultiWriter(out, &prefixedWriter{w: rec, prefix: "OUT "})
 		_, _ = io.Copy(tee, upCh)
-		downCh.CloseWrite()
+		closeSession()
 	}()
 
 	wg.Wait()

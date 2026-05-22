@@ -8,7 +8,7 @@ import (
 
 func TestCmdGateDenyClearsLineAndSendsCtrlC(t *testing.T) {
 	var up, down bytes.Buffer
-	gate := newCmdGate(&up, &down, nil, []string{"configure terminal"}, nil, "Rescue@9897")
+	gate := newCmdGate(&up, &down, nil, []string{"configure terminal"}, nil, "Rescue@9897", "", nil)
 
 	// Device echoed prompt + command (as gateAwareWriter would).
 	gate.noteOutput([]byte("Switch#configure terminal"))
@@ -43,7 +43,7 @@ func TestCmdGateDenyClearsLineAndSendsCtrlC(t *testing.T) {
 
 func TestCmdGateAllowForwardsSingleLineEnd(t *testing.T) {
 	var up bytes.Buffer
-	gate := newCmdGate(&up, &bytes.Buffer{}, []string{"show"}, []string{"reload"}, nil, "")
+	gate := newCmdGate(&up, &bytes.Buffer{}, []string{"show"}, []string{"reload"}, nil, "", "", nil)
 	gate.noteOutput([]byte("Switch#show version"))
 	_, _ = gate.Write([]byte{'\r', '\n'})
 	if up.String() != "\r" {

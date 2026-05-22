@@ -7,7 +7,7 @@ import (
 
 func TestCmdGateInjectsEnableSecret(t *testing.T) {
 	var up, down bytes.Buffer
-	gate := newCmdGate(&up, &down, nil, nil, nil, "EnableSecret99")
+	gate := newCmdGate(&up, &down, nil, nil, nil, "EnableSecret99", "", nil)
 
 	gate.noteOutput([]byte("Switch>en"))
 	_, _ = gate.Write([]byte{'\r'})

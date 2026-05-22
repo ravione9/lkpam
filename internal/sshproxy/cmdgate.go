@@ -5,37 +5,38 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/example/pam-platform/internal/policy"
 )
 
 // cmdGate evaluates command policy by mirroring the device's visible line.
-// It does NOT buffer user keystrokes (so device-side echo, Tab-completion,
-// arrow history, paste, and abbreviations all behave normally). When the user
-// presses Enter, we look at what the device has on the current line and run
-// policy against that. Denied lines are cancelled before Enter is forwarded.
 type cmdGate struct {
 	up, down    io.Writer
 	allow, deny []string
 	onDeny      func(cmd string)
+	onSessionEnd func()
 
-	enableSecret string // privileged-account password (Cisco enable secret in vault)
+	enableSecret   string // privileged-account / enable secret from vault
+	portalPassword string // passthrough password (includes MFA OTP when enrolled)
 
 	mu                  sync.Mutex
 	devLine             []byte
 	ignoreLine          bool
 	skipNextLF          bool
-	expectEnablePass    bool // set after user runs enable/en
+	expectEnablePass    bool
 	injectEnableOnEnter bool
+	execPrivileged      bool // true when last prompt ended with #
 }
 
-func newCmdGate(up, down io.Writer, allow, deny []string, onDeny func(cmd string), enableSecret string) *cmdGate {
-	if len(allow) == 0 && len(deny) == 0 && enableSecret == "" {
+func newCmdGate(up, down io.Writer, allow, deny []string, onDeny func(cmd string), enableSecret, portalPassword string, onSessionEnd func()) *cmdGate {
+	if len(allow) == 0 && len(deny) == 0 && enableSecret == "" && portalPassword == "" && onSessionEnd == nil {
 		return nil
 	}
 	return &cmdGate{
-		up: up, down: down, allow: allow, deny: deny, onDeny: onDeny,
-		enableSecret: strings.TrimSpace(enableSecret),
+		up: up, down: down, allow: allow, deny: deny, onDeny: onDeny, onSessionEnd: onSessionEnd,
+		enableSecret:   strings.TrimSpace(enableSecret),
+		portalPassword: portalPassword,
 	}
 }
 
@@ -48,13 +49,34 @@ func isEnableCommand(cmd string) bool {
 	}
 }
 
-// noteOutput updates the visible-line mirror from device output.
+func isSessionEndCommand(cmd string) bool {
+	switch policy.NormalizeCLI(cmd) {
+	case "logout", "logoff", "quit", "disconnect":
+		return true
+	default:
+		return false
+	}
+}
+
+func (g *cmdGate) credentialForEnable() string {
+	if g.enableSecret != "" {
+		return g.enableSecret
+	}
+	return g.portalPassword
+}
+
 func (g *cmdGate) noteOutput(p []byte) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for _, b := range p {
 		switch b {
 		case '\r', '\n':
+			trim := strings.TrimSpace(strings.ToLower(string(g.devLine)))
+			if strings.HasSuffix(trim, "#") {
+				g.execPrivileged = true
+			} else if strings.HasSuffix(trim, ">") {
+				g.execPrivileged = false
+			}
 			g.devLine = g.devLine[:0]
 		case 0x08, 0x7f:
 			if len(g.devLine) > 0 {
@@ -73,7 +95,7 @@ func (g *cmdGate) noteOutput(p []byte) {
 		strings.Contains(trim, "passphrase:") ||
 		strings.Contains(trim, "secret:") {
 		g.ignoreLine = true
-		if g.expectEnablePass && g.enableSecret != "" {
+		if g.expectEnablePass && g.credentialForEnable() != "" {
 			g.injectEnableOnEnter = true
 		}
 	}
@@ -93,6 +115,30 @@ func (g *cmdGate) currentCommand() string {
 		line = line[i+1:]
 	}
 	return strings.TrimSpace(line)
+}
+
+func (g *cmdGate) shouldEndSession(cmd string) bool {
+	switch policy.NormalizeCLI(cmd) {
+	case "logout", "logoff", "quit", "disconnect":
+		return true
+	case "exit":
+		g.mu.Lock()
+		priv := g.execPrivileged
+		g.mu.Unlock()
+		return !priv
+	default:
+		return false
+	}
+}
+
+func (g *cmdGate) scheduleSessionEnd() {
+	if g.onSessionEnd == nil {
+		return
+	}
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		g.onSessionEnd()
+	}()
 }
 
 func (g *cmdGate) Write(p []byte) (int, error) {
@@ -118,10 +164,9 @@ func (g *cmdGate) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// handlePasswordKeystroke swallows user input when injecting the enable secret.
 func (g *cmdGate) handlePasswordKeystroke(b byte) bool {
 	g.mu.Lock()
-	inject := g.injectEnableOnEnter && g.enableSecret != ""
+	inject := g.injectEnableOnEnter && g.credentialForEnable() != ""
 	g.mu.Unlock()
 	if !inject {
 		return false
@@ -135,7 +180,7 @@ func (g *cmdGate) handlePasswordKeystroke(b byte) bool {
 			g.skipNextLF = true
 		}
 		g.mu.Lock()
-		secret := g.enableSecret
+		secret := g.credentialForEnable()
 		g.injectEnableOnEnter = false
 		g.expectEnablePass = false
 		g.ignoreLine = false
@@ -148,7 +193,6 @@ func (g *cmdGate) handlePasswordKeystroke(b byte) bool {
 		}
 		return true
 	}
-	// Swallow typed password characters (device may still echo via downstream).
 	return true
 }
 
@@ -158,7 +202,7 @@ func (g *cmdGate) handleLineEnd(endByte byte) {
 	if ignore {
 		g.ignoreLine = false
 	}
-	inject := g.injectEnableOnEnter && g.enableSecret != ""
+	inject := g.injectEnableOnEnter && g.credentialForEnable() != ""
 	cmd := g.currentCommand()
 	g.mu.Unlock()
 
@@ -179,10 +223,15 @@ func (g *cmdGate) handleLineEnd(endByte byte) {
 		}
 		return
 	}
-	if cmd != "" && isEnableCommand(cmd) && g.enableSecret != "" {
+	if cmd != "" && isEnableCommand(cmd) && g.credentialForEnable() != "" {
 		g.mu.Lock()
 		g.expectEnablePass = true
 		g.mu.Unlock()
+	}
+	if cmd != "" && g.shouldEndSession(cmd) {
+		_, _ = g.up.Write([]byte{endByte})
+		g.scheduleSessionEnd()
+		return
 	}
 	_, _ = g.up.Write([]byte{endByte})
 }

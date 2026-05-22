@@ -95,7 +95,7 @@ func (s *Server) handleAuthen(c net.Conn, h Header, body []byte, clientIP string
 
 	pass := passwordFromAuthenStart(start)
 	if pass != "" {
-		s.verifyAndReply(c, h, start.User, pass, clientIP)
+		s.verifyAndReply(c, h, start.User, pass, clientIP, start)
 		return
 	}
 
@@ -117,7 +117,7 @@ func (s *Server) handleAuthen(c net.Conn, h Header, body []byte, clientIP string
 		log.Printf("tacacs continue parse: %v", err)
 		return
 	}
-	s.verifyAndReply(c, h2, start.User, cont.UserMsg, clientIP)
+	s.verifyAndReply(c, h2, start.User, cont.UserMsg, clientIP, start)
 }
 
 // passwordFromAuthenStart extracts the password from PAP/SENDAUTH or ASCII START bodies.
@@ -136,9 +136,9 @@ func passwordFromAuthenStart(start *AuthenStart) string {
 	return ""
 }
 
-func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP string) {
+func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP string, start *AuthenStart) {
 	h.SeqNo++ // REPLY seq_no must be request seq_no + 1 (RFC 8907 §4.4)
-	ok := s.checkPassword(user, pass, clientIP)
+	ok := s.checkPassword(user, pass, clientIP, start)
 	status := AuthenStatusFail
 	msg := "auth failed"
 	if ok {
@@ -156,11 +156,32 @@ func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP strin
 	_ = WritePacket(c, h, rep.Bytes(), s.Secret)
 }
 
-func (s *Server) checkPassword(user, pass, nasAddr string) bool {
+func (s *Server) checkPassword(user, pass, nasAddr string, start *AuthenStart) bool {
 	user = strings.TrimSpace(user)
 	if user == "" || pass == "" {
 		return false
 	}
+	enableAuth := start != nil && (start.Action == AuthenActionSendAuth || start.PrivLvl > 0)
+
+	// Enable / SENDAUTH: validate device enable secret first (never treat enable secret as portal password without OTP).
+	if enableAuth {
+		if s.checkDevicePassword(pass, nasAddr) {
+			log.Printf("tacacs authen: enable credential accepted for user=%q nas=%q", user, hostPart(nasAddr))
+			return true
+		}
+		// Some sites use portal creds for enable; MFA users must append OTP in the password field.
+		return s.checkPortalPassword(user, pass)
+	}
+
+	// Login: device bootstrap password, then portal (+ MFA).
+	if s.checkDevicePassword(pass, nasAddr) {
+		log.Printf("tacacs authen: device credential accepted for user=%q nas=%q", user, hostPart(nasAddr))
+		return true
+	}
+	return s.checkPortalPassword(user, pass)
+}
+
+func (s *Server) checkPortalPassword(user, pass string) bool {
 	pw, otp := mfa.SplitAppendedOTP(pass)
 	if s.Auth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -175,21 +196,16 @@ func (s *Server) checkPassword(user, pass, nasAddr string) bool {
 		if res != nil && res.MFARequired {
 			log.Printf("tacacs auth-service login for %q: MFA required (append 6-digit code to password)", user)
 		}
-	} else {
-		var hash string
-		err := s.DB.QueryRow(`
-			SELECT password_hash FROM users
-			WHERE lower(username)=lower(?) AND disabled=0`, user).Scan(&hash)
-		if err == nil && hash != "" && cryptox.VerifyPassword(pass, hash) {
-			return true
-		}
+		return false
 	}
-	// Cisco enable (and similar) sends the enable secret to TACACS — not the portal password.
-	if s.checkDevicePassword(pass, nasAddr) {
-		log.Printf("tacacs authen: device credential accepted for user=%q nas=%q", user, hostPart(nasAddr))
-		return true
+	var hash string
+	err := s.DB.QueryRow(`
+		SELECT password_hash FROM users
+		WHERE lower(username)=lower(?) AND disabled=0`, user).Scan(&hash)
+	if err != nil || hash == "" {
+		return false
 	}
-	return false
+	return cryptox.VerifyPassword(pass, hash)
 }
 
 func (s *Server) checkDevicePassword(pass, nasAddr string) bool {
