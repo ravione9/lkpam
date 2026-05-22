@@ -198,6 +198,22 @@ docker compose -f deploy/docker/docker-compose.yml down -v
 # set PAM_MASTER_KEY in .env, then up again
 ```
 
+**Browser RDP: “Tunnel error” code 519 (UPSTREAM_NOT_FOUND)**
+
+Guacamole status **519** means **guacd could not connect to the Windows target** on port 3389 — not a portal login issue.
+
+1. In **Machines**, set **Host** to the server's **LAN IP** (e.g. `192.168.1.50`), not `localhost` or `127.0.0.1`.
+2. If the RDP server is the **same PC as Docker Desktop**, use Host **`host.docker.internal`** (or set `PAM_RDP_DOCKER_HOST` in `.env`).
+3. Confirm **port 3389**, **Remote Desktop enabled**, and Windows Firewall allows RDP from the Docker host.
+4. Link a **privileged account** (Safes → Privileged Accounts) before Launch.
+5. Inspect the proxy log after a failed connect:
+
+```bash
+docker logs pam-rdp-proxy --tail 30
+docker logs pam-guacd --tail 30
+docker exec pam-rdp-proxy wget -qO- http://127.0.0.1:8086/health/deps
+```
+
 **Browser SSH: “Tunnel error” / guacd Permission denied on recordings**
 
 The `guacd` image runs as user `guacd`; PAM must not `chown` the shared

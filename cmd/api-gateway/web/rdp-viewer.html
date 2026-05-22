@@ -45,6 +45,13 @@
       const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
       const wsBase = wsProto + "//" + location.host + "/api/rdp/websocket-tunnel";
 
+      function connectArgs() {
+        return "session=" + encodeURIComponent(sessionId)
+          + "&token=" + encodeURIComponent(token)
+          + "&width=" + Math.max(display.clientWidth, 800)
+          + "&height=" + Math.max(display.clientHeight, 480);
+      }
+
       const tunnel = new Guacamole.WebSocketTunnel(wsBase);
       const client = new Guacamole.Client(tunnel);
       const display = document.getElementById("display");
@@ -59,12 +66,6 @@
         statusEl.className = "err";
       };
 
-      function connectArgs() {
-        return "session=" + encodeURIComponent(sessionId)
-          + "&token=" + encodeURIComponent(token)
-          + "&width=" + Math.max(display.clientWidth, 800)
-          + "&height=" + Math.max(display.clientHeight, 480);
-      }
       function connect() {
         client.connect(connectArgs());
       }
@@ -75,7 +76,17 @@
       });
 
       tunnel.onerror = status => {
-        statusEl.textContent = "Tunnel error — is guacd running? " + JSON.stringify(status);
+        let msg = "Tunnel error — ";
+        if (status && status.code === 519) {
+          msg += "guacd cannot reach the Windows host (UPSTREAM_NOT_FOUND). "
+            + "In Machines use the server's LAN IP (not localhost), port 3389, RDP enabled, firewall open from Docker. "
+            + "For a Windows PC on this machine set Host to host.docker.internal. Check: docker logs pam-rdp-proxy --tail 20";
+        } else if (status && status.message) {
+          msg += status.message;
+        } else {
+          msg += "is guacd running? " + JSON.stringify(status);
+        }
+        statusEl.textContent = msg;
         statusEl.className = "err";
       };
 

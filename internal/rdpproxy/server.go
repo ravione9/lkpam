@@ -137,7 +137,7 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 	token := q.Get("token")
 	log.Printf("rdp-proxy: websocket connect session=%s remote=%s", sessionID, r.RemoteAddr)
 	if sessionID == "" || token == "" {
-		return nil, errors.New("session and token query parameters required")
+		return nil, fmt.Errorf("session and token required on websocket URL (got query %q)", r.URL.RawQuery)
 	}
 	var uid int64
 	if s.Auth != nil {
@@ -189,23 +189,13 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 			config.Parameters["password"] = params.Password
 		}
 	} else {
-		config.Protocol = "rdp"
-		config.Parameters = map[string]string{
-			"hostname":                params.Host,
-			"port":                    strconv.Itoa(params.Port),
-			"username":                params.Username,
-			"password":                params.Password,
-			"ignore-cert":             "true",
-			"security":                "any",
-			"resize-method":           "display-update",
-			"enable-wallpaper":        "false",
-			"enable-theming":          "false",
-			"enable-font-smoothing":   "true",
-			"enable-full-window-drag": "false",
-			"recording-path":          params.RecDir,
-			"recording-name":          params.SessionID,
-			"create-recording-path":   "true",
+		dialHost := resolveRDPReachableHost(params.Host)
+		dialPort := normalizeRDPPort(params.Port)
+		if dialHost != params.Host {
+			log.Printf("rdp-proxy: session %s map target host %q → %q (guacd reachability)", sessionID, params.Host, dialHost)
 		}
+		config.Protocol = "rdp"
+		config.Parameters = rdpGuacParams(dialHost, dialPort, params.Username, params.Password, params.RecDir, params.SessionID, true)
 		config.OptimalScreenWidth = 1280
 		config.OptimalScreenHeight = 800
 		config.AudioMimetypes = []string{"audio/L16", "rate=44100", "channels=2"}
@@ -217,10 +207,36 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 	}
 	conn, err := net.DialTCP("tcp", nil, addr)
 	if err != nil {
-		return failConnect("dial guacd: %w", err)
+		return failConnect("dial guacd %s: %w", s.GuacdAddr, err)
 	}
 	stream := guac.NewStream(conn, guac.SocketTimeout)
-	if err := stream.Handshake(config); err != nil {
+	if err := stream.Handshake(config); err != nil && config.Protocol == "rdp" {
+		// Retry without session recording (shared-volume permission issues).
+		conn.Close()
+		conn, err = net.DialTCP("tcp", nil, addr)
+		if err != nil {
+			return failConnect("dial guacd %s (retry): %w", s.GuacdAddr, err)
+		}
+		stream = guac.NewStream(conn, guac.SocketTimeout)
+		retry := guac.NewGuacamoleConfiguration()
+		retry.Protocol = "rdp"
+		retryPort, _ := strconv.Atoi(config.Parameters["port"])
+		retry.Parameters = rdpGuacParams(
+			config.Parameters["hostname"],
+			normalizeRDPPort(retryPort),
+			params.Username, params.Password, params.RecDir, params.SessionID, false,
+		)
+		retry.OptimalScreenWidth = config.OptimalScreenWidth
+		retry.OptimalScreenHeight = config.OptimalScreenHeight
+		retry.AudioMimetypes = config.AudioMimetypes
+		if err2 := stream.Handshake(retry); err2 != nil {
+			conn.Close()
+			return failConnect("guacd RDP to %s:%s failed (%v); without recording (%v) — check RDP enabled, firewall, and use LAN IP not localhost (Docker: host.docker.internal)",
+				config.Parameters["hostname"], config.Parameters["port"], err, err2)
+		}
+		config = retry
+		log.Printf("rdp-proxy: session %s connected without recording (recording handshake failed: %v)", sessionID, err)
+	} else if err != nil {
 		conn.Close()
 		return failConnect("guacd handshake: %w", err)
 	}
@@ -302,6 +318,10 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 		}
 		params.RecDir = sshlaunch.RecordingDirForSession(s.RecordingDir, sessionID)
 	default: // rdp
+		if port <= 0 {
+			port = 3389
+			params.Port = 3389
+		}
 		pw, err := s.Vault.GetSecret(ctx, rdp.SessionSecretName(sessionID))
 		if err != nil {
 			return nil, fmt.Errorf("session credentials expired or missing")
