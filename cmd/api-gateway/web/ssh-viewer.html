@@ -13,18 +13,27 @@
     .toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 14px; min-width: 36px; }
     .toolbar button:hover { background: #475569; }
     #zoomLabel { font-size: 12px; color: #94a3b8; min-width: 48px; text-align: center; }
-    #displayWrap { flex: 1; min-height: 320px; overflow: auto; background: #111; position: relative; }
-    #display { min-height: 100%; width: 100%; position: relative; outline: none; }
-    #display .guac-zoom-root { transform-origin: top left; display: inline-block; }
+    #displayWrap { flex: 1; min-height: 320px; overflow: auto; background: #111; position: relative; padding: 8px; }
+    #display { outline: none; display: inline-block; }
+    #zoomSizer { display: inline-block; line-height: 0; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
     #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
     #fallback h2 { font-size: 16px; margin-bottom: 8px; }
     #fallback p { font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 1.5; }
     #fallback a { color: #38bdf8; }
-    #display:focus { outline: 1px solid #38bdf8; outline-offset: -1px; }
+    #display:focus { outline: 1px solid #38bdf8; outline-offset: 2px; }
     #display, #display * { cursor: text; }
-    #clipFallback { position: fixed; left: -9999px; top: 0; opacity: 0; }
+    #pasteOverlay { display: none; position: fixed; inset: 0; background: rgba(2, 6, 23, 0.75); z-index: 10000; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
+    #pasteOverlay.open { display: flex; }
+    .paste-dialog { background: #1e293b; border: 1px solid #475569; border-radius: 10px; padding: 16px; width: min(520px, 92vw); box-shadow: 0 16px 48px rgba(0,0,0,0.5); }
+    .paste-dialog h3 { font-size: 15px; margin-bottom: 6px; }
+    .paste-dialog p { font-size: 12px; color: #94a3b8; margin-bottom: 10px; line-height: 1.45; }
+    #pasteArea { width: 100%; min-height: 120px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; padding: 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #e2e8f0; resize: vertical; }
+    .paste-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+    .paste-actions button { padding: 8px 14px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 13px; }
+    .paste-actions button.primary { background: #2563eb; border-color: #3b82f6; }
+    .paste-actions button:hover { filter: brightness(1.1); }
   </style>
   <script>window.module={exports:{}};</script>
   <script src="/vendor/guacamole-common.min.js"></script>
@@ -39,14 +48,26 @@
       <button type="button" id="zoomOutBtn" title="Zoom out">−</button>
       <span id="zoomLabel">100%</span>
       <button type="button" id="zoomInBtn" title="Zoom in">+</button>
-      <button type="button" id="pasteBtn" title="Paste from clipboard (Ctrl+V)">Paste</button>
+      <button type="button" id="pasteBtn" title="Paste into session">Paste</button>
       <button type="button" id="disconnectBtn">Disconnect</button>
     </div>
   </header>
   <div id="displayWrap">
-    <div id="display" tabindex="0" title="Click here to type"></div>
+    <div id="display" tabindex="0" title="Click here to type">
+      <div id="zoomSizer"></div>
+    </div>
   </div>
-  <textarea id="clipFallback" aria-hidden="true" tabindex="-1"></textarea>
+  <div id="pasteOverlay" role="dialog" aria-labelledby="pasteTitle">
+    <div class="paste-dialog">
+      <h3 id="pasteTitle">Paste into session</h3>
+      <p>Press <strong>Ctrl+V</strong> in the box below (works on HTTP), then click <strong>Send to terminal</strong>.</p>
+      <textarea id="pasteArea" placeholder="Paste commands here…"></textarea>
+      <div class="paste-actions">
+        <button type="button" id="pasteCancelBtn">Cancel</button>
+        <button type="button" id="pasteSendBtn" class="primary">Send to terminal</button>
+      </div>
+    </div>
+  </div>
   <div id="fallback">
     <h2>Browser session could not connect</h2>
     <p id="fallbackMsg">Use Terminal or PuTTY from the PAM portal Launch dialog instead.</p>
@@ -61,22 +82,23 @@
     const labelEl = document.getElementById("sessionLabel");
     const fallbackEl = document.getElementById("fallback");
     const displayEl = document.getElementById("display");
-    const clipFallback = document.getElementById("clipFallback");
+    const zoomSizer = document.getElementById("zoomSizer");
     const zoomLabel = document.getElementById("zoomLabel");
+    const pasteOverlay = document.getElementById("pasteOverlay");
+    const pasteArea = document.getElementById("pasteArea");
     const KEYSYM_RETURN = 0xFF0D;
 
     function copyToPC(text) {
       if (!text) return;
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;left:-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (_) {}
+      document.body.removeChild(ta);
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {
-          clipFallback.value = text;
-          clipFallback.select();
-          document.execCommand("copy");
-        });
-      } else {
-        clipFallback.value = text;
-        clipFallback.select();
-        document.execCommand("copy");
+        navigator.clipboard.writeText(text).catch(() => {});
       }
     }
 
@@ -103,24 +125,48 @@
       const client = new Guacamole.Client(tunnel);
       const guacDisplay = client.getDisplay();
       const guacScreen = guacDisplay.getElement();
-      const zoomRoot = document.createElement("div");
-      zoomRoot.className = "guac-zoom-root";
-      zoomRoot.appendChild(guacScreen);
-      displayEl.appendChild(zoomRoot);
+      zoomSizer.appendChild(guacScreen);
       const displayWrap = document.getElementById("displayWrap");
 
       let connected = false;
       let zoom = 1;
       let enableInputLock = false;
+      let displayW = 800;
+      let displayH = 480;
       const typedKeysyms = [];
+
+      function displayDimensions() {
+        if (typeof guacDisplay.getWidth === "function" && guacDisplay.getWidth() > 0) {
+          displayW = guacDisplay.getWidth();
+          displayH = guacDisplay.getHeight();
+        } else {
+          displayW = guacScreen.offsetWidth || displayW;
+          displayH = guacScreen.offsetHeight || displayH;
+        }
+        return { w: displayW, h: displayH };
+      }
 
       function setZoom(z) {
         zoom = Math.min(2.5, Math.max(0.5, Math.round(z * 10) / 10));
-        zoomRoot.style.transform = "scale(" + zoom + ")";
-        zoomRoot.style.width = (guacScreen.offsetWidth * zoom) + "px";
-        zoomRoot.style.height = (guacScreen.offsetHeight * zoom) + "px";
+        if (typeof guacDisplay.scale === "function") {
+          guacDisplay.scale(zoom);
+        } else {
+          guacScreen.style.transform = "scale(" + zoom + ")";
+          guacScreen.style.transformOrigin = "top left";
+        }
+        const dim = displayDimensions();
+        zoomSizer.style.width = Math.ceil(dim.w * zoom) + "px";
+        zoomSizer.style.height = Math.ceil(dim.h * zoom) + "px";
         zoomLabel.textContent = Math.round(zoom * 100) + "%";
       }
+
+      guacDisplay.onresize = function(w, h) {
+        if (w > 0 && h > 0) {
+          displayW = w;
+          displayH = h;
+        }
+        if (connected) setZoom(zoom);
+      };
 
       function rememberKeysym(keysym) {
         typedKeysyms.push(keysym);
@@ -146,7 +192,6 @@
         }
       }
 
-      // Cisco/network gear: paste as keystrokes (clipboard channel alone is unreliable).
       function pasteAsKeys(text) {
         const normalized = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
         for (const ch of normalized) {
@@ -161,21 +206,31 @@
         }
       }
 
-      function pasteFromEvent(e) {
-        const text = (e && e.clipboardData && e.clipboardData.getData("text/plain")) || "";
-        if (!text) {
-          statusEl.textContent = "Paste failed — click terminal, then Ctrl+V or use Paste button.";
-          return;
-        }
-        pasteAsKeys(text);
-        statusEl.textContent = "Pasted " + text.length + " characters into session.";
+      function openPasteDialog() {
+        pasteArea.value = "";
+        pasteOverlay.classList.add("open");
+        statusEl.textContent = "Paste dialog open — Ctrl+V into the box, then Send to terminal.";
+        setTimeout(() => { pasteArea.focus(); }, 50);
       }
 
-      function focusPasteCapture() {
-        clipFallback.value = "";
-        clipFallback.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;z-index:9999";
-        clipFallback.focus();
-        statusEl.textContent = "Press Ctrl+V now to paste from Windows clipboard…";
+      function closePasteDialog() {
+        pasteOverlay.classList.remove("open");
+        if (connected) {
+          statusEl.textContent = "Connected — Paste button or Ctrl+V opens paste box. Type en only for enable.";
+          displayEl.focus();
+        }
+      }
+
+      function submitPaste() {
+        const text = pasteArea.value;
+        if (!text) {
+          statusEl.textContent = "Nothing to paste — use Ctrl+V in the paste box first.";
+          return;
+        }
+        closePasteDialog();
+        pasteAsKeys(text);
+        statusEl.textContent = "Sent " + text.length + " characters to the session.";
+        displayEl.focus();
       }
 
       client.onclipboard = function(stream, mimetype) {
@@ -186,32 +241,34 @@
         reader.onend = () => copyToPC(text);
       };
 
-      const keyboard = new Guacamole.Keyboard(document);
+      const keyboard = new Guacamole.Keyboard(displayEl);
       keyboard.onkeydown = keysym => {
-        if (!connected || enableInputLock) return;
+        if (!connected || enableInputLock || pasteOverlay.classList.contains("open")) return;
         rememberKeysym(keysym);
         client.sendKeyEvent(1, keysym);
       };
       keyboard.onkeyup = keysym => {
-        if (!connected) return;
+        if (!connected || pasteOverlay.classList.contains("open")) return;
         maybeStartEnableLock(keysym);
         if (enableInputLock) return;
         client.sendKeyEvent(0, keysym);
       };
 
       const mouse = new Guacamole.Mouse(guacScreen);
-      const sendMouse = e => { if (connected) client.sendMouseState(e.state); };
+      const sendMouse = e => {
+        if (connected && !pasteOverlay.classList.contains("open")) client.sendMouseState(e.state);
+      };
       if (typeof mouse.onEach === "function") {
         mouse.onEach(["mousedown", "mouseup", "mousemove"], sendMouse);
       } else {
         mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = state => {
-          if (connected) client.sendMouseState(state);
+          if (connected && !pasteOverlay.classList.contains("open")) client.sendMouseState(state);
         };
       }
 
       function sendDisplaySize() {
-        const w = Math.max(displayWrap.clientWidth || 800, 400);
-        const h = Math.max(displayWrap.clientHeight || 480, 300);
+        const w = Math.max(displayWrap.clientWidth - 16, 400);
+        const h = Math.max(displayWrap.clientHeight - 16, 300);
         client.sendSize(w, h);
       }
 
@@ -219,14 +276,16 @@
         if (state === Guacamole.Client.State.CONNECTED) {
           connected = true;
           sendDisplaySize();
-          setZoom(zoom);
-          statusEl.textContent = "Connected — click terminal, Ctrl+V or Paste button, Ctrl+C copy. Type en only for enable.";
+          requestAnimationFrame(() => {
+            setZoom(1);
+            displayEl.focus();
+          });
+          statusEl.textContent = "Connected — Paste button or Ctrl+V opens paste box. Type en only for enable.";
           statusEl.className = "";
           fallbackEl.style.display = "none";
-          displayEl.style.display = "";
-          displayEl.focus();
         }
         if (state === Guacamole.Client.State.DISCONNECTED) {
+          closePasteDialog();
           statusEl.textContent = connected
             ? "Disconnected. Recording saved in PAM Sessions tab."
             : "Disconnected before connect — try Terminal or PuTTY from the portal.";
@@ -238,11 +297,13 @@
       };
 
       function connect() {
+        const w = Math.max(displayWrap.clientWidth - 16, 800);
+        const h = Math.max(displayWrap.clientHeight - 16, 480);
         client.connect(
           "session=" + encodeURIComponent(sessionId)
           + "&token=" + encodeURIComponent(token)
-          + "&width=" + Math.max(displayEl.clientWidth, 800)
-          + "&height=" + Math.max(displayEl.clientHeight, 480)
+          + "&width=" + w
+          + "&height=" + h
         );
       }
 
@@ -262,40 +323,33 @@
 
       document.addEventListener("keydown", e => {
         if (!connected) return;
+        if (pasteOverlay.classList.contains("open")) {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            closePasteDialog();
+          }
+          return;
+        }
         if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "v" || e.key === "V")) {
           e.preventDefault();
           e.stopImmediatePropagation();
-          displayEl.focus();
+          openPasteDialog();
           return;
         }
-        if (e.shiftKey && e.key === "Insert") {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          focusPasteCapture();
-        }
       }, true);
 
-      document.addEventListener("paste", e => {
-        if (!connected) return;
-        if (e.target === clipFallback) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        pasteFromEvent(e);
-      }, true);
-
-      clipFallback.addEventListener("paste", e => {
-        if (!connected) return;
-        e.preventDefault();
-        pasteFromEvent(e);
-        clipFallback.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+      pasteArea.addEventListener("paste", () => {
+        statusEl.textContent = "Text pasted — click Send to terminal when ready.";
       });
 
       document.getElementById("zoomInBtn").onclick = () => { setZoom(zoom + 0.1); displayEl.focus(); };
       document.getElementById("zoomOutBtn").onclick = () => { setZoom(zoom - 0.1); displayEl.focus(); };
-      document.getElementById("pasteBtn").onclick = () => {
-        displayEl.focus();
-        focusPasteCapture();
-      };
+      document.getElementById("pasteBtn").onclick = () => openPasteDialog();
+      document.getElementById("pasteSendBtn").onclick = () => submitPaste();
+      document.getElementById("pasteCancelBtn").onclick = () => closePasteDialog();
+      pasteOverlay.addEventListener("click", e => {
+        if (e.target === pasteOverlay) closePasteDialog();
+      });
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();
 
       displayEl.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
