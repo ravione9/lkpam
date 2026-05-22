@@ -14,6 +14,7 @@ import (
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/groups"
+	"github.com/example/pam-platform/internal/mfa"
 	"github.com/example/pam-platform/internal/policy"
 )
 
@@ -156,7 +157,7 @@ func (s *Server) checkPassword(user, pass string) bool {
 	if user == "" || pass == "" {
 		return false
 	}
-	pw, otp := authclient.SplitAppendedOTP(pass)
+	pw, otp := mfa.SplitAppendedOTP(pass)
 	if s.Auth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()

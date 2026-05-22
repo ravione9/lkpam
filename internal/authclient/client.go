@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/example/pam-platform/internal/mfa"
 )
 
 // Client talks to auth-service over HTTP.
@@ -140,17 +142,7 @@ func (c *Client) Verify(ctx context.Context, token string) (*TokenClaims, error)
 }
 
 // SplitAppendedOTP extracts a 6-digit TOTP code appended to a password with no
-// separator. Used for TACACS/FortiGate GUI login where a second prompt is unavailable.
+// separator. Used by TACACS/FortiGate and SSH when a second prompt is unavailable.
 func SplitAppendedOTP(password string) (base, otp string) {
-	password = strings.TrimSpace(password)
-	if len(password) <= 6 {
-		return password, ""
-	}
-	suffix := password[len(password)-6:]
-	for _, c := range suffix {
-		if c < '0' || c > '9' {
-			return password, ""
-		}
-	}
-	return password[:len(password)-6], suffix
+	return mfa.SplitAppendedOTP(password)
 }

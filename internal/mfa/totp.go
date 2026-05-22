@@ -19,7 +19,7 @@ import (
 const (
 	step    = 30
 	digits  = 6
-	skewWin = 1 // accept current ± 1 step (30s tolerance for clock drift)
+	skewWin = 2 // accept current ± 2 steps (~60s) for clock drift
 )
 
 // NewSecret returns a fresh 20-byte secret base32-encoded (no padding).
@@ -58,7 +58,7 @@ func Generate(secret string, t time.Time) (string, error) {
 
 // Verify checks code against the secret, allowing a one-step skew window.
 func Verify(secret, code string) bool {
-	code = strings.TrimSpace(code)
+	code = NormalizeOTP(code)
 	if len(code) != digits {
 		return false
 	}

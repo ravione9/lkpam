@@ -1026,7 +1026,7 @@
     <p class="hint" style="margin:0 0 20px;text-align:center">Sign in with your LDAP or local account</p>
     <input id="u" placeholder="Username or email" autocomplete="username"/>
     <input id="p" type="password" placeholder="Password" autocomplete="current-password"/>
-    <input id="otp" placeholder="MFA code (if enrolled)" style="display:none" autocomplete="one-time-code"/>
+    <input id="otp" placeholder="6-digit MFA code" style="display:none" autocomplete="one-time-code" inputmode="numeric" maxlength="6"/>
     <button class="primary" id="loginBtn">Sign in</button>
     <div id="ssoOptions" style="display:none">
       <div style="text-align:center;color:var(--muted);font-size:11px;margin:14px 0 10px;letter-spacing:0.06em">— OR —</div>
@@ -2306,12 +2306,13 @@ async function openMfaEnrollModal() {
 
 async function doLogin() {
   try {
+    const otpRaw = ($("#otp").value || "").replace(/\D/g, "").slice(0, 6);
     const data = await api("/auth/login", {
       method: "POST",
       body: JSON.stringify({
-        Username: $("#u").value,
+        Username: $("#u").value.trim(),
         Password: $("#p").value,
-        OTP: $("#otp").value,
+        OTP: otpRaw,
       })
     });
     if (data._accepted && data._accepted.mfa_enrollment_required) {
@@ -2326,12 +2327,13 @@ async function doLogin() {
       mfaPolicyGlobal = data._accepted.mfa_policy || "required";
       $("#otp").style.display = "block";
       $("#otp").focus();
-      toast("Enter your MFA code", "ok");
+      toast("Enter the 6-digit code from your authenticator app", "ok");
       return;
     }
     await persistToken(data.token);
     currentUser = data.user;
     mfaPolicyGlobal = data.mfa_policy || "required";
+    $("#otp").value = "";
     enterApp();
   } catch (e) { toast(e.message, "err"); }
 }

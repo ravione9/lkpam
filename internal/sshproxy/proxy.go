@@ -29,6 +29,7 @@ import (
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/groups"
+	"github.com/example/pam-platform/internal/mfa"
 	"github.com/example/pam-platform/internal/policy"
 	"github.com/example/pam-platform/internal/sshlaunch"
 	"github.com/example/pam-platform/internal/vault"
@@ -204,7 +205,7 @@ type authedUser struct {
 // legacy local-DB hash check if no client is configured.
 func (s *Server) authenticate(username, password, otp string) (*authedUser, error) {
 	if otp == "" {
-		if base, appended := authclient.SplitAppendedOTP(password); appended != "" {
+		if base, appended := mfa.SplitAppendedOTP(password); appended != "" {
 			password, otp = base, appended
 		}
 	}

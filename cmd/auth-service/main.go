@@ -334,19 +334,32 @@ func main() {
 			httpx.Error(w, http.StatusForbidden, err)
 			return
 		}
-		secret, err := mfa.NewSecret()
+		u, err := svc.GetUserByID(r.Context(), uid)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, err)
+			return
+		}
+		if u.MFAEnabled {
+			httpx.Error(w, http.StatusBadRequest, errors.New("MFA already enabled — use Reset MFA if re-enrollment is needed"))
+			return
+		}
+		secret, err := svc.GetMFASecret(r.Context(), uid)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
 		}
-		if err := svc.SetMFASecret(r.Context(), uid, secret); err != nil {
-			httpx.Error(w, http.StatusInternalServerError, err)
-			return
+		if secret == "" {
+			secret, err = mfa.NewSecret()
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, err)
+				return
+			}
+			if err := svc.SetMFASecret(r.Context(), uid, secret); err != nil {
+				httpx.Error(w, http.StatusInternalServerError, err)
+				return
+			}
 		}
-		// Resolve username for the otpauth label.
-		var username string
-		_ = d.QueryRowContext(r.Context(), `SELECT username FROM users WHERE id=?`, uid).Scan(&username)
-		uri := mfa.OtpAuthURI("PAM Platform", username, secret)
+		uri := mfa.OtpAuthURI("PAM Platform", u.Username, secret)
 		qr, err := mfa.QRPNGDataURI(uri, 256)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
@@ -374,8 +387,8 @@ func main() {
 			httpx.Error(w, http.StatusBadRequest, errors.New("no MFA enrollment in progress"))
 			return
 		}
-		if !mfa.Verify(secret, req.Code) {
-			httpx.Error(w, http.StatusUnauthorized, errors.New("invalid code"))
+		if !mfa.Verify(secret, mfa.NormalizeOTP(req.Code)) {
+			httpx.Error(w, http.StatusUnauthorized, errors.New("invalid code — use the current code from your authenticator app"))
 			return
 		}
 		if err := svc.EnableMFA(r.Context(), uid); err != nil {
@@ -1166,6 +1179,14 @@ func loginHandler(
 			httpx.Error(w, http.StatusBadRequest, errors.New("username and password required"))
 			return
 		}
+		password := req.Password
+		otp := mfa.NormalizeOTP(req.OTP)
+		if otp == "" {
+			if base, appended := mfa.SplitAppendedOTP(password); appended != "" {
+				password = base
+				otp = appended
+			}
+		}
 		// Internal data-plane callers (SSH proxy, TACACS) set device_auth.
 		deviceAuth := req.DeviceAuth || r.Header.Get("X-PAM-Device-Auth") == "1"
 
@@ -1174,7 +1195,7 @@ func loginHandler(
 		ldapCfg := loadLDAPConfig(ctx, settingsStore, v)
 		ldapEnabled := ldapCfg.Enabled && ldapCfg.URL != ""
 
-		u, err := authenticateLogin(ctx, svc, groupSvc, settingsStore, v, loginID, req.Password, ldapEnabled)
+		u, err := authenticateLogin(ctx, svc, groupSvc, settingsStore, v, loginID, password, ldapEnabled)
 		if err != nil {
 			bus.Publish(events.Event{Source: "auth", Kind: "login.failed", Severity: "warn", Actor: req.Username, Detail: map[string]string{"error": err.Error()}})
 			msg := loginErrorMessage(err)
@@ -1218,7 +1239,7 @@ func loginHandler(
 				httpx.Error(w, http.StatusUnauthorized, errors.New("MFA required but not enrolled"))
 				return
 			}
-			if req.OTP == "" {
+			if otp == "" {
 				if deviceAuth {
 					httpx.Error(w, http.StatusUnauthorized, errors.New("MFA required — append your 6-digit authenticator code to the password (no space), or use SSH keyboard-interactive for a separate MFA prompt"))
 					return
@@ -1230,9 +1251,9 @@ func loginHandler(
 				})
 				return
 			}
-			if !mfa.Verify(secret, req.OTP) {
+			if !mfa.Verify(secret, otp) {
 				bus.Publish(events.Event{Source: "auth", Kind: "mfa.failed", Severity: "warn", Actor: u.Username})
-				httpx.Error(w, http.StatusUnauthorized, errors.New("invalid OTP"))
+				httpx.Error(w, http.StatusUnauthorized, errors.New("invalid MFA code — use the current 6-digit code from your authenticator app (check device time is synced)"))
 				return
 			}
 		}
