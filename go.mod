@@ -6,6 +6,7 @@ require (
 	github.com/crewjam/saml v0.4.14
 	github.com/go-ldap/ldap/v3 v3.4.8
 	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/wwt/guac v1.3.2
 	golang.org/x/crypto v0.24.0
 	modernc.org/sqlite v1.30.1

@@ -342,9 +342,15 @@ func main() {
 		var username string
 		_ = d.QueryRowContext(r.Context(), `SELECT username FROM users WHERE id=?`, uid).Scan(&username)
 		uri := mfa.OtpAuthURI("PAM Platform", username, secret)
+		qr, err := mfa.QRPNGDataURI(uri, 256)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
 		httpx.JSON(w, http.StatusOK, map[string]string{
 			"secret":       secret,
 			"otpauth_uri":  uri,
+			"qr_data_uri":  qr,
 		})
 	})
 	mux.HandleFunc("POST /users/{id}/mfa/verify", func(w http.ResponseWriter, r *http.Request) {

@@ -538,6 +538,16 @@
   .modal.modal-lg { max-width: 640px; }
   .modal.modal-lg .form-grid input, .modal.modal-lg .form-grid select { max-width: none; }
   .modal h3 { margin-top: 0; font-size: 15px; font-weight: 600; }
+  .modal-mfa { max-width: 440px; }
+  .mfa-qr-wrap {
+    display: flex; justify-content: center; align-items: center;
+    margin: 12px 0 14px; padding: 14px;
+    background: #fff; border: 1px solid var(--border); border-radius: var(--r);
+  }
+  .mfa-qr-wrap img {
+    display: block; width: 200px; height: 200px;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+  }
 
   /* ===== Sparkline charts ===== */
   .chart { display: block; width: 100%; height: 90px; }
@@ -1865,11 +1875,15 @@
 
 <!-- MFA enrollment modal -->
 <div class="modal-backdrop" id="mfaModal">
-  <div class="modal">
+  <div class="modal modal-mfa">
     <h3>Set up Multi-Factor Authentication</h3>
-    <p class="muted">Scan or paste this URL into your authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy):</p>
+    <p class="muted">Scan this QR code with Google Authenticator, Microsoft Authenticator, 1Password, or Authy:</p>
+    <div class="mfa-qr-wrap">
+      <img id="mfaQrImg" alt="MFA QR code" width="200" height="200"/>
+    </div>
+    <p class="muted" style="font-size:12px;margin-bottom:6px">Can't scan? Paste this URL into your app:</p>
     <div id="mfaUriBox" style="background:#fafaf8;padding:10px;border:1px solid var(--border);border-radius:6px;font-family:ui-monospace,monospace;font-size:11px;word-break:break-all;margin-bottom:10px">—</div>
-    <p class="muted" style="font-size:12px">Or enter this secret manually:</p>
+    <p class="muted" style="font-size:12px;margin-bottom:6px">Or enter this secret manually:</p>
     <div id="mfaSecretBox" style="font-family:ui-monospace,monospace;font-size:16px;letter-spacing:0.1em;background:#fafaf8;padding:10px;border:1px solid var(--border);border-radius:6px;text-align:center;margin-bottom:14px">—</div>
     <div class="form-grid">
       <label>Enter 6-digit code</label>
@@ -6334,6 +6348,8 @@ $("#manageMfaBtn").onclick = async () => {
   }
   try {
     const r = await api("/auth/users/"+currentUser.id+"/mfa/enroll", {method:"POST"});
+    $("#mfaQrImg").src = r.qr_data_uri || "";
+    $("#mfaQrImg").alt = "Scan to add PAM Platform MFA for " + (currentUser.username || "your account");
     $("#mfaUriBox").textContent = r.otpauth_uri;
     $("#mfaSecretBox").textContent = (r.secret.match(/.{1,4}/g) || []).join(" ");
     $("#mfaCode").value = "";
@@ -6347,9 +6363,13 @@ $("#mfaVerifyBtn").onclick = async () => {
     currentUser.mfa_enabled = true;
     $("#me").textContent = currentUser.username + " · " + currentUser.role + " · MFA ✓";
     $("#mfaModal").classList.remove("show");
+    $("#mfaQrImg").removeAttribute("src");
   } catch (e) { toast(e.message, "err"); }
 };
-$("#mfaCancelBtn").onclick = () => $("#mfaModal").classList.remove("show");
+$("#mfaCancelBtn").onclick = () => {
+  $("#mfaModal").classList.remove("show");
+  $("#mfaQrImg").removeAttribute("src");
+};
 
 // --- SSO / SAML ---
 async function discoverSSO() {
