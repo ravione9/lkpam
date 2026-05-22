@@ -18,7 +18,7 @@
     #fallback p { font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 1.5; }
     #fallback a { color: #38bdf8; }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/guacamole-common-js@1.5.0/dist/guacamole-common.min.js"></script>
+  <script src="/vendor/guacamole-common.min.js"></script>
 </head>
 <body>
   <header>
@@ -53,7 +53,9 @@
         msg + " Use Open in Terminal or Open in PuTTY from the Launch dialog in the portal.";
     }
 
-    if (!sessionId || !token) {
+    if (typeof Guacamole === "undefined") {
+      showFallback("Guacamole client library failed to load (/vendor/guacamole-common.min.js). Redeploy api-gateway.");
+    } else if (!sessionId || !token) {
       showFallback("Missing session or token — launch SSH from the PAM portal.");
     } else {
       labelEl.textContent = "Session: " + sessionId;

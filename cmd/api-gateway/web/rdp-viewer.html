@@ -14,7 +14,7 @@
     #status { padding: 8px 16px; font-size: 12px; background: #0f172a; color: #94a3b8; }
     .err { color: #f87171; }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/guacamole-common-js@1.5.0/dist/guacamole-common.min.js"></script>
+  <script src="/vendor/guacamole-common.min.js"></script>
 </head>
 <body>
   <header>
@@ -33,7 +33,10 @@
     const statusEl = document.getElementById("status");
     const labelEl = document.getElementById("sessionLabel");
 
-    if (!sessionId || !token) {
+    if (typeof Guacamole === "undefined") {
+      statusEl.textContent = "Guacamole client failed to load — redeploy api-gateway.";
+      statusEl.className = "err";
+    } else if (!sessionId || !token) {
       statusEl.textContent = "Missing session or token — launch RDP from the PAM portal.";
       statusEl.className = "err";
     } else {

@@ -476,8 +476,11 @@ func serveStaticUI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if strings.HasSuffix(path, ".html") || path == "index.html" {
+	switch {
+	case strings.HasSuffix(path, ".html") || path == "index.html":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	case strings.HasSuffix(path, ".js"):
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	}
 	w.Write(b)
 }
