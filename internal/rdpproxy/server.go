@@ -174,9 +174,11 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 			"create-recording-path":  "true",
 			"font-size":              "14",
 			"color-scheme":           "gray-black",
+			"terminal-type":          "vt100",
 			"scrollback":             "1000",
-			"server-alive-interval":  "60",
-			"timeout":                "30",
+			"server-alive-interval":  "30",
+			"timeout":                "120",
+			"backspace":              "127",
 		}
 		if len(params.PrivateKey) > 0 {
 			config.Parameters["private-key"] = string(params.PrivateKey)

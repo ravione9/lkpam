@@ -157,6 +157,7 @@ func reverse(target *url.URL) http.Handler {
 // reverseWebSocket proxies to rdp-proxy with HTTP/1.1 (required for WebSocket upgrade).
 func reverseWebSocket(target *url.URL) http.Handler {
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.FlushInterval = -1 // stream Guacamole frames immediately (no reverse-proxy buffering)
 	proxy.Transport = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{

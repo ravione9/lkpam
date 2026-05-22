@@ -70,11 +70,19 @@
       displayEl.appendChild(client.getDisplay().getElement());
 
       let connected = false;
+      function sendDisplaySize() {
+        const w = Math.max(displayEl.clientWidth || 0, 800);
+        const h = Math.max(displayEl.clientHeight || 0, 480);
+        client.sendSize(w, h);
+      }
       client.onstatechange = state => {
         if (state === Guacamole.Client.State.CONNECTED) {
           connected = true;
+          sendDisplaySize();
           statusEl.textContent = "Connected — terminal session is being recorded.";
           statusEl.className = "";
+          fallbackEl.style.display = "none";
+          displayEl.style.display = "";
         }
         if (state === Guacamole.Client.State.DISCONNECTED) {
           statusEl.textContent = connected
@@ -97,15 +105,13 @@
         client.connect(connectArgs());
       }
       window.addEventListener("resize", () => {
-        if (client.getDisplay()) {
-          client.sendSize(displayEl.clientWidth, displayEl.clientHeight);
-        }
+        if (connected) sendDisplaySize();
       });
 
       tunnel.onerror = status => {
         let msg = "Tunnel error — ";
         if (status && status.code === 519) {
-          msg += "guacd could not open SSH (upstream unreachable or auth failed). Ensure guacd and ssh-proxy are running; launch a new session from the portal; try Terminal/PuTTY to confirm the target works.";
+          msg += "guacd closed the session (SSH ended or the browser stopped talking to guacd). ssh-proxy logs may show a successful connect — refresh, launch a new session, and avoid resizing the tab during connect.";
         } else if (status && status.message) {
           msg += status.message;
         } else {
@@ -114,7 +120,10 @@
         showFallback(msg);
       };
 
-      connect();
+      requestAnimationFrame(() => {
+        sendDisplaySize();
+        connect();
+      });
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();
     }
   </script>

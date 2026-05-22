@@ -3,9 +3,12 @@
 package httpx
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -32,11 +35,21 @@ func Error(w http.ResponseWriter, status int, err error) {
 // LoggingMiddleware logs every request with status and duration.
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// WebSocket upgrades must not wrap ResponseWriter — ReverseProxy needs Hijacker.
+		if isWebSocketUpgrade(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		start := time.Now()
 		rec := &recorder{ResponseWriter: w, status: 200}
 		next.ServeHTTP(rec, r)
 		log.Printf("%s %s -> %d (%s)", r.Method, r.URL.Path, rec.status, time.Since(start))
 	})
+}
+
+func isWebSocketUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Connection"), "upgrade") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Upgrade")), "websocket")
 }
 
 type recorder struct {
@@ -45,6 +58,20 @@ type recorder struct {
 }
 
 func (r *recorder) WriteHeader(c int) { r.status = c; r.ResponseWriter.WriteHeader(c) }
+
+func (r *recorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijack")
+	}
+	return h.Hijack()
+}
+
+func (r *recorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
 
 // RegisterHealth adds GET /health for container orchestration probes.
 func RegisterHealth(mux *http.ServeMux) {
