@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/example/pam-platform/internal/policy"
 )
@@ -27,6 +28,7 @@ type cmdGate struct {
 	expectEnablePass    bool
 	injectEnableOnEnter bool
 	execPrivileged      bool // true when last prompt ended with #
+	enableMaskLen       int
 }
 
 func newCmdGate(up, down io.Writer, allow, deny []string, onDeny func(cmd string), enableSecret, portalPassword string, onSessionEnd func()) *cmdGate {
@@ -125,8 +127,11 @@ func (g *cmdGate) tryAutoInjectEnable() {
 	if secret == "" {
 		return
 	}
-	mask := strings.Repeat("*", len(secret))
-	_, _ = g.down.Write([]byte("\r\x1b[KPassword: " + mask + "\r\n"))
+	g.mu.Lock()
+	g.enableMaskLen = len(secret)
+	g.mu.Unlock()
+	// Inject only upstream — do not synthesize a Password line on the user terminal
+	// (avoids duplicate Password: lines in browser/guacd viewers).
 	_, _ = g.up.Write([]byte(secret + "\r"))
 }
 
@@ -144,7 +149,11 @@ func (g *cmdGate) filterDownstream(p []byte) []byte {
 	}
 	g.mu.Lock()
 	secrets := []string{strings.TrimSpace(g.enableSecret), strings.TrimSpace(g.portalPassword)}
+	maskLen := g.enableMaskLen
 	g.mu.Unlock()
+	if maskLen <= 0 && len(secrets) > 0 {
+		maskLen = len(secrets[0])
+	}
 	out := string(p)
 	for _, secret := range secrets {
 		if secret == "" {
@@ -154,7 +163,32 @@ func (g *cmdGate) filterDownstream(p []byte) []byte {
 			out = strings.ReplaceAll(out, secret, strings.Repeat("*", len(secret)))
 		}
 	}
-	return []byte(out)
+	return []byte(maskPasswordPromptLines(out, maskLen))
+}
+
+func maskPasswordPromptLines(s string, maskLen int) string {
+	if maskLen <= 0 {
+		maskLen = 12
+	}
+	stars := strings.Repeat("*", maskLen)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lower := strings.ToLower(line)
+		for _, kw := range []string{"password:", "passphrase:", "secret:"} {
+			idx := strings.Index(lower, kw)
+			if idx < 0 {
+				continue
+			}
+			rest := strings.TrimSpace(line[idx+len(kw):])
+			if rest == "" || rest == stars || strings.Trim(rest, "*") == "" {
+				continue
+			}
+			line = line[:idx] + line[idx:idx+len(kw)] + " " + stars
+			break
+		}
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (g *cmdGate) resetLineMirror() {
@@ -237,9 +271,8 @@ func (g *cmdGate) handlePasswordKeystroke(b byte) bool {
 		g.injectEnableOnEnter = false
 		g.expectEnablePass = false
 		g.ignoreLine = true
+		g.enableMaskLen = len(secret)
 		g.mu.Unlock()
-		mask := strings.Repeat("*", len(secret))
-		_, _ = g.down.Write([]byte("\r\x1b[KPassword: " + mask + "\r\n"))
 		_, _ = g.up.Write([]byte(secret))
 		if b == '\r' {
 			_, _ = g.up.Write([]byte{'\r'})
