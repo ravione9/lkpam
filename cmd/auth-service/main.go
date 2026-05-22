@@ -432,6 +432,22 @@ func main() {
 		})
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "disabled"})
 	})
+	mux.HandleFunc("POST /users/{id}/mfa/reset", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-PAM-Role") != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
+			return
+		}
+		uid, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := svc.ResetMFA(r.Context(), uid); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		bus.Publish(events.Event{
+			Source: "auth", Kind: "mfa.reset", Severity: "warn",
+			Actor: r.Header.Get("X-PAM-User"), Target: strconv.FormatInt(uid, 10),
+		})
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "reset"})
+	})
 
 	// --- Settings & LDAP ---
 	mux.HandleFunc("GET /settings/ldap", func(w http.ResponseWriter, r *http.Request) {

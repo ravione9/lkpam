@@ -281,6 +281,14 @@ func (s *Service) DisableMFA(ctx context.Context, userID int64, exempt bool) err
 	return err
 }
 
+// ResetMFA clears TOTP enrollment so the user must set up MFA again. It does
+// not change the admin exemption flag.
+func (s *Service) ResetMFA(ctx context.Context, userID int64) error {
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE users SET mfa_secret=NULL, mfa_enabled=0 WHERE id=?`, userID)
+	return err
+}
+
 // IssueToken signs a JWT for the given user.
 func (s *Service) IssueToken(u *User) (string, error) {
 	now := time.Now()
@@ -368,10 +376,11 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 
 // UpdateUserInput is the mutable user fields from the admin UI.
 type UpdateUserInput struct {
-	Email    string `json:"email"`
-	Role     string `json:"role"`
-	Disabled *bool  `json:"disabled"`
-	Password string `json:"password,omitempty"`
+	Email     string `json:"email"`
+	Role      string `json:"role"`
+	Disabled  *bool  `json:"disabled"`
+	MFAExempt *bool  `json:"mfa_exempt"`
+	Password  string `json:"password,omitempty"`
 }
 
 // UpdateUser applies admin changes to a user record.
@@ -402,6 +411,17 @@ func (s *Service) UpdateUser(ctx context.Context, id int64, in UpdateUserInput) 
 			disabled = 0
 		}
 	}
+	exempt := 0
+	if u.MFAExempt {
+		exempt = 1
+	}
+	if in.MFAExempt != nil {
+		if *in.MFAExempt {
+			exempt = 1
+		} else {
+			exempt = 0
+		}
+	}
 	// LDAP/SAML users authenticate via IdP — local password is not used.
 	if in.Password != "" && u.Source != "local" {
 		in.Password = ""
@@ -412,13 +432,13 @@ func (s *Service) UpdateUser(ctx context.Context, id int64, in UpdateUserInput) 
 			return fmt.Errorf("auth: hash: %w", err)
 		}
 		_, err = s.DB.ExecContext(ctx,
-			`UPDATE users SET email=?, role=?, disabled=?, role_locked=?, password_hash=? WHERE id=?`,
-			u.Email, u.Role, disabled, roleLocked, pwHash, id)
+			`UPDATE users SET email=?, role=?, disabled=?, role_locked=?, mfa_exempt=?, password_hash=? WHERE id=?`,
+			u.Email, u.Role, disabled, roleLocked, exempt, pwHash, id)
 		return err
 	}
 	_, err = s.DB.ExecContext(ctx,
-		`UPDATE users SET email=?, role=?, disabled=?, role_locked=? WHERE id=?`,
-		u.Email, u.Role, disabled, roleLocked, id)
+		`UPDATE users SET email=?, role=?, disabled=?, role_locked=?, mfa_exempt=? WHERE id=?`,
+		u.Email, u.Role, disabled, roleLocked, exempt, id)
 	return err
 }
 

@@ -267,6 +267,8 @@ func requiresAdmin(method, path string) bool {
 			// Per-user actions that authenticated users may take on themselves
 			// or their own checkouts. These bypass the admin gate.
 			switch {
+			case strings.Contains(path, "/mfa/reset"):
+				// admin-only: reset another user's TOTP enrollment
 			case strings.HasPrefix(path, "/api/auth/users/") && strings.Contains(path, "/mfa"):
 				return false
 			case strings.HasSuffix(path, "/checkout"):

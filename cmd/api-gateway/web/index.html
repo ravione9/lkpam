@@ -489,6 +489,23 @@
   .form-grid label { font-size: 11.5px; color: var(--fg-soft); font-weight: 500; }
   .form-grid input, .form-grid select { width: 100%; max-width: 400px; }
   .form-grid .tf-hidden { display: none !important; }
+  .toggle-field { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .switch {
+    position: relative; display: inline-block; width: 38px; height: 22px; flex-shrink: 0;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .switch-slider {
+    position: absolute; inset: 0; cursor: pointer; border-radius: 999px;
+    background: var(--border-strong); transition: background .15s;
+  }
+  .switch-slider::before {
+    content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px;
+    border-radius: 50%; background: #fff; transition: transform .15s;
+    box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  }
+  .switch input:checked + .switch-slider { background: var(--accent); }
+  .switch input:checked + .switch-slider::before { transform: translateX(16px); }
+  .toggle-caption { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
   .actions { display: flex; gap: 5px; flex-wrap: wrap; }
 
   /* ===== Toast ===== */
@@ -1196,6 +1213,16 @@
             <label>Password</label><input id="userPassword" type="password"/>
             <p class="muted" id="userPasswordHint" style="font-size:12px;margin-top:4px"></p>
             <label>Disabled</label><div><input type="checkbox" id="userDisabled" style="width:auto"/></div>
+            <label id="userMfaLabel" class="hidden">MFA</label>
+            <div id="userMfaRow" class="hidden">
+              <div class="toggle-field">
+                <label class="switch" title="Require MFA for this user">
+                  <input type="checkbox" id="userMfaRequired"/>
+                  <span class="switch-slider"></span>
+                </label>
+                <span class="toggle-caption" id="userMfaCaption">Required — user must enroll and use MFA at sign-in</span>
+              </div>
+            </div>
             <label>Groups</label>
             <div id="userGroupChecks" class="muted" style="font-size:13px">Loading groups…</div>
           </div>
@@ -1761,7 +1788,7 @@
         </div>
 
         <h4 style="margin-top:24px">Multi-factor authentication</h4>
-        <p class="desc" style="margin-bottom:10px">Default is <b>Required</b> — users must enroll MFA before signing in. Admins can exempt individual users on the <b>Users</b> tab.</p>
+        <p class="desc" style="margin-bottom:10px">Default is <b>Required</b> — users must enroll MFA before signing in. Use <b>Edit user → MFA toggle</b> to exempt someone, or <b>Reset MFA</b> on the Users list to force re-enrollment.</p>
         <div class="form-grid">
           <label>Policy</label>
           <select id="mfaPolicy">
@@ -3610,11 +3637,21 @@ async function loadUsers() {
         <td class="muted">${fmtTime(u.last_login)}</td>
         <td class="actions">
           <button class="ghost" onclick="editUser(${u.id})">Edit</button>
-          ${userMfaDisableBtn(u)}
+          ${userMfaResetBtn(u)}
           ${currentUser && currentUser.id === u.id ? '' : `<button class="ghost danger" onclick="deleteUser(${u.id})">Delete</button>`}
         </td>
       </tr>`).join("");
   } catch (e) { $("#userRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
+}
+function setUserMfaFormVisible(show) {
+  $("#userMfaLabel").classList.toggle("hidden", !show);
+  $("#userMfaRow").classList.toggle("hidden", !show);
+}
+function syncUserMfaCaption() {
+  const on = $("#userMfaRequired").checked;
+  $("#userMfaCaption").textContent = on
+    ? "Required — user must enroll and use MFA at sign-in"
+    : "Disabled — user is exempt from MFA (admin override)";
 }
 function resetUserForm() {
   ["userId","userName","userEmail","userPassword"].forEach(id => $("#"+id).value = "");
@@ -3622,6 +3659,9 @@ function resetUserForm() {
   $("#userPassword").placeholder = "password";
   $("#userPassword").disabled = false;
   $("#userPasswordHint").textContent = "";
+  $("#userMfaRequired").checked = true;
+  syncUserMfaCaption();
+  setUserMfaFormVisible(false);
   $("#userForm").classList.add("hidden");
   $("#userGroupChecks").innerHTML = '<span class="muted">Save user first, then edit to assign groups.</span>';
 }
@@ -3665,6 +3705,13 @@ window.editUser = async id => {
     $("#userPasswordHint").textContent = "";
   }
   $("#userDisabled").checked = !!u.disabled; $("#userFormTitle").textContent = "Edit user";
+  if (isAdmin()) {
+    setUserMfaFormVisible(true);
+    $("#userMfaRequired").checked = !u.mfa_exempt;
+    syncUserMfaCaption();
+  } else {
+    setUserMfaFormVisible(false);
+  }
   try {
     const grps = await api("/auth/users/"+id+"/groups");
     await renderUserGroupChecks(id, (grps||[]).map(g => g.id));
@@ -3691,6 +3738,9 @@ $("#userSaveBtn").onclick = async () => {
     if (id) {
       const body = { email: $("#userEmail").value.trim(), role: $("#userRole").value, disabled: $("#userDisabled").checked };
       const pw = $("#userPassword").value; if (pw) body.password = pw;
+      if (isAdmin() && !$("#userMfaRow").classList.contains("hidden")) {
+        body.mfa_exempt = !$("#userMfaRequired").checked;
+      }
       await api("/auth/users/"+id, {method:"PUT", body: JSON.stringify(body)});
       await syncUserGroups(+id);
     } else {
@@ -3711,21 +3761,21 @@ function userMfaStatus(u) {
   if (u.mfa_exempt) return '<span class="pill warn">exempt</span>';
   return '<span class="pill">off</span>';
 }
-function userMfaDisableBtn(u) {
+function userMfaResetBtn(u) {
   if (!isAdmin()) return '';
-  if (u.mfa_exempt && !u.mfa_enabled) return '';
-  return `<button class="ghost danger" onclick="disableUserMFA(${u.id})">Disable MFA</button>`;
+  if (!u.mfa_enabled) return '';
+  return `<button class="ghost" onclick="resetUserMFA(${u.id})">Reset MFA</button>`;
 }
-window.disableUserMFA = async id => {
+window.resetUserMFA = async id => {
   const u = cache.users.find(x => x.id === id);
-  if (!u) return;
-  const msg = u.mfa_enabled
-    ? `Disable MFA for "${u.username}"? They will be exempt from the required MFA policy.`
-    : `Exempt "${u.username}" from required MFA? They can sign in without enrolling.`;
-  if (!confirm(msg)) return;
-  try { await api("/auth/users/"+id+"/mfa", {method:"DELETE"}); toast("MFA disabled", "ok"); loadUsers(); }
-  catch (e) { toast(e.message, "err"); }
+  if (!u || !confirm(`Reset MFA for "${u.username}"? They must scan a new QR code on next sign-in.`)) return;
+  try {
+    await api("/auth/users/"+id+"/mfa/reset", { method: "POST" });
+    toast("MFA reset", "ok");
+    loadUsers();
+  } catch (e) { toast(e.message, "err"); }
 };
+$("#userMfaRequired").addEventListener("change", syncUserMfaCaption);
 window.deleteUser = async id => {
   const u = cache.users.find(x => x.id === id);
   if (!u) return;
