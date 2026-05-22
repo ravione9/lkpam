@@ -2,6 +2,7 @@ package sshproxy
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -9,13 +10,36 @@ func TestCmdGateInjectsEnableSecret(t *testing.T) {
 	var up, down bytes.Buffer
 	gate := newCmdGate(&up, &down, nil, nil, nil, "EnableSecret99", "", nil)
 
-	gate.noteOutput([]byte("Switch>en"))
-	_, _ = gate.Write([]byte{'\r'})
+	gate.noteOutput([]byte("Switch>"))
+	_, _ = gate.Write([]byte("en\r"))
 	gate.noteOutput([]byte("\r\nPassword: "))
-	_, _ = gate.Write([]byte{'\r'})
 
 	got := up.String()
 	if !bytes.Contains([]byte(got), []byte("EnableSecret99")) {
 		t.Fatalf("upstream = %q, want enable secret injected", got)
+	}
+	if bytes.Contains(down.String(), []byte("EnableSecret99")) {
+		t.Fatalf("downstream must not contain plaintext password: %q", down.String())
+	}
+	wantMask := strings.Repeat("*", len("EnableSecret99"))
+	if !strings.Contains(down.String(), wantMask) {
+		t.Fatalf("downstream = %q, want masked Password line", down.String())
+	}
+}
+
+func TestCmdGateSwallowsKeystrokesDuringEnableInject(t *testing.T) {
+	var up bytes.Buffer
+	gate := newCmdGate(&up, &bytes.Buffer{}, nil, nil, nil, "Secret99", "", nil)
+	gate.mu.Lock()
+	gate.expectEnablePass = true
+	gate.injectEnableOnEnter = true
+	gate.mu.Unlock()
+
+	_, _ = gate.Write([]byte("norecho\r"))
+	if strings.Contains(up.String(), "norecho") {
+		t.Fatalf("upstream = %q, user keystrokes must be swallowed", up.String())
+	}
+	if !strings.HasSuffix(up.String(), "Secret99\r") {
+		t.Fatalf("upstream = %q, want injected secret on Enter", up.String())
 	}
 }

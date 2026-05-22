@@ -32,8 +32,13 @@ func End(ctx context.Context, d *db.DB, v *vault.Vault, sessionID, reason string
 	if n == 0 {
 		return false, nil
 	}
-	if v != nil && strings.HasPrefix(sessionID, "web-") {
-		_ = v.DeleteSecret(ctx, WebVaultSecretName(sessionID))
+	if v != nil {
+		switch {
+		case strings.HasPrefix(sessionID, "web-"):
+			_ = v.DeleteSecret(ctx, WebVaultSecretName(sessionID))
+		case strings.HasPrefix(sessionID, "rdp-"):
+			_ = v.DeleteSecret(ctx, "_rdp_session_"+sessionID)
+		}
 	}
 	return true, nil
 }

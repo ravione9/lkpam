@@ -936,6 +936,17 @@ func main() {
 		httpx.JSON(w, http.StatusOK, res)
 	})
 
+	mux.HandleFunc("GET /sessions/{id}/rdp-native", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("id")
+		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		out, err := rdpSvc.NativeArtifactsForSession(r.Context(), sessionID, uid)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+
 	mux.HandleFunc("POST /targets/{id}/ssh-launch", func(w http.ResponseWriter, r *http.Request) {
 		targetID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)

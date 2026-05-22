@@ -14,9 +14,11 @@ import (
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/policy"
+	"github.com/example/pam-platform/internal/sessions"
 )
 
 // LaunchResult is returned to the portal when a user starts an RDP session.
+// Passwords are never included — browser sessions use the PAM proxy (guacd).
 type LaunchResult struct {
 	SessionID    string `json:"session_id"`
 	CheckoutID   int64  `json:"checkout_id"`
@@ -25,10 +27,8 @@ type LaunchResult struct {
 	Username     string `json:"username"`
 	Host         string `json:"host"`
 	Port         int    `json:"port"`
-	RDPFile      string `json:"rdp_file"`
-	LaunchScript string `json:"launch_script"`
-	RDPFilename  string `json:"rdp_filename"`
-	BrowserURL   string `json:"browser_url"`
+	ViewerURL    string `json:"viewer_url"`
+	BrowserURL   string `json:"browser_url,omitempty"` // deprecated alias for viewer_url
 	Recorded     bool   `json:"recorded"`
 	Instructions string `json:"instructions"`
 }
@@ -115,6 +115,14 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 			return nil, ErrDualControl
 		}
 	}
+	// End stale browser RDP sessions for this user+target (re-launch without orphan rows).
+	if s.Vault != nil {
+		va, ok := s.Vault.(*VaultAdapter)
+		if ok && va.V != nil {
+			_ = sessions.EndActiveForUserTarget(ctx, s.DB, va.V, userID, targetID, "rdp", "superseded")
+		}
+	}
+
 	if reason == "" {
 		reason = "RDP session via PAM"
 	}
@@ -141,33 +149,24 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		return nil, err
 	}
 
-	params := LaunchParams{
-		Host: host, Port: port, Username: acct.Username, Name: name,
-	}
-	rdpFilename := name + ".rdp"
-	rdpBytes := BuildRDPFile(params)
-	script := BuildLaunchScript(params, co.Password, rdpFilename)
-
-	browserURL := ""
+	viewerURL := "/rdp-viewer.html?session=" + sessionID
 	if s.BrowserBase != "" {
-		browserURL = fmt.Sprintf("%s/rdp-viewer.html?session=%s", stringsTrimRightSlash(s.BrowserBase), sessionID)
+		viewerURL = fmt.Sprintf("%s/rdp-viewer.html?session=%s", stringsTrimRightSlash(s.BrowserBase), sessionID)
 	}
 
 	return &LaunchResult{
-		SessionID:    sessionID,
-		CheckoutID:   co.CheckoutID,
-		AccountID:    acct.ID,
-		AccountName:  acct.Name,
-		Username:     acct.Username,
-		Host:         host,
-		Port:         port,
-		RDPFile:      string(rdpBytes),
-		LaunchScript: script,
-		RDPFilename:  rdpFilename,
-		BrowserURL:   browserURL,
-		Recorded:     true,
-		Instructions: "Recommended (recorded): click Open in browser — session is proxied through PAM and saved as a .guac recording. " +
-			"Alternative: download .rdp + Launch-RDP.ps1 for native mstsc (not recorded by PAM).",
+		SessionID:   sessionID,
+		CheckoutID:  co.CheckoutID,
+		AccountID:   acct.ID,
+		AccountName: acct.Name,
+		Username:    acct.Username,
+		Host:        host,
+		Port:        port,
+		ViewerURL:   viewerURL,
+		BrowserURL:  viewerURL,
+		Recorded:    true,
+		Instructions: "Opening a recorded RDP session in your browser. PAM injects privileged credentials through the gateway — you do not see or type the vault password. " +
+			"Optional: use Advanced → native Remote Desktop (.rdp) from the launch dialog (not recorded).",
 	}, nil
 }
 
