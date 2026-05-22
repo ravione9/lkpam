@@ -330,6 +330,7 @@ func (s *Server) tryBrowserToken(loginUser, targetRef, token string) (*ssh.Permi
 			"tier":               fmt.Sprintf("%d", tier),
 			"allow-csv":          joinCSV(dec.AllowedCmds),
 			"deny-csv":           joinCSV(dec.DeniedCmds),
+			"linux-privilege":    dec.LinuxPrivilege,
 			"browser-session-id": creds.SessionID,
 		},
 	}, nil
@@ -392,8 +393,9 @@ func (s *Server) authorizeAndStash(u *authedUser, target string) (*ssh.Permissio
 			"host":      host,
 			"port":      fmt.Sprintf("%d", port),
 			"tier":      fmt.Sprintf("%d", tier),
-			"allow-csv": joinCSV(dec.AllowedCmds),
-			"deny-csv":  joinCSV(dec.DeniedCmds),
+			"allow-csv":        joinCSV(dec.AllowedCmds),
+			"deny-csv":         joinCSV(dec.DeniedCmds),
+			"linux-privilege":  dec.LinuxPrivilege,
 		},
 	}, nil
 }
@@ -447,24 +449,29 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	ptPassword := sconn.Permissions.Extensions["pt-password"]
 	privUser, privPassword, hasPriv := s.lookupPrivilegedAccount(targetID)
 
-	// Build ordered downstream login attempts:
+	linuxPriv := sconn.Permissions.Extensions["linux-privilege"]
+	linuxPerUser := useLinuxPerUserLogin(targetKind) && ptPassword != ""
+
+	// Build ordered downstream login attempts (network devices / legacy Linux):
 	//   1. Privileged account (PSM vault credentials)
-	//   2. Passthrough (portal password — works when Linux has the same user)
-	//   3. Ephemeral SSH cert (only when target trusts PAM CA)
+	//   2. Passthrough (portal password)
+	// Linux with portal password uses dialLinux() — per-user account, bootstrap only for provisioning.
 	type loginPlan struct {
 		user, password, mode string
 	}
 	var plans []loginPlan
-	if hasPriv {
-		plans = append(plans, loginPlan{privUser, privPassword, "priv-account"})
-	}
-	if ptPassword != "" {
-		plans = append(plans, loginPlan{portalUsername, ptPassword, "passthrough"})
+	if !linuxPerUser {
+		if hasPriv {
+			plans = append(plans, loginPlan{privUser, privPassword, "priv-account"})
+		}
+		if ptPassword != "" {
+			plans = append(plans, loginPlan{portalUsername, ptPassword, "passthrough"})
+		}
 	}
 
 	downUser := portalUsername
 	var authMethods []ssh.AuthMethod
-	if len(plans) == 0 {
+	if len(plans) == 0 && !linuxPerUser {
 		downUser = "pam-user"
 		principals := []string{sconn.Permissions.Extensions["role"], "pam-user"}
 		upPriv, upCertAuth, certErr := s.Vault.IssueSSHCert(principals, 30*time.Minute)
@@ -495,6 +502,11 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	}
 	dialCh := make(chan dialOutcome, 1)
 	go func() {
+		if linuxPerUser {
+			c, user, mode, err := s.dialLinux(targetAddr, targetKind, portalUsername, ptPassword, privUser, privPassword, linuxPriv, authMethods)
+			dialCh <- dialOutcome{client: c, err: err, user: user, authMode: mode}
+			return
+		}
 		var last dialOutcome
 		for i, plan := range plans {
 			cfg := s.buildDownstreamConfig(plan.user, plan.password, authMethods)
@@ -526,8 +538,10 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		switch out.authMode {
 		case "priv-account":
 			return fmt.Sprintf("PAM: could not log in to %s as %s (privileged account).\r\nCheck the password in Privileged Accounts, or remove the account to use your portal credentials.\r\nUnderlying error: %v\r\n", host, out.user, out.err)
+		case "provision", "provisioned":
+			return fmt.Sprintf("PAM: could not open a personal Linux session on %s as %s.\r\nEnsure privileged account pam-svc (or similar) has sudo to run useradd/chpasswd, and that PasswordAuthentication is enabled.\r\nUnderlying error: %v\r\n", host, out.user, out.err)
 		case "passthrough":
-			hint := fmt.Sprintf("For Linux: ensure user %s exists on the server, PasswordAuthentication is enabled in sshd_config, and the password matches your PAM login.\r\n", out.user)
+			hint := fmt.Sprintf("For Linux: PAM logs you in as your own account (%s), not the shared bootstrap user. PasswordAuthentication must be enabled in sshd_config.\r\n", out.user)
 			if isNetworkAppliance {
 				hint = "This device does not know your portal user. Two options to fix:\r\n" +
 					"  1. Add a Privileged Account in the Safes tab with the device admin username/password.\r\n" +

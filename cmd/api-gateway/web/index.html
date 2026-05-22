@@ -1372,8 +1372,8 @@
         </div>
         <p class="desc">Each policy binds a <b>role</b> to target kind, tier ceiling, and commands. Users inherit roles from their account or from <b>Groups</b>. When <b>Require approval</b> is checked, the <b>Approval Matrix</b> maps requester groups → approver groups.</p>
         <table>
-          <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
-          <tbody id="policyRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+          <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Linux priv</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
+          <tbody id="policyRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
         </table>
         <div class="form-panel popup-form hidden" id="policyForm">
           <h4 id="policyFormTitle">Add policy</h4>
@@ -1393,6 +1393,13 @@
             <label>Require approval</label><div><input type="checkbox" id="policyApproval" style="width:auto"/> <span class="muted">If checked, access needs an approved request matching the approval matrix.</span></div>
             <label>Allowed commands</label><input id="policyAllow" placeholder="show,configure terminal,interface" style="max-width:600px"/>
             <label>Denied commands</label><input id="policyDeny" placeholder="reload,erase startup-config" style="max-width:600px"/>
+            <label>Linux privilege</label>
+            <select id="policyLinuxPriv">
+              <option value="none">none — personal account, no sudo</option>
+              <option value="sudo">sudo — NOPASSWD sudo for all commands</option>
+              <option value="root">root — same as sudo (full elevation)</option>
+            </select>
+            <span class="muted" style="grid-column:2">Applies when SSH creates a per-user Linux account (not shared pam-svc).</span>
           </div>
           <div class="row" style="margin-top:12px">
             <button class="primary" id="policySaveBtn">Save</button>
@@ -1616,7 +1623,8 @@
           <div class="form-grid">
             <label>Safe</label><select id="accountSafe"></select>
             <label>Account name</label><input id="accountName" placeholder="root@db01"/>
-            <label>Username on target</label><input id="accountUsername" placeholder="root"/>
+            <label>Username on target</label><input id="accountUsername" placeholder="pam-svc (Linux bootstrap)"/>
+            <span class="muted" style="grid-column:2">For Linux: bootstrap account with sudo (e.g. pam-svc). Users never share this login — PAM creates a personal account per portal user.</span>
             <label>Machine</label><select id="accountTarget"><option value="">(none)</option></select>
             <label>Platform</label>
             <select id="accountPlatform">
@@ -4003,7 +4011,7 @@ window.deleteSecret = async name => {
 async function loadPolicies() {
   try {
     const rows = await api("/policy/policies");
-    if (!(rows||[]).length) { $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">No policies.</td></tr>`; return; }
+    if (!(rows||[]).length) { $("#policyRows").innerHTML = `<tr><td colspan="8" class="muted">No policies.</td></tr>`; return; }
     window._policies = rows;
     const actions = p => isAdmin()
       ? `<button class="ghost" onclick="editPolicy(${p.id})">Edit</button>
@@ -4013,11 +4021,12 @@ async function loadPolicies() {
       <tr>
         <td><b>${esc(p.role)}</b></td><td>${esc(p.target_kind)}</td><td>${p.tier_max}</td>
         <td>${p.require_approval ? '<span class="pill warn">required</span>' : '<span class="pill">no</span>'}</td>
+        <td>${esc(p.linux_privilege || 'none')}</td>
         <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.allowed_commands)}">${esc(p.allowed_commands) || '—'}</td>
         <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.denied_commands)}">${esc(p.denied_commands) || '—'}</td>
         <td class="actions">${actions(p)}</td>
       </tr>`).join("");
-  } catch (e) { $("#policyRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+  } catch (e) { $("#policyRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
 }
 function resetPolicyForm() {
   $("#policyId").value = "";
@@ -4025,6 +4034,7 @@ function resetPolicyForm() {
   fillTargetKindSelect($("#policyKind"), "linux", {includeAny: true, forPolicy: true});
   $("#policyTier").value = "2"; $("#policyApproval").checked = false;
   ["policyAllow","policyDeny"].forEach(id => $("#"+id).value = "");
+  $("#policyLinuxPriv").value = "none";
   $("#policyForm").classList.add("hidden");
 }
 $("#policyAddBtn").onclick = async () => {
@@ -4042,6 +4052,7 @@ window.editPolicy = async id => {
   $("#policyId").value = p.id;
   $("#policyTier").value = p.tier_max; $("#policyApproval").checked = p.require_approval;
   $("#policyAllow").value = p.allowed_commands || ""; $("#policyDeny").value = p.denied_commands || "";
+  $("#policyLinuxPriv").value = p.linux_privilege || "none";
   $("#policyFormTitle").textContent = "Edit policy";
   $("#policyForm").classList.remove("hidden");
   $("#policyRole").focus();
@@ -4051,6 +4062,7 @@ $("#policySaveBtn").onclick = async () => {
     role: $("#policyRole").value.trim(), target_kind: $("#policyKind").value.trim(),
     tier_max: parseInt($("#policyTier").value,10), require_approval: $("#policyApproval").checked,
     allowed_commands: $("#policyAllow").value.trim(), denied_commands: $("#policyDeny").value.trim(),
+    linux_privilege: $("#policyLinuxPriv").value,
   };
   try {
     const id = $("#policyId").value;
@@ -5100,14 +5112,23 @@ request system audit-snapshot` },
   },
 
   linux: {
-    label: "Linux (OpenSSH + PAM CA)",
-    intro: "Linux hosts trust the PAM SSH CA so users connect through the SSH proxy with short-lived certificates — no permanent keys or passwords stored on the box. Optional TACACS+ via <code>libpam-tacplus</code>.",
+    label: "Linux (per-user SSH via PAM proxy)",
+    intro: "Each portal user gets their own Linux account (e.g. <code>ravi.verma1</code>) — sessions never share one login. Add a bootstrap privileged account in Safes (e.g. <code>pam-svc</code> with passwordless sudo); PAM uses it only to run <code>useradd</code>/<code>chpasswd</code>, then connects as the individual user. Set <b>Linux privilege</b> on Policies (<code>sudo</code> / <code>root</code>) to grant elevation. Enable <code>PasswordAuthentication yes</code> in sshd unless you also configure the PAM SSH CA.",
     prereqs: [
       "OpenSSH 7.2+ (modern distros)",
-      "Root or sudo to edit <code>/etc/ssh/sshd_config</code>",
+      "Bootstrap account (pam-svc) with sudo for user provisioning",
+      "PasswordAuthentication yes (for per-user login)",
     ],
     steps: [
-      { title: "1. Install the PAM SSH CA pubkey",
+      { title: "0. Bootstrap account (one-time)",
+        code:
+`# Create the service account PAM uses ONLY for provisioning — not end-user sessions.
+sudo useradd -m -s /bin/bash pam-svc
+sudo passwd pam-svc
+echo 'pam-svc ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/pam-svc
+sudo chmod 440 /etc/sudoers.d/pam-svc
+# In PAM portal: Safes → Privileged Accounts → link pam-svc to this machine` },
+      { title: "1. Install the PAM SSH CA pubkey (optional)",
         code:
 `# Save this to /etc/ssh/pam_ca.pub
 {{CA_PUB}}` },

@@ -22,6 +22,7 @@ type cmdGate struct {
 	mu         sync.Mutex
 	devLine    []byte // visible characters of the device's current line
 	ignoreLine bool   // suppress policy check (e.g. after a password prompt)
+	skipNextLF bool   // ignore \n immediately after \r (CRLF)
 }
 
 func newCmdGate(up, down io.Writer, allow, deny []string, onDeny func(cmd string)) *cmdGate {
@@ -43,6 +44,8 @@ func (g *cmdGate) noteOutput(p []byte) {
 			if len(g.devLine) > 0 {
 				g.devLine = g.devLine[:len(g.devLine)-1]
 			}
+		case 0x03: // ^C echoed by device
+			g.devLine = g.devLine[:0]
 		default:
 			if b >= 0x20 && b < 0x7f {
 				g.devLine = append(g.devLine, b)
@@ -55,6 +58,13 @@ func (g *cmdGate) noteOutput(p []byte) {
 		strings.HasSuffix(trim, "secret:") {
 		g.ignoreLine = true
 	}
+}
+
+func (g *cmdGate) resetLineMirror() {
+	g.mu.Lock()
+	g.devLine = g.devLine[:0]
+	g.ignoreLine = false
+	g.mu.Unlock()
 }
 
 // currentCommand returns the user-typed portion of the current visible line
@@ -71,34 +81,47 @@ func (g *cmdGate) Write(p []byte) (int, error) {
 	n := len(p)
 	for _, b := range p {
 		switch b {
-		case '\n', '\r':
-			g.mu.Lock()
-			ignore := g.ignoreLine
-			if ignore {
-				g.ignoreLine = false
-			}
-			cmd := g.currentCommand()
-			g.mu.Unlock()
-
-			if ignore {
-				_, _ = g.up.Write([]byte{b})
+		case '\n':
+			if g.skipNextLF {
+				g.skipNextLF = false
 				continue
 			}
-			if cmd != "" && !policy.CommandAllowed(cmd, g.allow, g.deny) {
-				_, _ = g.up.Write([]byte{0x15})
-				_, _ = g.down.Write([]byte(fmt.Sprintf(
-					"\r\nPAM: command denied by policy: %s\r\n", cmd)))
-				if g.onDeny != nil {
-					g.onDeny(cmd)
-				}
-				continue
-			}
-			_, _ = g.up.Write([]byte{b})
+			g.handleLineEnd(b)
+		case '\r':
+			g.skipNextLF = true
+			g.handleLineEnd(b)
 		default:
 			_, _ = g.up.Write([]byte{b})
 		}
 	}
 	return n, nil
+}
+
+func (g *cmdGate) handleLineEnd(endByte byte) {
+	g.mu.Lock()
+	ignore := g.ignoreLine
+	if ignore {
+		g.ignoreLine = false
+	}
+	cmd := g.currentCommand()
+	g.mu.Unlock()
+
+	if ignore {
+		_, _ = g.up.Write([]byte{endByte})
+		return
+	}
+	if cmd != "" && !policy.CommandAllowed(cmd, g.allow, g.deny) {
+		g.resetLineMirror()
+		// Ctrl-C cancels the partial line on Cisco IOS; 0x15 (NAK) is ignored.
+		_, _ = g.up.Write([]byte{0x03})
+		_, _ = g.down.Write([]byte(fmt.Sprintf(
+			"\r\nPAM: command denied by policy: %s\r\n", cmd)))
+		if g.onDeny != nil {
+			g.onDeny(cmd)
+		}
+		return
+	}
+	_, _ = g.up.Write([]byte{endByte})
 }
 
 // gateAwareWriter forwards device output to the user and feeds the cmdGate.

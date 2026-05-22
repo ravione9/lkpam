@@ -20,6 +20,8 @@ type Decision struct {
 	Reasons         []string `json:"reasons,omitempty"`
 	AllowedCmds     []string `json:"allowed_cmds,omitempty"`
 	DeniedCmds      []string `json:"denied_cmds,omitempty"`
+	// LinuxPrivilege is none | sudo | root for per-user Linux account provisioning.
+	LinuxPrivilege string `json:"linux_privilege,omitempty"`
 }
 
 // Engine evaluates policy from the policies table.
@@ -53,7 +55,7 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 		return Decision{Reasons: []string{"no role"}}, nil
 	}
 
-	final := Decision{}
+	final := Decision{LinuxPrivilege: "none"}
 	allowSeen := false
 	allowedSet := map[string]bool{}
 	deniedSet := map[string]bool{}
@@ -69,7 +71,8 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 
 	for _, role := range roles {
 		query := fmt.Sprintf(`
-			SELECT target_kind, tier_max, require_approval, allowed_commands, denied_commands
+			SELECT target_kind, tier_max, require_approval, allowed_commands, denied_commands,
+			       COALESCE(linux_privilege, 'none')
 			FROM policies
 			WHERE role = ? AND target_kind IN (%s)
 			ORDER BY CASE
@@ -92,8 +95,9 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 			requireApproval int
 			allowedCSV      string
 			deniedCSV       string
+			linuxPriv       string
 		)
-		err := row.Scan(&kind, &tierMax, &requireApproval, &allowedCSV, &deniedCSV)
+		err := row.Scan(&kind, &tierMax, &requireApproval, &allowedCSV, &deniedCSV, &linuxPriv)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -115,6 +119,7 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 		for _, c := range splitCSV(deniedCSV) {
 			deniedSet[c] = true
 		}
+		final.LinuxPrivilege = MergeLinuxPrivilege(final.LinuxPrivilege, linuxPriv)
 	}
 
 	if !allowSeen {
@@ -183,11 +188,24 @@ func splitCSV(s string) []string {
 	return out
 }
 
+// ciscoSessionControl matches IOS commands that must never be blocked so users
+// can leave config mode or end the session (exit, end, logout, etc.).
+func ciscoSessionControl(cmd string) bool {
+	switch NormalizeCLI(cmd) {
+	case "exit", "end", "logout", "logoff", "quit", "disable":
+		return true
+	}
+	return false
+}
+
 // CommandAllowed returns true if cmd passes the allow/deny lists.
 // Deny wins over allow. Patterns are simple prefix matches for now;
 // real OPA can do regex / glob. Matching is case-insensitive.
 func CommandAllowed(cmd string, allow, deny []string) bool {
 	cmd = NormalizeCLI(cmd)
+	if ciscoSessionControl(cmd) {
+		return true
+	}
 	for _, d := range deny {
 		d = NormalizeCLI(d)
 		if d != "" && strings.HasPrefix(cmd, d) {
@@ -206,23 +224,14 @@ func CommandAllowed(cmd string, allow, deny []string) bool {
 	return false
 }
 
-// NormalizeCLI lowercases and expands common Cisco IOS abbreviations.
+// NormalizeCLI lowercases and expands Cisco IOS abbreviations token-by-token so
+// policy deny/allow lists match abbreviated input (config t, sh run, wr eri, etc.).
 func NormalizeCLI(cmd string) string {
 	cmd = strings.ToLower(strings.TrimSpace(cmd))
 	if cmd == "" {
 		return cmd
 	}
-	fields := strings.Fields(cmd)
-	switch fields[0] {
-	case "en":
-		fields[0] = "enable"
-	case "conf":
-		fields[0] = "configure"
-		if len(fields) >= 2 && fields[1] == "t" {
-			fields = []string{"configure", "terminal"}
-		}
-	}
-	return strings.Join(fields, " ")
+	return strings.Join(expandCiscoTokens(strings.Fields(cmd)), " ")
 }
 
 // FullCommand joins a TACACS cmd= value with cmd-arg= pieces into one line.
@@ -250,12 +259,14 @@ type Rule struct {
 	RequireApproval bool   `json:"require_approval"`
 	AllowedCommands string `json:"allowed_commands"`
 	DeniedCommands  string `json:"denied_commands"`
+	LinuxPrivilege  string `json:"linux_privilege"`
 }
 
 // ListRules returns all policy rules.
 func (e *Engine) ListRules(ctx context.Context) ([]Rule, error) {
 	rows, err := e.DB.QueryContext(ctx, `
-		SELECT id, role, target_kind, tier_max, require_approval, allowed_commands, denied_commands
+		SELECT id, role, target_kind, tier_max, require_approval, allowed_commands, denied_commands,
+		       COALESCE(linux_privilege, 'none')
 		FROM policies ORDER BY role, target_kind`)
 	if err != nil {
 		return nil, err
@@ -265,7 +276,7 @@ func (e *Engine) ListRules(ctx context.Context) ([]Rule, error) {
 	for rows.Next() {
 		var r Rule
 		var appr int
-		if err := rows.Scan(&r.ID, &r.Role, &r.TargetKind, &r.TierMax, &appr, &r.AllowedCommands, &r.DeniedCommands); err != nil {
+		if err := rows.Scan(&r.ID, &r.Role, &r.TargetKind, &r.TierMax, &appr, &r.AllowedCommands, &r.DeniedCommands, &r.LinuxPrivilege); err != nil {
 			return nil, err
 		}
 		r.RequireApproval = appr != 0
@@ -283,10 +294,11 @@ func (e *Engine) CreateRule(ctx context.Context, r Rule) (int64, error) {
 	if r.RequireApproval {
 		appr = 1
 	}
+	linuxPriv := NormalizeLinuxPrivilege(r.LinuxPrivilege)
 	res, err := e.DB.ExecContext(ctx, `
-		INSERT INTO policies(role, target_kind, tier_max, require_approval, allowed_commands, denied_commands)
-		VALUES(?,?,?,?,?,?)`,
-		r.Role, r.TargetKind, r.TierMax, appr, r.AllowedCommands, r.DeniedCommands)
+		INSERT INTO policies(role, target_kind, tier_max, require_approval, allowed_commands, denied_commands, linux_privilege)
+		VALUES(?,?,?,?,?,?,?)`,
+		r.Role, r.TargetKind, r.TierMax, appr, r.AllowedCommands, r.DeniedCommands, linuxPriv)
 	if err != nil {
 		return 0, err
 	}
@@ -302,10 +314,11 @@ func (e *Engine) UpdateRule(ctx context.Context, r Rule) error {
 	if r.RequireApproval {
 		appr = 1
 	}
+	linuxPriv := NormalizeLinuxPrivilege(r.LinuxPrivilege)
 	res, err := e.DB.ExecContext(ctx, `
 		UPDATE policies SET role=?, target_kind=?, tier_max=?, require_approval=?,
-		  allowed_commands=?, denied_commands=? WHERE id=?`,
-		r.Role, r.TargetKind, r.TierMax, appr, r.AllowedCommands, r.DeniedCommands, r.ID)
+		  allowed_commands=?, denied_commands=?, linux_privilege=? WHERE id=?`,
+		r.Role, r.TargetKind, r.TierMax, appr, r.AllowedCommands, r.DeniedCommands, linuxPriv, r.ID)
 	if err != nil {
 		return err
 	}
