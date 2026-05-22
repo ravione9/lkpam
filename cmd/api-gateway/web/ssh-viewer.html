@@ -14,8 +14,9 @@
     .toolbar button:hover { background: #475569; }
     #zoomLabel { font-size: 12px; color: #94a3b8; min-width: 48px; text-align: center; }
     #displayWrap { flex: 1; min-height: 320px; overflow: auto; background: #111; position: relative; padding: 8px; }
-    #display { outline: none; display: inline-block; }
-    #zoomSizer { display: inline-block; line-height: 0; }
+    #display { outline: none; display: block; width: 100%; min-height: 100%; }
+    #zoomSizer { display: inline-block; line-height: 0; transform-origin: top left; }
+    #zoomSizer canvas, #zoomSizer div { image-rendering: pixelated; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
     #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
@@ -53,7 +54,7 @@
     </div>
   </header>
   <div id="displayWrap">
-    <div id="display" tabindex="0" title="Click here to type">
+    <div id="display" tabindex="0" aria-label="SSH terminal">
       <div id="zoomSizer"></div>
     </div>
   </div>
@@ -146,18 +147,19 @@
         return { w: displayW, h: displayH };
       }
 
-      function setZoom(z) {
-        zoom = Math.min(2.5, Math.max(0.5, Math.round(z * 10) / 10));
-        if (typeof guacDisplay.scale === "function") {
-          guacDisplay.scale(zoom);
-        } else {
-          guacScreen.style.transform = "scale(" + zoom + ")";
-          guacScreen.style.transformOrigin = "top left";
-        }
+      function applyZoomLayout() {
         const dim = displayDimensions();
-        zoomSizer.style.width = Math.ceil(dim.w * zoom) + "px";
-        zoomSizer.style.height = Math.ceil(dim.h * zoom) + "px";
+        zoomSizer.style.transform = "scale(" + zoom + ")";
+        zoomSizer.style.width = dim.w + "px";
+        zoomSizer.style.height = dim.h + "px";
+        zoomSizer.style.marginBottom = Math.ceil(dim.h * (zoom - 1)) + "px";
+        zoomSizer.style.marginRight = Math.ceil(dim.w * (zoom - 1)) + "px";
         zoomLabel.textContent = Math.round(zoom * 100) + "%";
+      }
+
+      function setZoom(z) {
+        zoom = Math.min(2.0, Math.max(0.75, Math.round(z * 10) / 10));
+        applyZoomLayout();
       }
 
       guacDisplay.onresize = function(w, h) {
@@ -165,7 +167,7 @@
           displayW = w;
           displayH = h;
         }
-        if (connected) setZoom(zoom);
+        if (connected) applyZoomLayout();
       };
 
       function rememberKeysym(keysym) {
@@ -192,17 +194,26 @@
         }
       }
 
-      function pasteAsKeys(text) {
+      function pasteToSession(text) {
         const normalized = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        if (typeof client.createClipboardStream === "function") {
+          try {
+            const stream = client.createClipboardStream("text/plain");
+            const writer = new Guacamole.StringWriter(stream);
+            writer.sendText(normalized);
+            writer.sendEnd();
+          } catch (_) {}
+        }
         for (const ch of normalized) {
           if (ch === "\n") {
             client.sendKeyEvent(1, KEYSYM_RETURN);
             client.sendKeyEvent(0, KEYSYM_RETURN);
             continue;
           }
-          const sym = ch.charCodeAt(0);
-          client.sendKeyEvent(1, sym);
-          client.sendKeyEvent(0, sym);
+          const code = ch.charCodeAt(0);
+          if (code < 0x20 || code > 0xff) continue;
+          client.sendKeyEvent(1, code);
+          client.sendKeyEvent(0, code);
         }
       }
 
@@ -234,7 +245,7 @@
           }
         }
         closePasteDialog();
-        pasteAsKeys(text);
+        pasteToSession(text);
         statusEl.textContent = "Sent " + text.length + " characters to the session.";
         displayEl.focus();
       }
@@ -282,10 +293,11 @@
         if (state === Guacamole.Client.State.CONNECTED) {
           connected = true;
           sendDisplaySize();
-          requestAnimationFrame(() => {
+          setTimeout(() => {
             setZoom(1);
+            applyZoomLayout();
             displayEl.focus();
-          });
+          }, 300);
           statusEl.textContent = "Connected — Paste button or Ctrl+V opens paste box. Type en only for enable.";
           statusEl.className = "";
           fallbackEl.style.display = "none";
@@ -313,7 +325,15 @@
         );
       }
 
-      window.addEventListener("resize", () => { if (connected) sendDisplaySize(); });
+      let resizeTimer = null;
+      window.addEventListener("resize", () => {
+        if (!connected) return;
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          sendDisplaySize();
+          applyZoomLayout();
+        }, 200);
+      });
 
       tunnel.onerror = status => {
         let msg = "Tunnel error — ";
@@ -361,7 +381,6 @@
       displayEl.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
       guacScreen.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
 
-      setZoom(1);
       requestAnimationFrame(() => connect());
     }
   </script>

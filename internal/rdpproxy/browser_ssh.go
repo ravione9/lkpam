@@ -31,33 +31,20 @@ func (s *Server) fillBrowserSSHViaProxy(params *sessionParams, creds sshlaunch.S
 }
 
 func (s *Server) fillBrowserSSHSession(ctx context.Context, params *sessionParams, creds sshlaunch.SessionCreds, targetID int64, host string, port int) (route string, err error) {
-	if browserSSHViaProxy() {
-		s.fillBrowserSSHViaProxy(params, creds)
-		return "ssh-proxy", nil
-	}
-	if !browserSSHForceDirect() {
-		if err := s.fillBrowserSSHDirect(ctx, params, targetID, host, port); err == nil {
-			return "direct-target", nil
-		} else if !isBrowserSSHDirectFallback(err) {
+	// Browser SSH must go through ssh-proxy (same as PuTTY) so enable-password masking,
+	// command policy, and session recording apply. Direct guacd→target bypasses cmdgate and
+	// showed enable passwords in plain text in the viewer.
+	if browserSSHForceDirect() {
+		if err := s.fillBrowserSSHDirect(ctx, params, targetID, host, port); err != nil {
 			return "", err
 		}
-		// No privileged vault creds — use ssh-proxy (same as PuTTY) instead of failing in browser.
-		s.fillBrowserSSHViaProxy(params, creds)
-		return "ssh-proxy-fallback", nil
+		return "direct-target", nil
 	}
-	if err := s.fillBrowserSSHDirect(ctx, params, targetID, host, port); err != nil {
-		return "", err
+	s.fillBrowserSSHViaProxy(params, creds)
+	if browserSSHViaProxy() {
+		return "ssh-proxy", nil
 	}
-	return "direct-target", nil
-}
-
-func isBrowserSSHDirectFallback(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "no privileged account") ||
-		strings.Contains(msg, "password not available in vault")
+	return "ssh-proxy-default", nil
 }
 
 func (s *Server) fillBrowserSSHDirect(ctx context.Context, params *sessionParams, targetID int64, host string, port int) error {

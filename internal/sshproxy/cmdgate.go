@@ -3,12 +3,16 @@ package sshproxy
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/example/pam-platform/internal/policy"
 )
+
+// passwordSuffixRe masks any characters shown after Password:/Passphrase:/Secret: on one line.
+var passwordSuffixRe = regexp.MustCompile(`(?i)(password|passphrase|secret)\s*:\s*[^\r\n]*`)
 
 // cmdGate evaluates command policy by mirroring the device's visible line.
 type cmdGate struct {
@@ -194,7 +198,30 @@ func (g *cmdGate) filterDownstream(p []byte) []byte {
 		}
 		out = strings.ReplaceAll(out, secret, strings.Repeat("*", len(secret)))
 	}
-	return []byte(maskPasswordPromptLines(out, maskLen))
+	out = redactPasswordSuffixes(out, maskLen)
+	return []byte(out)
+}
+
+func redactPasswordSuffixes(s string, maskLen int) string {
+	if maskLen <= 0 {
+		maskLen = 12
+	}
+	return passwordSuffixRe.ReplaceAllStringFunc(s, func(m string) string {
+		lower := strings.ToLower(m)
+		idx := strings.Index(lower, ":")
+		if idx < 0 {
+			return m
+		}
+		rest := strings.TrimSpace(m[idx+1:])
+		if rest == "" || strings.Trim(rest, "*") == "" {
+			return m
+		}
+		n := maskLen
+		if len(rest) > n {
+			n = len(rest)
+		}
+		return m[:idx+1] + " " + strings.Repeat("*", n)
+	})
 }
 
 func maskPasswordPromptLines(s string, maskLen int) string {
