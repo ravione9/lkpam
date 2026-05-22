@@ -1789,7 +1789,7 @@
 
         <div class="card" style="margin-top:20px;padding:16px" id="ldapSyncPanel">
           <h4 style="margin:0 0 8px">AD user &amp; group sync</h4>
-          <p class="desc" style="margin-bottom:12px">Search Active Directory, select users and groups to import, then run sync. Synced users can sign in with their AD credentials — no separate allowlist is required at login.</p>
+          <p class="desc" style="margin-bottom:12px">Search Active Directory and select which users and groups to import. Save your selection — PAM auto-syncs every 5 minutes. Synced users sign in with AD credentials (no separate login allowlist).</p>
           <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
             <div>
               <div class="row" style="margin-bottom:8px">
@@ -1998,7 +1998,7 @@
 <div class="modal-backdrop" id="adSyncModal">
   <div class="modal modal-lg" style="max-width:760px">
     <h3>Sync users &amp; groups from Active Directory</h3>
-    <p class="muted" id="adSyncIntro" style="font-size:12px">Search Active Directory, select users and groups to import, then run sync. Synced users can sign in with their AD credentials.</p>
+    <p class="muted" id="adSyncIntro" style="font-size:12px">Select AD users and groups to import into PAM. Save your selection — auto-sync runs every 5 minutes. You can also sync immediately with <b>Save &amp; sync now</b>. Synced users sign in with AD credentials.</p>
     <div id="adSyncDisabled" class="pill warn" style="display:none;margin-bottom:12px">Active Directory is not enabled — configure it in <b>Settings → Active Directory / LDAP</b> first.</div>
     <div class="grid" style="grid-template-columns:1fr 1fr;gap:16px">
       <div>

@@ -47,6 +47,7 @@ services:
       <<: *common-env
       PAM_AUTH_ADDR: ":8081"
       PAM_PORTAL_URL: "${PAM_PORTAL_URL:-http://localhost:8080}"
+      PAM_LDAP_SYNC_INTERVAL: "${PAM_LDAP_SYNC_INTERVAL:-5m}"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/health"]
       <<: *http-health

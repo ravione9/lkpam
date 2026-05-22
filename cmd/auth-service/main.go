@@ -555,23 +555,16 @@ func main() {
 			httpx.Error(w, http.StatusForbidden, errors.New("admin required"))
 			return
 		}
-		cfg := loadLDAPConfig(r.Context(), settingsStore, v)
-		if !cfg.Enabled {
-			httpx.Error(w, http.StatusBadRequest, errors.New("ldap is not enabled"))
-			return
-		}
-		sel := loadLDAPSyncSelection(r.Context(), settingsStore)
-		if len(sel.UserDNs) == 0 && len(sel.GroupDNs) == 0 {
-			httpx.Error(w, http.StatusBadRequest, errors.New("no users or groups selected for sync"))
-			return
-		}
-		pw, _ := v.GetSecret(r.Context(), vaultLDAPBindPassword)
-		syncSvc := &ldappkg.SyncService{
-			Client: &ldappkg.Client{Cfg: cfg, Password: string(pw)},
-			Auth:   svc, Groups: groupSvc, Cfg: cfg,
-		}
-		res, err := syncSvc.Run(r.Context(), sel)
+		res, err := executeLDAPSync(r.Context(), svc, groupSvc, settingsStore, v)
 		if err != nil {
+			if errors.Is(err, errLDAPSyncNothingSelected) {
+				httpx.Error(w, http.StatusBadRequest, err)
+				return
+			}
+			if errors.Is(err, errLDAPSyncDisabled) {
+				httpx.Error(w, http.StatusBadRequest, err)
+				return
+			}
 			httpx.Error(w, http.StatusBadGateway, err)
 			return
 		}
@@ -1143,6 +1136,7 @@ func main() {
 	})
 
 	addr := config.Get("PAM_AUTH_ADDR", ":8081")
+	go runLDAPSyncWorker(svc, groupSvc, settingsStore, v, bus)
 	log.Printf("auth-service listening on %s", addr)
 	if err := http.ListenAndServe(addr, httpx.LoggingMiddleware(mux)); err != nil {
 		log.Fatal(err)
@@ -1373,6 +1367,75 @@ func loadLDAPSyncSelection(ctx context.Context, settingsStore *settings.Store) l
 	var sel ldappkg.SyncSelection
 	_ = settingsStore.GetJSON(ctx, settingsKeyLDAPSync, &sel)
 	return sel
+}
+
+var (
+	errLDAPSyncDisabled        = errors.New("ldap is not enabled")
+	errLDAPSyncNothingSelected = errors.New("no users or groups selected for sync")
+)
+
+func executeLDAPSync(
+	ctx context.Context,
+	svc *auth.Service,
+	groupSvc *groups.Service,
+	settingsStore *settings.Store,
+	v *vault.Vault,
+) (*ldappkg.SyncResult, error) {
+	cfg := loadLDAPConfig(ctx, settingsStore, v)
+	if !cfg.Enabled {
+		return nil, errLDAPSyncDisabled
+	}
+	sel := loadLDAPSyncSelection(ctx, settingsStore)
+	if len(sel.UserDNs) == 0 && len(sel.GroupDNs) == 0 {
+		return nil, errLDAPSyncNothingSelected
+	}
+	pw, _ := v.GetSecret(ctx, vaultLDAPBindPassword)
+	syncSvc := &ldappkg.SyncService{
+		Client: &ldappkg.Client{Cfg: cfg, Password: string(pw)},
+		Auth:   svc, Groups: groupSvc, Cfg: cfg,
+	}
+	return syncSvc.Run(ctx, sel)
+}
+
+// runLDAPSyncWorker re-imports the saved AD sync selection on a fixed interval.
+func runLDAPSyncWorker(
+	svc *auth.Service,
+	groupSvc *groups.Service,
+	settingsStore *settings.Store,
+	v *vault.Vault,
+	bus events.Publisher,
+) {
+	interval := config.GetDuration("PAM_LDAP_SYNC_INTERVAL", 5*time.Minute)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	log.Printf("ldap-sync: auto worker started (interval=%s)", interval)
+	for range t.C {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		res, err := executeLDAPSync(ctx, svc, groupSvc, settingsStore, v)
+		cancel()
+		if err != nil {
+			if errors.Is(err, errLDAPSyncDisabled) || errors.Is(err, errLDAPSyncNothingSelected) {
+				continue
+			}
+			log.Printf("ldap-sync: auto run failed: %v", err)
+			continue
+		}
+		if res.UsersSynced == 0 && res.GroupsSynced == 0 && len(res.Errors) == 0 {
+			continue
+		}
+		log.Printf("ldap-sync: auto synced %d user(s), %d group(s)", res.UsersSynced, res.GroupsSynced)
+		if len(res.Errors) > 0 {
+			log.Printf("ldap-sync: auto run warnings: %s", strings.Join(res.Errors, "; "))
+		}
+		bus.Publish(events.Event{
+			Source: "auth", Kind: "ldap.sync.completed", Severity: "info",
+			Detail: map[string]string{
+				"users":  strconv.Itoa(res.UsersSynced),
+				"groups": strconv.Itoa(res.GroupsSynced),
+				"auto":   "1",
+			},
+		})
+	}
 }
 
 // loadLDAPConfig returns the persisted LDAP config (or sane defaults) merged
