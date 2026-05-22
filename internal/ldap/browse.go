@@ -198,3 +198,37 @@ func (c *Client) FetchGroup(dn string) (*DirectoryEntry, error) {
 		Type:        "group",
 	}, nil
 }
+
+// FetchGroupMemberDNs returns user DNs listed in a group's member attribute.
+func (c *Client) FetchGroupMemberDNs(groupDN string) ([]string, error) {
+	conn, err := c.dial(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	if err := c.bindService(conn); err != nil {
+		return nil, err
+	}
+	req := ldap.NewSearchRequest(
+		groupDN,
+		ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 8, false,
+		"(objectClass=*)",
+		[]string{"member"},
+		nil,
+	)
+	res, err := conn.Search(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(res.Entries) == 0 {
+		return nil, fmt.Errorf("ldap: group not found")
+	}
+	var out []string
+	for _, m := range res.Entries[0].GetAttributeValues("member") {
+		m = strings.TrimSpace(m)
+		if m != "" {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}

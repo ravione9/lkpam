@@ -1291,9 +1291,6 @@ func authenticateLogin(
 		if existing != nil && existing.Source == "ldap" {
 			return nil, ldapErr
 		}
-		if ldapErr != nil && strings.Contains(ldapErr.Error(), "allowlist") {
-			return nil, ldapErr
-		}
 	}
 
 	u, _ := tryLocal(ctx, svc, loginID, password)
@@ -1309,7 +1306,7 @@ func loginErrorMessage(err error) string {
 	}
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "allowlist"):
+	case strings.Contains(msg, "not imported from AD"):
 		return msg
 	case msg == "use SSO to sign in":
 		return msg
@@ -1338,9 +1335,12 @@ func tryLDAP(
 	if err != nil {
 		return nil, err
 	}
-	sel := loadLDAPSyncSelection(ctx, settingsStore)
-	if !ldappkg.AllowedUser(sel, lu.DN) {
-		return nil, errors.New("user is not in the AD sync allowlist — ask an admin to add you under Settings → AD Sync")
+	imported, _ := svc.FindByLoginID(ctx, username)
+	if imported == nil {
+		imported, _ = svc.FindByLoginID(ctx, lu.Username)
+	}
+	if imported == nil {
+		return nil, errors.New("account not imported from AD — ask an admin to sync this user")
 	}
 	// Map LDAP groups → first matching local group's role, else default.
 	role := cfg.DefaultRole

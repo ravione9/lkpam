@@ -10,7 +10,6 @@ import (
 )
 
 // SyncSelection lists AD users and groups chosen for import into PAM.
-// When UserDNs is non-empty, only those users may log in via LDAP and are synced.
 type SyncSelection struct {
 	UserDNs  []string `json:"user_dns"`
 	GroupDNs []string `json:"group_dns"`
@@ -31,7 +30,7 @@ type SyncService struct {
 	Cfg    Config
 }
 
-// Run syncs only the DNs in sel — no other AD objects are imported.
+// Run imports selected AD groups, explicit users, and members of selected groups.
 func (s *SyncService) Run(ctx context.Context, sel SyncSelection) (*SyncResult, error) {
 	if s.Client == nil {
 		return nil, fmt.Errorf("ldap client not configured")
@@ -61,52 +60,67 @@ func (s *SyncService) Run(ctx context.Context, sel SyncSelection) (*SyncResult, 
 		res.GroupsSynced++
 	}
 
+	syncedUsers := make(map[string]struct{})
 	for _, dn := range sel.UserDNs {
-		dn = strings.TrimSpace(dn)
-		if dn == "" {
+		if err := s.syncUserDN(ctx, res, dn, defaultRole, syncedUsers); err != nil {
+			res.Errors = append(res.Errors, err.Error())
+		}
+	}
+
+	for _, gdn := range sel.GroupDNs {
+		gdn = strings.TrimSpace(gdn)
+		if gdn == "" {
 			continue
 		}
-		lu, err := s.Client.FetchUser(dn)
+		members, err := s.Client.FetchGroupMemberDNs(gdn)
 		if err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("user %s: %v", dn, err))
+			res.Errors = append(res.Errors, fmt.Sprintf("group members %s: %v", gdn, err))
 			continue
 		}
-		role := defaultRole
-		var matchedGroupIDs []int64
-		for _, gdn := range lu.Groups {
-			g, _ := s.Groups.FindByLDAPDN(ctx, gdn)
-			if g != nil {
-				matchedGroupIDs = append(matchedGroupIDs, g.ID)
-				if g.Role == "admin" {
-					role = "admin"
-				} else if role != "admin" {
-					role = g.Role
-				}
+		for _, udn := range members {
+			if err := s.syncUserDN(ctx, res, udn, defaultRole, syncedUsers); err != nil {
+				res.Errors = append(res.Errors, err.Error())
 			}
 		}
-		u, err := s.Auth.UpsertLDAPUser(ctx, lu.Username, lu.Email, role, lu.DN)
-		if err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("user %s: %v", lu.Username, err))
-			continue
-		}
-		if len(matchedGroupIDs) > 0 {
-			_ = s.Groups.ReplaceMemberships(ctx, u.ID, matchedGroupIDs)
-		}
-		res.UsersSynced++
 	}
 	return res, nil
 }
 
-// AllowedUser returns true if dn may authenticate when a sync whitelist is configured.
-func AllowedUser(sel SyncSelection, dn string) bool {
-	if len(sel.UserDNs) == 0 {
-		return true
+func (s *SyncService) syncUserDN(ctx context.Context, res *SyncResult, dn, defaultRole string, seen map[string]struct{}) error {
+	dn = strings.TrimSpace(dn)
+	if dn == "" {
+		return nil
 	}
-	dn = strings.ToLower(strings.TrimSpace(dn))
-	for _, allowed := range sel.UserDNs {
-		if strings.ToLower(strings.TrimSpace(allowed)) == dn {
-			return true
+	key := strings.ToLower(dn)
+	if _, ok := seen[key]; ok {
+		return nil
+	}
+	seen[key] = struct{}{}
+
+	lu, err := s.Client.FetchUser(dn)
+	if err != nil {
+		return fmt.Errorf("user %s: %w", dn, err)
+	}
+	role := defaultRole
+	var matchedGroupIDs []int64
+	for _, gdn := range lu.Groups {
+		g, _ := s.Groups.FindByLDAPDN(ctx, gdn)
+		if g != nil {
+			matchedGroupIDs = append(matchedGroupIDs, g.ID)
+			if g.Role == "admin" {
+				role = "admin"
+			} else if role != "admin" {
+				role = g.Role
+			}
 		}
 	}
-	return false
+	u, err := s.Auth.UpsertLDAPUser(ctx, lu.Username, lu.Email, role, lu.DN)
+	if err != nil {
+		return fmt.Errorf("user %s: %w", lu.Username, err)
+	}
+	if len(matchedGroupIDs) > 0 {
+		_ = s.Groups.ReplaceMemberships(ctx, u.ID, matchedGroupIDs)
+	}
+	res.UsersSynced++
+	return nil
 }
