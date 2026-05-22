@@ -102,7 +102,8 @@ Cisco IOS example (replace `192.168.24.253` and secret):
 aaa new-model
 aaa group server tacacs+ PAM
  server-private 192.168.24.253 key YOUR-PAM_TACACS_SECRET
-aaa authentication login default group PAM local
+aaa authentication login LOCAL-TACACS-BOTH group PAM local
+aaa authentication enable LOCAL-TACACS-BOTH group PAM local enable
 ```
 
 If port 49 is blocked on the host firewall, open it:
