@@ -102,8 +102,8 @@ Cisco IOS example (replace `192.168.24.253` and secret):
 aaa new-model
 aaa group server tacacs+ PAM
  server-private 192.168.24.253 key YOUR-PAM_TACACS_SECRET
-aaa authentication login LOCAL-TACACS-BOTH group PAM local
-aaa authentication enable LOCAL-TACACS-BOTH group PAM local enable
+aaa authentication login LOCAL-TACACS-BOTH local group PAM
+aaa authentication enable LOCAL-TACACS-BOTH local group PAM enable
 ```
 
 If port 49 is blocked on the host firewall, open it:
@@ -222,8 +222,9 @@ On connect, `docker logs pam-rdp-proxy --tail 5` should show
 `→ <target-host>:22 as <privileged-user>`. Link a **privileged account** to
 the target in the UI. Ensure the target allows SSH from the PAM host IP.
 
-Do not set `PAM_BROWSER_SSH_VIA_PROXY=true` unless you intentionally route
-browser SSH through `ssh-proxy` (default is direct from guacd to target).
+Default is `PAM_BROWSER_SSH_VIA_PROXY=true` (same path as PuTTY). Set
+`PAM_BROWSER_SSH_VIA_PROXY=false` to prefer direct guacd→target with privileged
+vault credentials, falling back to ssh-proxy when none are linked.
 
 ## Production notes
 

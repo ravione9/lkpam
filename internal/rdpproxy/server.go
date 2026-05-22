@@ -92,9 +92,11 @@ func (s *Server) Run(ctx context.Context) error {
 		srv.Close()
 	}()
 
-	sshMode := "direct-target"
+	sshMode := "direct-then-proxy-fallback"
 	if browserSSHViaProxy() {
 		sshMode = "ssh-proxy"
+	} else if browserSSHForceDirect() {
+		sshMode = "direct-only"
 	}
 	log.Printf("rdp-proxy listening on %s (guacd=%s, browser-ssh=%s, ssh-proxy-probe=%s:%d)",
 		s.ListenAddr, s.GuacdAddr, sshMode, s.guacdSSHHost, s.guacdSSHPort)

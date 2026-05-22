@@ -336,6 +336,8 @@ func (s *Server) tryBrowserToken(loginUser, targetRef, token string) (*ssh.Permi
 	if creds.PassthroughPW != "" {
 		ext["pt-password"] = creds.PassthroughPW
 	}
+	log.Printf("ssh-proxy: browser token OK user=%s target=%s session=%s passthrough=%t",
+		loginUser, targetRef, creds.SessionID, creds.PassthroughPW != "")
 	return &ssh.Permissions{Extensions: ext}, nil
 }
 
