@@ -3524,7 +3524,7 @@ function showSshLaunchModal(target) {
         <button class="ghost" id="sshBrowserBtn">Open in browser (recorded)</button>
         <button class="ghost" id="sshCloseBtn">Close</button>
       </div>
-      <p class="muted" style="font-size:12px;margin-top:12px">Paste the Terminal command into CMD, PowerShell, or Windows Terminal. For PuTTY, run the command from Start → Run or create a desktop shortcut. Log in with your portal password; enter MFA if enrolled.</p>
+      <p class="muted" style="font-size:12px;margin-top:12px">Paste the Terminal command into CMD, PowerShell, or Windows Terminal. Log in with your portal password only. If MFA is enrolled, append the 6-digit code to the password with no space (e.g. <code>MyPass482913</code>).</p>
     </div>`;
   document.body.appendChild(modal);
   const close = () => modal.remove();
@@ -5211,7 +5211,7 @@ diagnose test authserver tacacs+ PAM-TAC ravi.verma1 Secret1!482913` },
 #   (no space between password and authenticator code)
 #
 # Users without MFA enrolled use their normal AD/local password only.
-# SSH via PAM proxy can instead use keyboard-interactive for a separate MFA prompt.` },
+# SSH via PAM proxy uses the same single password field (append MFA if enrolled).` },
       { title: "6. GUI alternative (FortiOS web)",
         code:
 `# Same configuration via the FortiGate GUI:
