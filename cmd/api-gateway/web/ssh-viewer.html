@@ -13,10 +13,10 @@
     .toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 14px; min-width: 36px; }
     .toolbar button:hover { background: #475569; }
     #zoomLabel { font-size: 12px; color: #94a3b8; min-width: 48px; text-align: center; }
-    #displayWrap { flex: 1; min-height: 320px; overflow: auto; background: #000; position: relative; cursor: text; }
-    #display { outline: none; display: inline-block; cursor: text; vertical-align: top; }
+    #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #000; position: relative; cursor: text; }
+    #display { outline: none; display: block; width: 100%; height: 100%; cursor: text; position: relative; }
     #display.focused { box-shadow: inset 0 0 0 2px #38bdf8; }
-    #display canvas { display: block; cursor: text; }
+    #display canvas { display: block; cursor: text; width: 100% !important; height: 100% !important; object-fit: fill; image-rendering: -webkit-optimize-contrast; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
     #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
@@ -116,24 +116,27 @@
       let terminalHasFocus = false;
       const typedKeysyms = [];
 
+      // Zoom changes the SSH terminal grid by asking guacd to use a different
+      // virtual size. The CSS keeps the canvas filling the wrapper so the user
+      // sees more or fewer rows at the same window size.
       function applyZoom() {
-        guacScreen.style.transform = "scale(" + zoom + ")";
-        guacScreen.style.transformOrigin = "top left";
-        // Reserve enough layout space so scrolling works at large zoom levels.
-        const w = guacDisplay.getWidth() * zoom;
-        const h = guacDisplay.getHeight() * zoom;
-        displayEl.style.width = (w > 0 ? Math.ceil(w) : displayWrap.clientWidth) + "px";
-        displayEl.style.height = (h > 0 ? Math.ceil(h) : displayWrap.clientHeight) + "px";
+        const baseW = Math.max(displayWrap.clientWidth, 400);
+        const baseH = Math.max(displayWrap.clientHeight, 300);
+        const virtualW = Math.max(Math.round(baseW / zoom), 400);
+        const virtualH = Math.max(Math.round(baseH / zoom), 300);
+        if (connected) client.sendSize(virtualW, virtualH);
         zoomLabel.textContent = Math.round(zoom * 100) + "%";
       }
 
       function setZoom(z) {
-        zoom = Math.min(2.5, Math.max(0.5, Math.round(z * 10) / 10));
+        zoom = Math.min(2.0, Math.max(0.5, Math.round(z * 10) / 10));
         applyZoom();
         displayEl.focus();
       }
 
-      guacDisplay.onresize = () => applyZoom();
+      guacDisplay.onresize = () => {
+        // Canvas resized by guacd; nothing to do, CSS stretches it to fill.
+      };
 
       function rememberKeysym(keysym) {
         typedKeysyms.push(keysym);
@@ -256,9 +259,7 @@
       };
 
       function sendDisplaySize() {
-        const w = Math.max(displayWrap.clientWidth, 400);
-        const h = Math.max(displayWrap.clientHeight, 300);
-        client.sendSize(w, h);
+        applyZoom();
       }
 
       client.onstatechange = state => {
