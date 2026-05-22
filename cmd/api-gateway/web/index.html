@@ -3544,10 +3544,18 @@ function showSshLaunchModal(target) {
   modal.querySelector("#sshBrowserBtn").onclick = async () => {
     const reason = prompt("Reason for recorded browser session:", "Approved access");
     if (reason === null) return;
+    const portalPassword = prompt(
+      "Portal password for device login (same as PuTTY SSH prompt).\nLeave blank only if a Privileged Account is linked to this target:",
+      ""
+    );
+    if (portalPassword === null) return;
     try {
       const res = await api(`/auth/targets/${target.id}/ssh-launch`, {
         method: "POST",
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({
+          reason,
+          portal_password: portalPassword,
+        }),
       });
       if (openPamViewer("ssh-viewer.html", res.session_id)) {
         toast("Recorded SSH session opened in browser", "ok");
@@ -4970,7 +4978,7 @@ async function loadReports() {
 const DEVICE_GUIDES = {
   "cisco-ios": {
     label: "Cisco IOS / IOS-XE",
-    intro: "Use TACACS+ for AAA with <b>local fallback</b>. The method list <code>LOCAL-TACACS-BOTH</code> tries PAM (TACACS+) first, then the device local user database — so console/local break-glass still works if TACACS is down. SSH via PAM proxy and per-command policy still apply.",
+    intro: "Use TACACS+ for AAA with <b>local fallback</b>. List <code>LOCAL-TACACS-BOTH</code> uses <b>local group PAM</b>: device-local users in <code>username … secret</code> authenticate locally; everyone else goes to PAM. PAM TACACS returns ERROR for unknown usernames so <code>group PAM local</code> also works if you need PAM-first order. Rebuild <code>pam-tacacs</code> after upgrading.",
     prereqs: [
       "IOS 15.x / IOS-XE 16.x or later",
       "Reachable network path from device to <code>{{HOST}}</code> on port <code>{{TAC_PORT}}</code>",
@@ -4991,10 +4999,11 @@ aaa group server tacacs+ PAM
  server name PAM-TAC` },
       { title: "2. LOCAL + TACACS (both) — AAA method list",
         code:
-`! Method list name: LOCAL-TACACS-BOTH  (TACACS/PAM first, then local users)
+`! Method list LOCAL-TACACS-BOTH — local first (recommended), then PAM/TACACS+
+! Device-local users MUST exist: username <local-user> privilege 15 secret <pwd>
 aaa new-model
-aaa authentication login LOCAL-TACACS-BOTH group PAM local
-aaa authentication enable LOCAL-TACACS-BOTH group PAM local enable
+aaa authentication login LOCAL-TACACS-BOTH local group PAM
+aaa authentication enable LOCAL-TACACS-BOTH local group PAM enable
 aaa authorization exec PAM-EXEC group PAM local if-authenticated
 aaa authorization commands 15 PAM-CMD group PAM local none
 aaa accounting exec PAM-ACCT start-stop group PAM
@@ -5015,12 +5024,24 @@ ip ssh version 2
 ip ssh server algorithm authentication publickey password keyboard-interactive` },
       { title: "3. Verify LOCAL-TACACS-BOTH",
         code:
-`! On the device — test PAM (TACACS) user
-test aaa group PAM <pam-username> <pam-password> new-code
-test aaa authentication LOCAL-TACACS-BOTH <pam-username> <pam-password> new-code
+`! 1) Confirm the break-glass account exists on the switch (required for "local"):
+username <local-username> privilege 15 secret <local-password>
 !
-! Test local-only user (should succeed via "local" in the list)
+! 2) PAM user — tests TACACS only:
+test aaa group PAM <pam-username> <pam-password> new-code
+!
+! 3) Device-local user — tests the full method list (local, then PAM):
 test aaa authentication LOCAL-TACACS-BOTH <local-username> <local-password> new-code
+!    Expect: success (local matches; PAM is not called)
+!
+! 4) If step 3 fails but console login with the same user works, rebuild PAM:
+!    docker compose -f deploy/docker/docker-compose.yml build tacacs
+!    docker compose -f deploy/docker/docker-compose.yml up -d tacacs
+!    docker compose -f deploy/docker/docker-compose.yml logs tacacs --tail 30
+!    Look for: "defer to device local" or status=0x7
+!
+! Optional PAM-first list (needs updated pam-tacacs): group PAM local
+! aaa authentication login LOCAL-PAM-FIRST group PAM local
 !
 show tacacs
 show aaa servers

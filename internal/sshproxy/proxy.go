@@ -319,22 +319,24 @@ func (s *Server) tryBrowserToken(loginUser, targetRef, token string) (*ssh.Permi
 	if err != nil {
 		return nil, err
 	}
-	return &ssh.Permissions{
-		Extensions: map[string]string{
-			"user-id":            fmt.Sprintf("%d", creds.UserID),
-			"role":               role,
-			"target-id":          fmt.Sprintf("%d", tid),
-			"target":             name,
-			"kind":               kind,
-			"host":               host,
-			"port":               fmt.Sprintf("%d", port),
-			"tier":               fmt.Sprintf("%d", tier),
-			"allow-csv":          joinCSV(dec.AllowedCmds),
-			"deny-csv":           joinCSV(dec.DeniedCmds),
-			"linux-privilege":    dec.LinuxPrivilege,
-			"browser-session-id": creds.SessionID,
-		},
-	}, nil
+	ext := map[string]string{
+		"user-id":            fmt.Sprintf("%d", creds.UserID),
+		"role":               role,
+		"target-id":          fmt.Sprintf("%d", tid),
+		"target":             name,
+		"kind":               kind,
+		"host":               host,
+		"port":               fmt.Sprintf("%d", port),
+		"tier":               fmt.Sprintf("%d", tier),
+		"allow-csv":          joinCSV(dec.AllowedCmds),
+		"deny-csv":           joinCSV(dec.DeniedCmds),
+		"linux-privilege":    dec.LinuxPrivilege,
+		"browser-session-id": creds.SessionID,
+	}
+	if creds.PassthroughPW != "" {
+		ext["pt-password"] = creds.PassthroughPW
+	}
+	return &ssh.Permissions{Extensions: ext}, nil
 }
 
 // evaluateAccess checks policy using effective roles (primary + group grants)
@@ -472,6 +474,15 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 
 	downUser := portalUsername
 	var authMethods []ssh.AuthMethod
+	if browserSess != "" && len(plans) == 0 && !linuxPerUser {
+		log.Printf("ssh-proxy: browser session %s target=%s — no privileged account and no portal password at launch",
+			sessionID, targetName)
+		s.sendShellError(chans,
+			"PAM browser SSH: this target has no privileged account in PAM.\r\n"+
+				"Launch again and enter the same portal password you use in PuTTY,\r\n"+
+				"or add a Privileged Account for this machine in the Safes tab.\r\n")
+		return
+	}
 	if len(plans) == 0 && !linuxPerUser {
 		downUser = "pam-user"
 		principals := []string{sconn.Permissions.Extensions["role"], "pam-user"}

@@ -11,10 +11,11 @@ type SessionCreds struct {
 	Mode       string `json:"mode"` // browser
 	Token      string `json:"token"`
 	PortalUser string `json:"portal_user"`
-	TargetRef  string `json:"target_ref"` // e.g. #5
-	UserID     int64  `json:"user_id"`
-	TargetID   int64  `json:"target_id"`
-	SessionID  string `json:"session_id"`
+	TargetRef      string `json:"target_ref"` // host/name slug or #id (same as PuTTY -l)
+	UserID         int64  `json:"user_id"`
+	TargetID       int64  `json:"target_id"`
+	SessionID      string `json:"session_id"`
+	PassthroughPW  string `json:"passthrough_pw,omitempty"` // optional portal password for device login
 }
 
 // BrowserTokenVaultKey is the vault lookup key for ssh-proxy one-time auth.

@@ -942,14 +942,15 @@ func main() {
 		role := r.Header.Get("X-PAM-Role")
 		user := r.Header.Get("X-PAM-User")
 		var in struct {
-			Reason string `json:"reason"`
+			Reason          string `json:"reason"`
+			PortalPassword  string `json:"portal_password"`
 		}
 		_ = httpx.ReadJSON(r, &in)
 		clientIP := r.Header.Get("X-Forwarded-For")
 		if clientIP == "" {
 			clientIP = r.RemoteAddr
 		}
-		res, err := sshLaunchSvc.Launch(r.Context(), targetID, uid, role, in.Reason, clientIP)
+		res, err := sshLaunchSvc.Launch(r.Context(), targetID, uid, role, in.Reason, clientIP, in.PortalPassword)
 		if err != nil {
 			switch {
 			case errors.Is(err, sshlaunch.ErrTargetNotFound):

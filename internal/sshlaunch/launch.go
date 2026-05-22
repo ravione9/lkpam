@@ -49,7 +49,9 @@ var (
 const downstreamUser = "pam-user"
 
 // Launch authorizes the caller and prepares a recorded browser SSH session.
-func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, reason, clientIP string) (*LaunchResult, error) {
+// portalPassword is optional: same password you enter at the PuTTY/ssh proxy prompt
+// for passthrough device login when no privileged account is linked.
+func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, reason, clientIP, portalPassword string) (*LaunchResult, error) {
 	var (
 		name           string
 		kind           string
@@ -116,13 +118,14 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 	if err != nil {
 		return nil, fmt.Errorf("browser token: %w", err)
 	}
-	targetRef := TargetRef(targetID)
+	targetRef := TargetSSHRef(host, name, targetID)
 	sessionID := fmt.Sprintf("ssh-%d-%d", time.Now().UnixNano(), targetID)
 	creds, err := MarshalSessionCreds(SessionCreds{
 		Mode: "browser", Token: token,
 		PortalUser: portalUser, TargetRef: targetRef,
 		UserID: userID, TargetID: targetID,
 		SessionID: sessionID,
+		PassthroughPW: strings.TrimSpace(portalPassword),
 	})
 	if err != nil {
 		return nil, err
@@ -161,7 +164,7 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		BrowserURL: browserURL,
 		Recorded:   true,
 		Instructions: "Browser session opens a recorded terminal in your browser (guacd). " +
-			"Requires a privileged account on this target. For per-command policy on the proxy, use Open in Terminal or PuTTY.",
+			"Use the same @target as PuTTY (host or machine name). Provide your portal password at launch for switches without a privileged account.",
 	}, nil
 }
 
