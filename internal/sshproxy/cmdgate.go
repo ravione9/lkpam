@@ -3,16 +3,12 @@ package sshproxy
 import (
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/example/pam-platform/internal/policy"
 )
-
-// passwordSuffixRe masks any characters shown after Password:/Passphrase:/Secret: on one line.
-var passwordSuffixRe = regexp.MustCompile(`(?i)(password|passphrase|secret)\s*:\s*[^\r\n]*`)
 
 // cmdGate evaluates command policy by mirroring the device's visible line.
 type cmdGate struct {
@@ -34,6 +30,11 @@ type cmdGate struct {
 	enableMaskLen       int
 	enableInjected      bool // true after we sent the secret for this enable attempt
 	lastEnableInject    time.Time
+
+	// Downstream password masker — survives byte-by-byte writes from upCh→downCh.
+	downBuf       []byte // sliding window used to detect "password:" across chunks
+	downMasking   bool   // true: mask printable bytes until newline
+	downSawColon  bool   // saw colon after keyword; mask everything except spaces
 }
 
 func newCmdGate(up, down io.Writer, allow, deny []string, onDeny func(cmd string), enableSecret, portalPassword string, onSessionEnd func()) *cmdGate {
@@ -180,17 +181,17 @@ func (g *cmdGate) waitingForEnablePassword() bool {
 }
 
 // filterDownstream redacts enable/passthrough secrets echoed by the device or client.
+// It runs in two passes:
+//  1. Whole-string replacement for known secrets (handles single-chunk echoes).
+//  2. Streaming state machine that masks anything after "Password:"/"Secret:"/"Passphrase:"
+//     until end of line — survives byte-by-byte writes where step 1 cannot match.
 func (g *cmdGate) filterDownstream(p []byte) []byte {
 	if len(p) == 0 {
 		return p
 	}
 	g.mu.Lock()
 	secrets := []string{strings.TrimSpace(g.enableSecret), strings.TrimSpace(g.portalPassword)}
-	maskLen := g.enableMaskLen
 	g.mu.Unlock()
-	if maskLen <= 0 && len(secrets) > 0 {
-		maskLen = len(secrets[0])
-	}
 	out := string(p)
 	for _, secret := range secrets {
 		if secret == "" {
@@ -198,59 +199,51 @@ func (g *cmdGate) filterDownstream(p []byte) []byte {
 		}
 		out = strings.ReplaceAll(out, secret, strings.Repeat("*", len(secret)))
 	}
-	out = redactPasswordSuffixes(out, maskLen)
-	return []byte(out)
+	return g.streamMaskPassword([]byte(out))
 }
 
-func redactPasswordSuffixes(s string, maskLen int) string {
-	if maskLen <= 0 {
-		maskLen = 12
-	}
-	return passwordSuffixRe.ReplaceAllStringFunc(s, func(m string) string {
-		lower := strings.ToLower(m)
-		idx := strings.Index(lower, ":")
-		if idx < 0 {
-			return m
-		}
-		rest := strings.TrimSpace(m[idx+1:])
-		if rest == "" || strings.Trim(rest, "*") == "" {
-			return m
-		}
-		n := maskLen
-		if len(rest) > n {
-			n = len(rest)
-		}
-		return m[:idx+1] + " " + strings.Repeat("*", n)
-	})
-}
-
-func maskPasswordPromptLines(s string, maskLen int) string {
-	if maskLen <= 0 {
-		maskLen = 12
-	}
-	stars := strings.Repeat("*", maskLen)
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		lower := strings.ToLower(line)
-		for _, kw := range []string{"password:", "passphrase:", "secret:"} {
-			idx := strings.Index(lower, kw)
-			if idx < 0 {
-				continue
+// streamMaskPassword maintains a sliding window across writes so a password
+// streamed one byte at a time still gets replaced with asterisks.
+func (g *cmdGate) streamMaskPassword(p []byte) []byte {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]byte, 0, len(p))
+	for _, b := range p {
+		if g.downMasking {
+			switch {
+			case b == '\r' || b == '\n':
+				out = append(out, b)
+				g.downMasking = false
+				g.downSawColon = false
+				g.downBuf = g.downBuf[:0]
+			case b == ' ' || b == '\t':
+				out = append(out, b)
+			case b >= 0x20 && b < 0x7f:
+				out = append(out, '*')
+				g.downSawColon = true
+			default:
+				out = append(out, b)
 			}
-			rest := strings.TrimSpace(line[idx+len(kw):])
-			if rest == "" || strings.Trim(rest, "*") == "" {
-				continue
-			}
-			if len(rest) > maskLen {
-				maskLen = len(rest)
-				stars = strings.Repeat("*", maskLen)
-			}
-			line = line[:idx] + line[idx:idx+len(kw)] + " " + stars
-			break
+			continue
 		}
-		lines[i] = line
+		out = append(out, b)
+		g.downBuf = append(g.downBuf, b)
+		if len(g.downBuf) > 16 {
+			g.downBuf = g.downBuf[len(g.downBuf)-16:]
+		}
+		if b == '\r' || b == '\n' {
+			g.downBuf = g.downBuf[:0]
+			continue
+		}
+		lower := strings.ToLower(string(g.downBuf))
+		if strings.HasSuffix(lower, "password:") ||
+			strings.HasSuffix(lower, "passphrase:") ||
+			strings.HasSuffix(lower, "secret:") {
+			g.downMasking = true
+			g.downSawColon = false
+		}
 	}
-	return strings.Join(lines, "\n")
+	return out
 }
 
 func (g *cmdGate) resetLineMirror() {

@@ -13,18 +13,17 @@
     .toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 14px; min-width: 36px; }
     .toolbar button:hover { background: #475569; }
     #zoomLabel { font-size: 12px; color: #94a3b8; min-width: 48px; text-align: center; }
-    #displayWrap { flex: 1; min-height: 320px; overflow: auto; background: #111; position: relative; padding: 8px; }
-    #display { outline: none; display: block; width: 100%; min-height: 100%; }
-    #zoomSizer { display: inline-block; line-height: 0; transform-origin: top left; }
-    #zoomSizer canvas, #zoomSizer div { image-rendering: pixelated; }
+    #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #111; position: relative; }
+    #display { outline: none; display: block; width: 100%; height: 100%; position: relative; cursor: default; }
+    #zoomSizer { position: absolute; top: 0; left: 0; transform-origin: top left; line-height: 0; }
+    #zoomSizer * { cursor: default; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
     #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
     #fallback h2 { font-size: 16px; margin-bottom: 8px; }
     #fallback p { font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 1.5; }
     #fallback a { color: #38bdf8; }
-    #display:focus { outline: 1px solid #38bdf8; outline-offset: 2px; }
-    #display, #display * { cursor: text; }
+    #display:focus { outline: none; }
     #pasteOverlay { display: none; position: fixed; inset: 0; background: rgba(2, 6, 23, 0.75); z-index: 10000; align-items: center; justify-content: center; font-family: system-ui, sans-serif; }
     #pasteOverlay.open { display: flex; }
     .paste-dialog { background: #1e293b; border: 1px solid #475569; border-radius: 10px; padding: 16px; width: min(520px, 92vw); box-shadow: 0 16px 48px rgba(0,0,0,0.5); }
@@ -130,35 +129,39 @@
       const displayWrap = document.getElementById("displayWrap");
 
       let connected = false;
-      let zoom = 1;
+      let zoom = 1; // 1.0 = native font; <1 = smaller font (more rows); >1 = larger font (fewer rows).
       let enableInputLock = false;
       let displayW = 800;
       let displayH = 480;
+      let resendSizeTimer = null;
       const typedKeysyms = [];
 
-      function displayDimensions() {
-        if (typeof guacDisplay.getWidth === "function" && guacDisplay.getWidth() > 0) {
-          displayW = guacDisplay.getWidth();
-          displayH = guacDisplay.getHeight();
-        } else {
-          displayW = guacScreen.offsetWidth || displayW;
-          displayH = guacScreen.offsetHeight || displayH;
-        }
-        return { w: displayW, h: displayH };
+      function wrapperSize() {
+        return {
+          w: Math.max(displayWrap.clientWidth, 400),
+          h: Math.max(displayWrap.clientHeight, 300),
+        };
       }
 
+      // Zoom strategy: ask guacd for a *virtual* terminal larger/smaller than the wrapper,
+      // then CSS-scale the canvas back so it always fills the wrapper. Effect: zoom out
+      // shrinks the font (more rows visible), window stays full size.
       function applyZoomLayout() {
-        const dim = displayDimensions();
+        const dim = wrapperSize();
+        const virtualW = Math.max(Math.round(dim.w / zoom), 320);
+        const virtualH = Math.max(Math.round(dim.h / zoom), 240);
+        if (connected) {
+          clearTimeout(resendSizeTimer);
+          resendSizeTimer = setTimeout(() => client.sendSize(virtualW, virtualH), 80);
+        }
         zoomSizer.style.transform = "scale(" + zoom + ")";
-        zoomSizer.style.width = dim.w + "px";
-        zoomSizer.style.height = dim.h + "px";
-        zoomSizer.style.marginBottom = Math.ceil(dim.h * (zoom - 1)) + "px";
-        zoomSizer.style.marginRight = Math.ceil(dim.w * (zoom - 1)) + "px";
+        zoomSizer.style.width = virtualW + "px";
+        zoomSizer.style.height = virtualH + "px";
         zoomLabel.textContent = Math.round(zoom * 100) + "%";
       }
 
       function setZoom(z) {
-        zoom = Math.min(2.0, Math.max(0.75, Math.round(z * 10) / 10));
+        zoom = Math.min(2.0, Math.max(0.6, Math.round(z * 10) / 10));
         applyZoomLayout();
       }
 
@@ -167,7 +170,6 @@
           displayW = w;
           displayH = h;
         }
-        if (connected) applyZoomLayout();
       };
 
       function rememberKeysym(keysym) {
@@ -284,20 +286,16 @@
       }
 
       function sendDisplaySize() {
-        const w = Math.max(displayWrap.clientWidth - 16, 400);
-        const h = Math.max(displayWrap.clientHeight - 16, 300);
-        client.sendSize(w, h);
+        applyZoomLayout();
       }
 
       client.onstatechange = state => {
         if (state === Guacamole.Client.State.CONNECTED) {
           connected = true;
-          sendDisplaySize();
           setTimeout(() => {
-            setZoom(1);
             applyZoomLayout();
             displayEl.focus();
-          }, 300);
+          }, 250);
           statusEl.textContent = "Connected — Paste button or Ctrl+V opens paste box. Type en only for enable.";
           statusEl.className = "";
           fallbackEl.style.display = "none";
@@ -315,13 +313,12 @@
       };
 
       function connect() {
-        const w = Math.max(displayWrap.clientWidth - 16, 800);
-        const h = Math.max(displayWrap.clientHeight - 16, 480);
+        const dim = wrapperSize();
         client.connect(
           "session=" + encodeURIComponent(sessionId)
           + "&token=" + encodeURIComponent(token)
-          + "&width=" + w
-          + "&height=" + h
+          + "&width=" + dim.w
+          + "&height=" + dim.h
         );
       }
 
@@ -329,10 +326,7 @@
       window.addEventListener("resize", () => {
         if (!connected) return;
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          sendDisplaySize();
-          applyZoomLayout();
-        }, 200);
+        resizeTimer = setTimeout(applyZoomLayout, 200);
       });
 
       tunnel.onerror = status => {
