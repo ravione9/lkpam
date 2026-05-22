@@ -18,6 +18,7 @@
     #fallback p { font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 1.5; }
     #fallback a { color: #38bdf8; }
   </style>
+  <script>window.module={exports:{}};</script>
   <script src="/vendor/guacamole-common.min.js"></script>
 </head>
 <body>
@@ -61,10 +62,10 @@
       labelEl.textContent = "Session: " + sessionId;
       statusEl.textContent = "Connecting to target via PAM SSH proxy…";
       const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = wsProto + "//" + location.host + "/api/rdp/websocket-tunnel?session="
-        + encodeURIComponent(sessionId) + "&token=" + encodeURIComponent(token);
+      // Base URL must have no query string — Guacamole.Client.connect() appends "?..." itself.
+      const wsBase = wsProto + "//" + location.host + "/api/rdp/websocket-tunnel";
 
-      const tunnel = new Guacamole.WebSocketTunnel(wsUrl);
+      const tunnel = new Guacamole.WebSocketTunnel(wsBase);
       const client = new Guacamole.Client(tunnel);
       displayEl.appendChild(client.getDisplay().getElement());
 
@@ -86,8 +87,14 @@
         showFallback("Connection error: " + (err && err.message ? err.message : "unknown"));
       };
 
+      function connectArgs() {
+        return "session=" + encodeURIComponent(sessionId)
+          + "&token=" + encodeURIComponent(token)
+          + "&width=" + Math.max(displayEl.clientWidth, 800)
+          + "&height=" + Math.max(displayEl.clientHeight, 480);
+      }
       function connect() {
-        client.connect("width=" + Math.max(displayEl.clientWidth, 800) + "&height=" + Math.max(displayEl.clientHeight, 480));
+        client.connect(connectArgs());
       }
       window.addEventListener("resize", () => {
         if (client.getDisplay()) {

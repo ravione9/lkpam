@@ -14,6 +14,7 @@
     #status { padding: 8px 16px; font-size: 12px; background: #0f172a; color: #94a3b8; }
     .err { color: #f87171; }
   </style>
+  <script>window.module={exports:{}};</script>
   <script src="/vendor/guacamole-common.min.js"></script>
 </head>
 <body>
@@ -42,10 +43,9 @@
     } else {
       labelEl.textContent = "Session: " + sessionId;
       const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-      const wsUrl = wsProto + "//" + location.host + "/api/rdp/websocket-tunnel?session="
-        + encodeURIComponent(sessionId) + "&token=" + encodeURIComponent(token);
+      const wsBase = wsProto + "//" + location.host + "/api/rdp/websocket-tunnel";
 
-      const tunnel = new Guacamole.WebSocketTunnel(wsUrl);
+      const tunnel = new Guacamole.WebSocketTunnel(wsBase);
       const client = new Guacamole.Client(tunnel);
       const display = document.getElementById("display");
       display.appendChild(client.getDisplay().getElement());
@@ -59,8 +59,14 @@
         statusEl.className = "err";
       };
 
+      function connectArgs() {
+        return "session=" + encodeURIComponent(sessionId)
+          + "&token=" + encodeURIComponent(token)
+          + "&width=" + Math.max(display.clientWidth, 800)
+          + "&height=" + Math.max(display.clientHeight, 480);
+      }
       function connect() {
-        client.connect("width=" + display.clientWidth + "&height=" + display.clientHeight);
+        client.connect(connectArgs());
       }
       window.addEventListener("resize", () => {
         if (client.getDisplay()) {
