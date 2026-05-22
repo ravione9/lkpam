@@ -1624,7 +1624,7 @@
             <label>Safe</label><select id="accountSafe"></select>
             <label>Account name</label><input id="accountName" placeholder="root@db01"/>
             <label>Username on target</label><input id="accountUsername" placeholder="pam-svc (Linux bootstrap)"/>
-            <span class="muted" style="grid-column:2">For Linux: bootstrap account with sudo (e.g. pam-svc). Users never share this login — PAM creates a personal account per portal user.</span>
+            <span class="muted" style="grid-column:2">Linux: bootstrap account with sudo (e.g. pam-svc). Cisco: store the <b>enable secret</b> here (used for TACACS enable auth and SSH <code>enable</code>).</span>
             <label>Machine</label><select id="accountTarget"><option value="">(none)</option></select>
             <label>Platform</label>
             <select id="accountPlatform">
