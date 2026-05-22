@@ -20,6 +20,16 @@ import (
 	"github.com/example/pam-platform/internal/policy"
 )
 
+// UnknownUserDefer controls how non-portal usernames are handled when the
+// switch method list is "group PAM local". FAIL stops the list; ERROR (RFC
+// 8907) or Drop lets IOS try the device local database next.
+type UnknownUserDefer int
+
+const (
+	DeferUnknownError UnknownUserDefer = iota // AuthenStatusError / AuthorStatusError
+	DeferUnknownDrop                          // close TCP without REPLY (no-response fallback)
+)
+
 // Server speaks TACACS+ over TCP/49.
 type Server struct {
 	Addr   string
@@ -28,6 +38,8 @@ type Server struct {
 	Policy *policy.Engine
 	Groups *groups.Service
 	Bus    events.Publisher
+	// UnknownUserDefer applies when the username is not a PAM portal account.
+	UnknownUserDefer UnknownUserDefer
 	// Auth, when set, delegates AAA password checks to auth-service so AD/LDAP
 	// users authenticate the same way they do everywhere else. Falls back to
 	// the local password hash check when nil.
@@ -139,19 +151,23 @@ func passwordFromAuthenStart(start *AuthenStart) string {
 func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP string, start *AuthenStart) {
 	h.SeqNo++ // REPLY seq_no must be request seq_no + 1 (RFC 8907 §4.4)
 	ok := s.checkPassword(user, pass, clientIP, start)
-	status := AuthenStatusFail
-	msg := "auth failed"
-	if ok {
-		status = AuthenStatusPass
-		msg = "ok"
-	} else {
-		log.Printf("tacacs authen failed user=%q from %s", user, clientIP)
+	status, msg := authenStatusForResult(ok, s.portalUserExists(user))
+	if !ok {
+		if status == AuthenStatusError {
+			log.Printf("tacacs authen defer to device local for unknown user=%q from %s", user, clientIP)
+		} else {
+			log.Printf("tacacs authen failed user=%q from %s", user, clientIP)
+		}
 	}
 	s.Bus.Publish(events.Event{
 		Source: "tacacs", Kind: "authen", Severity: severity(ok),
 		Actor: user, Target: clientIP,
-		Detail: map[string]string{"result": msg},
+		Detail: map[string]string{"result": msg, "status": fmt.Sprintf("%#x", status)},
 	})
+	if !ok && status == AuthenStatusError && s.UnknownUserDefer == DeferUnknownDrop {
+		log.Printf("tacacs authen: closing session (no REPLY) for unknown user=%q from %s", user, clientIP)
+		return
+	}
 	rep := AuthenReply{Status: status, ServerMsg: msg}
 	_ = WritePacket(c, h, rep.Bytes(), s.Secret)
 }
@@ -182,6 +198,10 @@ func (s *Server) checkPassword(user, pass, nasAddr string, start *AuthenStart) b
 }
 
 func (s *Server) checkPortalPassword(user, pass string) bool {
+	// Device-local accounts are not in the portal DB; defer via ERROR (see verifyAndReply).
+	if !s.portalUserExists(user) {
+		return false
+	}
 	pw, otp := mfa.SplitAppendedOTP(pass)
 	if s.Auth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -228,6 +248,20 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	req, err := ParseAuthorRequest(body)
 	if err != nil {
 		log.Printf("tacacs author parse: %v", err)
+		return
+	}
+
+	// Users managed only on the device (LOCAL-TACACS-BOTH) must get ERROR, not
+	// FAIL, so Cisco tries "local if-authenticated" after TACACS auth via local.
+	if !s.portalUserExists(req.User) {
+		log.Printf("tacacs author defer to device local for unknown user=%q nas=%q",
+			req.User, deviceIPFromAuthor(req, clientIP))
+		h.SeqNo++
+		rep := AuthorReply{
+			Status:    AuthorStatusError,
+			ServerMsg: "user not managed by PAM",
+		}
+		_ = WritePacket(c, h, rep.Bytes(), s.Secret)
 		return
 	}
 
@@ -414,6 +448,43 @@ func hostPart(addrPort string) string {
 		return addrPort[:i]
 	}
 	return addrPort
+}
+
+// portalUserExists reports whether the username is a PAM portal account (any
+// source). Device-local-only accounts are absent so TACACS can defer to the
+// switch "local" AAA method instead of returning FAIL (which stops the list).
+func (s *Server) portalUserExists(user string) bool {
+	if s.DB == nil {
+		return false
+	}
+	user = strings.TrimSpace(user)
+	if user == "" {
+		return false
+	}
+	var id int64
+	err := s.DB.QueryRow(`
+		SELECT id FROM users WHERE lower(username)=lower(?) AND disabled=0`, user).Scan(&id)
+	return err == nil && id > 0
+}
+
+// ParseUnknownUserDefer reads PAM_TACACS_UNKNOWN_USER ("error" or "drop").
+func ParseUnknownUserDefer(s string) UnknownUserDefer {
+	if strings.EqualFold(strings.TrimSpace(s), "drop") {
+		return DeferUnknownDrop
+	}
+	return DeferUnknownError
+}
+
+// authenStatusForResult maps a password check to the TACACS status Cisco expects.
+// FAIL ends the method list; ERROR lets IOS try the next method (e.g. "local").
+func authenStatusForResult(ok, pamUser bool) (status uint8, msg string) {
+	if ok {
+		return AuthenStatusPass, "ok"
+	}
+	if !pamUser {
+		return AuthenStatusError, "user not managed by PAM"
+	}
+	return AuthenStatusFail, "auth failed"
 }
 
 // Sanity to silence unused-import errors during partial editing.

@@ -5,8 +5,8 @@
 //   aaa new-model
 //   aaa group server tacacs+ PAM
 //    server-private 10.20.30.40 key STRONG-SECRET
-//   aaa authentication login LOCAL-TACACS-BOTH group PAM local
-//   aaa authentication enable LOCAL-TACACS-BOTH group PAM local enable
+//   aaa authentication login LOCAL-TACACS-BOTH local group PAM
+//   aaa authentication enable LOCAL-TACACS-BOTH local group PAM enable
 //   aaa authorization commands 15 default group PAM none
 //   aaa accounting commands 15 default start-stop group PAM
 package main
@@ -47,14 +47,15 @@ func main() {
 	}
 
 	srv := &tacacs.Server{
-		Addr:   config.Get("PAM_TACACS_ADDR", ":49"),
-		Secret: secret,
-		DB:     d,
-		Policy: &policy.Engine{DB: d},
-		Groups: &groups.Service{DB: d},
-		Bus:    events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085")),
-		Auth:   authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
-		Vault:  v,
+		Addr:             config.Get("PAM_TACACS_ADDR", ":49"),
+		Secret:           secret,
+		DB:               d,
+		Policy:           &policy.Engine{DB: d},
+		Groups:           &groups.Service{DB: d},
+		Bus:              events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085")),
+		Auth:             authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
+		Vault:            v,
+		UnknownUserDefer: tacacs.ParseUnknownUserDefer(config.Get("PAM_TACACS_UNKNOWN_USER", "error")),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
