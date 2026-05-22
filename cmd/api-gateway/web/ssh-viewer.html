@@ -13,10 +13,11 @@
     .toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 14px; min-width: 36px; }
     .toolbar button:hover { background: #475569; }
     #zoomLabel { font-size: 12px; color: #94a3b8; min-width: 48px; text-align: center; }
-    #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #111; position: relative; }
-    #display { outline: none; display: block; width: 100%; height: 100%; position: relative; cursor: default; }
-    #zoomSizer { position: absolute; top: 0; left: 0; transform-origin: top left; line-height: 0; }
-    #zoomSizer * { cursor: default; }
+    #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #111; position: relative; cursor: default; }
+    #displayWrap, #displayWrap * { cursor: default !important; }
+    #display { outline: none; display: block; width: 100%; height: 100%; position: relative; }
+    #zoomSizer { position: absolute; top: 0; left: 0; transform-origin: top left; line-height: 0; pointer-events: none; }
+    #zoomSizer canvas { pointer-events: none; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
     #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
@@ -278,17 +279,9 @@
         client.sendKeyEvent(0, keysym);
       };
 
-      const mouse = new Guacamole.Mouse(guacScreen);
-      const sendMouse = e => {
-        if (connected && !pasteOverlay.classList.contains("open")) client.sendMouseState(e.state);
-      };
-      if (typeof mouse.onEach === "function") {
-        mouse.onEach(["mousedown", "mouseup", "mousemove"], sendMouse);
-      } else {
-        mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = state => {
-          if (connected && !pasteOverlay.classList.contains("open")) client.sendMouseState(state);
-        };
-      }
+      // SSH does not use the remote mouse and CSS transform for zoom would
+      // misalign Guacamole.Mouse coordinates anyway. Skip mouse forwarding;
+      // click-to-focus is handled by the displayEl mousedown listener below.
 
       function sendDisplaySize() {
         applyZoomLayout();
@@ -378,7 +371,6 @@
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();
 
       displayEl.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
-      guacScreen.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
 
       requestAnimationFrame(() => connect());
     }
