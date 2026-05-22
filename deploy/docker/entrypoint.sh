@@ -15,7 +15,10 @@ else
   printf '%s' "$PAM_MASTER_KEY" > "$KEYFILE"
 fi
 
-chown -R pam:pam /data /recordings 2>/dev/null || true
+chown -R pam:pam /data 2>/dev/null || true
+# guacd runs as a different user; keep /recordings world-writable (do not chown to pam).
+mkdir -p /recordings/ssh /recordings/rdp
+chmod -R 0777 /recordings 2>/dev/null || true
 chmod 600 "$KEYFILE" 2>/dev/null || true
 
 exec su-exec pam "$@"

@@ -133,6 +133,8 @@ services:
     image: guacamole/guacd:1.5.5
     container_name: pam-guacd
     restart: unless-stopped
+    # Image default USER is guacd; entrypoint must chmod /recordings as root.
+    user: "0:0"
     networks: [pam-net]
     extra_hosts:
       - "host.docker.internal:host-gateway"

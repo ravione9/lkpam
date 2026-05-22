@@ -92,7 +92,12 @@ func (s *Server) Run(ctx context.Context) error {
 		srv.Close()
 	}()
 
-	log.Printf("rdp-proxy listening on %s (guacd=%s, browser-ssh-via=%s:%d)", s.ListenAddr, s.GuacdAddr, s.guacdSSHHost, s.guacdSSHPort)
+	sshMode := "direct-target"
+	if browserSSHViaProxy() {
+		sshMode = "ssh-proxy"
+	}
+	log.Printf("rdp-proxy listening on %s (guacd=%s, browser-ssh=%s, ssh-proxy-probe=%s:%d)",
+		s.ListenAddr, s.GuacdAddr, sshMode, s.guacdSSHHost, s.guacdSSHPort)
 	err := srv.ListenAndServe()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
