@@ -1328,8 +1328,8 @@ func loginHandler(
 	}
 }
 
-func tryLocal(ctx context.Context, svc *auth.Service, username, password string) (*auth.User, error) {
-	return svc.Authenticate(ctx, username, password)
+func tryLocal(ctx context.Context, svc *auth.Service, loginID, password string) (*auth.User, error) {
+	return svc.AuthenticateByLoginID(ctx, loginID, password)
 }
 
 func authenticateLogin(
@@ -1371,6 +1371,12 @@ func loginErrorMessage(err error) string {
 	switch {
 	case strings.Contains(msg, "not imported from AD"):
 		return msg
+	case strings.Contains(msg, "LDAP bind password"):
+		return msg
+	case strings.Contains(msg, "ldap: service bind"):
+		return "LDAP service account failed — re-save LDAP settings with the bind password (Settings → LDAP)"
+	case strings.Contains(msg, "ldap: dial"):
+		return "Cannot reach LDAP server — check URL, firewall, and TLS settings"
 	case msg == "use SSO to sign in":
 		return msg
 	case msg == "account disabled":
@@ -1392,8 +1398,11 @@ func tryLDAP(
 	if !cfg.Enabled || cfg.URL == "" {
 		return nil, errors.New("ldap disabled")
 	}
-	pw, _ := v.GetSecret(ctx, vaultLDAPBindPassword)
-	client := &ldappkg.Client{Cfg: cfg, Password: string(pw)}
+	bindPW, bindErr := v.GetSecret(ctx, vaultLDAPBindPassword)
+	if cfg.BindDN != "" && (bindErr != nil || len(bindPW) == 0) {
+		return nil, errors.New("LDAP bind password missing or unreadable — open Settings → LDAP, re-enter the bind password, and save")
+	}
+	client := &ldappkg.Client{Cfg: cfg, Password: string(bindPW)}
 	lu, err := client.Authenticate(ctx, username, password)
 	if err != nil {
 		return nil, err
@@ -1401,6 +1410,9 @@ func tryLDAP(
 	imported, _ := svc.FindByLoginID(ctx, username)
 	if imported == nil {
 		imported, _ = svc.FindByLoginID(ctx, lu.Username)
+	}
+	if imported == nil && lu.Email != "" {
+		imported, _ = svc.FindByLoginID(ctx, lu.Email)
 	}
 	if imported == nil {
 		return nil, errors.New("account not imported from AD — ask an admin to sync this user")

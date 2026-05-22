@@ -159,6 +159,18 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 	return u, nil
 }
 
+// AuthenticateByLoginID accepts username or email and verifies a local account password.
+func (s *Service) AuthenticateByLoginID(ctx context.Context, loginID, password string) (*User, error) {
+	u, err := s.FindByLoginID(ctx, loginID)
+	if err != nil {
+		return nil, errors.New("invalid credentials")
+	}
+	if u.Source != "local" {
+		return nil, errors.New("invalid credentials")
+	}
+	return s.Authenticate(ctx, u.Username, password)
+}
+
 // FindByUsername returns a user record without performing a password check.
 // Used by the LDAP login flow once the LDAP bind has succeeded.
 func (s *Service) FindByUsername(ctx context.Context, username string) (*User, error) {
@@ -268,11 +280,15 @@ func (s *Service) upsertExternalUser(ctx context.Context, source, username, emai
 		INSERT INTO users(username, email, password_hash, role, source, external_dn, created_at)
 		VALUES(?,?,?,?,?,?,?)
 		ON CONFLICT(username) DO UPDATE SET
-		  email=excluded.email,
-		  role=CASE WHEN COALESCE(users.role_locked,0)=1 THEN users.role ELSE excluded.role END,
-		  source=excluded.source,
-		  external_dn=excluded.external_dn,
-		  password_hash=''`,
+		  email=CASE WHEN users.source='local' THEN users.email ELSE excluded.email END,
+		  role=CASE
+		    WHEN COALESCE(users.role_locked,0)=1 THEN users.role
+		    WHEN users.source='local' THEN users.role
+		    ELSE excluded.role
+		  END,
+		  source=CASE WHEN users.source='local' THEN users.source ELSE excluded.source END,
+		  external_dn=CASE WHEN users.source='local' THEN users.external_dn ELSE excluded.external_dn END,
+		  password_hash=CASE WHEN users.source='local' THEN users.password_hash ELSE '' END`,
 		username, email, "", role, source, externalID, db.Now())
 	if err != nil {
 		return nil, fmt.Errorf("auth: upsert %s user: %w", source, err)

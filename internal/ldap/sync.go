@@ -114,6 +114,9 @@ func (s *SyncService) syncUserDN(ctx context.Context, res *SyncResult, dn, defau
 			}
 		}
 	}
+	if existing, err := s.Auth.FindByUsername(ctx, lu.Username); err == nil && existing.Source == "local" {
+		return fmt.Errorf("user %s: skipped — local portal account already exists (rename AD account or remove local user first)", lu.Username)
+	}
 	u, err := s.Auth.UpsertLDAPUser(ctx, lu.Username, lu.Email, role, lu.DN)
 	if err != nil {
 		return fmt.Errorf("user %s: %w", lu.Username, err)
