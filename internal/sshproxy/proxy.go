@@ -759,6 +759,13 @@ func buildSessionBanner(name, kind, host, port, tier, downUser, authMode string)
 	return header + body + footer
 }
 
+func sessionBannerWithEnableHint(banner, enableSecret string) string {
+	if enableSecret == "" {
+		return banner
+	}
+	return banner + "  \x1b[33mEnable:\x1b[0m type \x1b[1men\x1b[0m only — PAM injects the enable password (do not type it).\r\n\r\n"
+}
+
 func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string, banner string, allowCmds, denyCmds []string, enableSecret, portalPassword string) {
 	downCh, downReqs, err := newChan.Accept()
 	if err != nil {

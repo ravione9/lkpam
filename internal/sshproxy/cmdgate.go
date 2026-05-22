@@ -300,6 +300,7 @@ type gateAwareWriter struct {
 func (w *gateAwareWriter) Write(p []byte) (int, error) {
 	if w.gate != nil {
 		w.gate.noteOutput(p)
+		p = w.gate.filterDownstream(p)
 	}
 	return w.w.Write(p)
 }

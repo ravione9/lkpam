@@ -32,7 +32,6 @@ func TestCmdGateSwallowsKeystrokesDuringEnableInject(t *testing.T) {
 	gate := newCmdGate(&up, &bytes.Buffer{}, nil, nil, nil, "Secret99", "", nil)
 	gate.mu.Lock()
 	gate.expectEnablePass = true
-	gate.injectEnableOnEnter = true
 	gate.mu.Unlock()
 
 	_, _ = gate.Write([]byte("norecho\r"))
@@ -41,5 +40,16 @@ func TestCmdGateSwallowsKeystrokesDuringEnableInject(t *testing.T) {
 	}
 	if !strings.HasSuffix(up.String(), "Secret99\r") {
 		t.Fatalf("upstream = %q, want injected secret on Enter", up.String())
+	}
+}
+
+func TestCmdGateFilterDownstreamRedactsEnableSecret(t *testing.T) {
+	gate := newCmdGate(nil, nil, nil, nil, nil, "Rescue@9897", "", nil)
+	out := gate.filterDownstream([]byte("Password: Rescue@9897\r\nok\r\n"))
+	if strings.Contains(string(out), "Rescue@9897") {
+		t.Fatalf("filter = %q, must not contain plaintext secret", string(out))
+	}
+	if !strings.Contains(string(out), strings.Repeat("*", len("Rescue@9897"))) {
+		t.Fatalf("filter = %q, want asterisks", string(out))
 	}
 }

@@ -17,13 +17,9 @@
     #fallback h2 { font-size: 16px; margin-bottom: 8px; }
     #fallback p { font-size: 13px; color: #94a3b8; margin-bottom: 12px; line-height: 1.5; }
     #fallback a { color: #38bdf8; }
-    #clipPanel { padding: 8px 16px; background: #020617; border-top: 1px solid #334155; font-family: system-ui, sans-serif; font-size: 12px; display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 8px; align-items: start; }
-    #clipPanel label { color: #94a3b8; grid-column: span 2; }
-    #clipPanel textarea { width: 100%; min-height: 44px; resize: vertical; background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 6px 8px; font: inherit; }
-    #clipPanel button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; align-self: end; }
-    #clipHint { grid-column: 1 / -1; color: #64748b; font-size: 11px; }
     #display:focus { outline: 1px solid #38bdf8; outline-offset: -1px; }
     #display, #display * { cursor: text; }
+    #clipFallback { position: fixed; left: -9999px; top: 0; opacity: 0; }
   </style>
   <script>window.module={exports:{}};</script>
   <script src="/vendor/guacamole-common.min.js"></script>
@@ -36,20 +32,12 @@
     </div>
     <button id="disconnectBtn" style="padding:6px 14px;border-radius:6px;border:1px solid #475569;background:#334155;color:#e2e8f0;cursor:pointer;font-family:system-ui,sans-serif">Disconnect</button>
   </header>
-  <div id="display" tabindex="0" title="Click here to type — keyboard is sent to the device"></div>
+  <div id="display" tabindex="0" title="Click here to type"></div>
+  <textarea id="clipFallback" aria-hidden="true" tabindex="-1"></textarea>
   <div id="fallback">
     <h2>Browser session could not connect</h2>
-    <p id="fallbackMsg">Use Terminal or PuTTY from the PAM portal Launch dialog instead — those use the same SSH proxy path and work without guacd in the browser.</p>
+    <p id="fallbackMsg">Use Terminal or PuTTY from the PAM portal Launch dialog instead.</p>
     <p><a href="/">← Back to PAM portal</a></p>
-  </div>
-  <div id="clipPanel">
-    <label>Paste into device (type or paste text, then Send)</label>
-    <textarea id="clipPaste" placeholder="Paste from your PC here…"></textarea>
-    <button type="button" id="clipSendBtn">Send to device</button>
-    <label>Copied from device (select text in terminal above)</label>
-    <textarea id="clipLocal" readonly placeholder="Selection from switch appears here…"></textarea>
-    <button type="button" id="clipCopyBtn">Copy to PC</button>
-    <div id="clipHint">Click the terminal above to type. Paste: use this box + Send, or Ctrl+V in the terminal. Copy from device: select text in terminal, then Copy to PC.</div>
   </div>
   <div id="status">Session is recorded by PAM for audit.</div>
   <script>
@@ -60,29 +48,20 @@
     const labelEl = document.getElementById("sessionLabel");
     const fallbackEl = document.getElementById("fallback");
     const displayEl = document.getElementById("display");
-    const clipPaste = document.getElementById("clipPaste");
-    const clipLocal = document.getElementById("clipLocal");
+    const clipFallback = document.getElementById("clipFallback");
 
-    function writeLocalClipboard(text) {
+    function copyToPC(text) {
       if (!text) return;
-      clipLocal.value = text;
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {});
-      }
-    }
-
-    function copyLocalToPC() {
-      const text = clipLocal.value;
-      if (!text) return;
-      clipLocal.select();
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(
-          () => { statusEl.textContent = "Copied to your PC clipboard."; },
-          () => { document.execCommand("copy"); statusEl.textContent = "Copied (fallback)."; }
-        );
+        navigator.clipboard.writeText(text).catch(() => {
+          clipFallback.value = text;
+          clipFallback.select();
+          document.execCommand("copy");
+        });
       } else {
+        clipFallback.value = text;
+        clipFallback.select();
         document.execCommand("copy");
-        statusEl.textContent = "Copied (select + copy).";
       }
     }
 
@@ -103,41 +82,12 @@
       labelEl.textContent = "Session: " + sessionId;
       statusEl.textContent = "Connecting via PAM (guacd + SSH proxy)…";
       const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-      // Base URL must have no query string — Guacamole.Client.connect() appends "?..." itself.
       const wsBase = wsProto + "//" + location.host + "/api/rdp/websocket-tunnel";
 
       const tunnel = new Guacamole.WebSocketTunnel(wsBase);
       const client = new Guacamole.Client(tunnel);
       const guacScreen = client.getDisplay().getElement();
       displayEl.appendChild(guacScreen);
-
-      function inputFocusedOutsideTerminal() {
-        const el = document.activeElement;
-        if (!el) return false;
-        const tag = el.tagName;
-        return tag === "TEXTAREA" || tag === "INPUT" || tag === "BUTTON" || tag === "SELECT";
-      }
-
-      // Required: without Keyboard/Mouse, the terminal display is view-only (frozen).
-      const keyboard = new Guacamole.Keyboard(document);
-      keyboard.onkeydown = keysym => {
-        if (!connected || inputFocusedOutsideTerminal()) return;
-        client.sendKeyEvent(1, keysym);
-      };
-      keyboard.onkeyup = keysym => {
-        if (!connected || inputFocusedOutsideTerminal()) return;
-        client.sendKeyEvent(0, keysym);
-      };
-
-      const mouse = new Guacamole.Mouse(guacScreen);
-      const sendMouse = e => { if (connected) client.sendMouseState(e.state); };
-      if (typeof mouse.onEach === "function") {
-        mouse.onEach(["mousedown", "mouseup", "mousemove"], sendMouse);
-      } else {
-        mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = state => {
-          if (connected) client.sendMouseState(state);
-        };
-      }
 
       let connected = false;
 
@@ -154,24 +104,46 @@
         writer.sendEnd();
       }
 
+      // Remote → local OS clipboard (direct, like PuTTY copy).
       client.onclipboard = function(stream, mimetype) {
         if (!/^text\//.test(mimetype || "")) return;
         const reader = new Guacamole.StringReader(stream);
         let text = "";
         reader.ontext = chunk => { text += chunk; };
-        reader.onend = () => writeLocalClipboard(text);
+        reader.onend = () => copyToPC(text);
       };
+
+      const keyboard = new Guacamole.Keyboard(document);
+      keyboard.onkeydown = keysym => {
+        if (!connected) return;
+        client.sendKeyEvent(1, keysym);
+      };
+      keyboard.onkeyup = keysym => {
+        if (!connected) return;
+        client.sendKeyEvent(0, keysym);
+      };
+
+      const mouse = new Guacamole.Mouse(guacScreen);
+      const sendMouse = e => { if (connected) client.sendMouseState(e.state); };
+      if (typeof mouse.onEach === "function") {
+        mouse.onEach(["mousedown", "mouseup", "mousemove"], sendMouse);
+      } else {
+        mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = state => {
+          if (connected) client.sendMouseState(state);
+        };
+      }
 
       function sendDisplaySize() {
         const w = Math.max(displayEl.clientWidth || 0, 800);
         const h = Math.max(displayEl.clientHeight || 0, 480);
         client.sendSize(w, h);
       }
+
       client.onstatechange = state => {
         if (state === Guacamole.Client.State.CONNECTED) {
           connected = true;
           sendDisplaySize();
-          statusEl.textContent = "Connected — click the terminal to type (or use the paste box below).";
+          statusEl.textContent = "Connected — click terminal, then Ctrl+C / Ctrl+V (standard clipboard).";
           statusEl.className = "";
           fallbackEl.style.display = "none";
           displayEl.style.display = "";
@@ -188,70 +160,39 @@
         showFallback("Connection error: " + (err && err.message ? err.message : "unknown"));
       };
 
-      function connectArgs() {
-        return "session=" + encodeURIComponent(sessionId)
+      function connect() {
+        client.connect(
+          "session=" + encodeURIComponent(sessionId)
           + "&token=" + encodeURIComponent(token)
           + "&width=" + Math.max(displayEl.clientWidth, 800)
-          + "&height=" + Math.max(displayEl.clientHeight, 480);
+          + "&height=" + Math.max(displayEl.clientHeight, 480)
+        );
       }
-      function connect() {
-        client.connect(connectArgs());
-      }
-      window.addEventListener("resize", () => {
-        if (connected) sendDisplaySize();
-      });
+
+      window.addEventListener("resize", () => { if (connected) sendDisplaySize(); });
 
       tunnel.onerror = status => {
         let msg = "Tunnel error — ";
         if (status && status.code === 519) {
-          msg += "guacd closed the session (SSH ended or the browser stopped talking to guacd). ssh-proxy logs may show a successful connect — refresh, launch a new session, and avoid resizing the tab during connect.";
+          msg += "guacd closed the session. Launch a new session from the portal.";
         } else if (status && status.message) {
           msg += status.message;
         } else {
-          msg += "is guacd running? " + JSON.stringify(status);
+          msg += JSON.stringify(status);
         }
         showFallback(msg);
       };
 
-      document.getElementById("clipSendBtn").onclick = () => {
-        sendToDevice(clipPaste.value);
-        clipPaste.value = "";
-        displayEl.focus();
-      };
-      clipPaste.addEventListener("keydown", e => {
-        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-          e.preventDefault();
-          sendToDevice(clipPaste.value);
-          clipPaste.value = "";
-          displayEl.focus();
-        }
-      });
-      document.getElementById("clipCopyBtn").onclick = copyLocalToPC;
-
-      displayEl.addEventListener("mousedown", () => {
-        if (connected) displayEl.focus();
-      });
-      guacScreen.addEventListener("mousedown", () => {
-        if (connected) displayEl.focus();
-      });
-
-      displayEl.addEventListener("paste", e => {
+      // Local → remote (direct Ctrl+V).
+      document.addEventListener("paste", e => {
         if (!connected) return;
         e.preventDefault();
         const text = (e.clipboardData && e.clipboardData.getData("text/plain")) || "";
         if (text) sendToDevice(text);
-      });
-      displayEl.addEventListener("keydown", e => {
-        if (!connected) return;
-        if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "v" || e.key === "V")) {
-          e.preventDefault();
-          if (navigator.clipboard && navigator.clipboard.readText) {
-            navigator.clipboard.readText().then(sendToDevice).catch(() => clipPaste.focus());
-          } else {
-            clipPaste.focus();
-          }
-        }
-      });
+      }, true);
+
+      displayEl.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
+      guacScreen.addEventListener("mousedown", () => { if (connected) displayEl.focus(); });
 
       requestAnimationFrame(() => connect());
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();
