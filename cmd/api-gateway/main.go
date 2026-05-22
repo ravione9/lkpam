@@ -33,7 +33,7 @@ import (
 
 type tlsConfig = tls.Config
 
-//go:embed web/*
+//go:embed all:web
 var webFS embed.FS
 
 // claims is the verified JWT payload we get back from auth-service /verify.
@@ -127,6 +127,8 @@ func main() {
 		name := page
 		mux.HandleFunc("GET /"+name, serveWebFile(name))
 	}
+	// Guacamole client (must not be handled by webBridgeMiddleware or SPA fallback).
+	mux.HandleFunc("GET /vendor/{path...}", serveWebVendor)
 
 	// Web console reverse-proxy: /web/{sessionID}/{*path}
 	// Validates the portal JWT (header, ?token=, or session cookie), loads session
@@ -347,13 +349,41 @@ func verifyToken(ctx context.Context, authBase *url.URL, tok string) (*claims, i
 
 func serveWebFile(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		b, err := webFS.ReadFile("web/" + name)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(b)
+		serveWebPath(w, r, "web/"+name)
+	}
+}
+
+func serveWebVendor(w http.ResponseWriter, r *http.Request) {
+	rel := strings.TrimPrefix(r.URL.Path, "/vendor/")
+	if rel == "" || strings.Contains(rel, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	serveWebPath(w, r, "web/vendor/"+rel)
+}
+
+func serveWebPath(w http.ResponseWriter, r *http.Request, fsPath string) {
+	b, err := webFS.ReadFile(fsPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if ct := mimeForWebPath(fsPath); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.Write(b)
+}
+
+func mimeForWebPath(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".html"):
+		return "text/html; charset=utf-8"
+	case strings.HasSuffix(path, ".js"):
+		return "application/javascript; charset=utf-8"
+	case strings.HasSuffix(path, ".css"):
+		return "text/css; charset=utf-8"
+	default:
+		return ""
 	}
 }
 
@@ -503,23 +533,22 @@ func serveStaticUI(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "index.html"
 	}
-	b, err := webFS.ReadFile("web/" + path)
+	fsPath := "web/" + path
+	b, err := webFS.ReadFile(fsPath)
 	if err != nil {
 		if strings.Contains(path, ".") {
 			http.NotFound(w, r)
 			return
 		}
-		b, err = webFS.ReadFile("web/index.html")
+		fsPath = "web/index.html"
+		b, err = webFS.ReadFile(fsPath)
 		if err != nil {
 			http.NotFound(w, r)
 			return
 		}
 	}
-	switch {
-	case strings.HasSuffix(path, ".html") || path == "index.html":
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	case strings.HasSuffix(path, ".js"):
-		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	if ct := mimeForWebPath(fsPath); ct != "" {
+		w.Header().Set("Content-Type", ct)
 	}
 	w.Write(b)
 }
@@ -598,6 +627,9 @@ func isReservedPAMPath(path string) bool {
 		if path == p {
 			return true
 		}
+	}
+	if strings.HasPrefix(path, "/vendor/") {
+		return true
 	}
 	return false
 }
