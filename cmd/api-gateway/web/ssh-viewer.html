@@ -131,16 +131,13 @@
         }
         const ww = Math.max(displayWrap.clientWidth, 400);
         const wh = Math.max(displayWrap.clientHeight, 300);
-        // Uniform scaling keeps the terminal font crisp. Pick the larger of
-        // width/height fit so one dimension fills exactly; the other may be
-        // slightly letterboxed but the canvas is centered in the wrapper via
-        // flexbox so it looks intentional rather than broken.
-        const fit = Math.max(ww / cw, wh / ch);
-        const scale = fit * zoom;
-        displayEl.style.width = cw + "px";
-        displayEl.style.height = ch + "px";
-        displayEl.style.transform = "scale(" + scale + ")";
-        displayEl.style.transformOrigin = "center center";
+        // Non-uniform scale fills the whole wrapper. Text gets slightly
+        // stretched when the wrapper aspect ratio differs from the SSH grid,
+        // but the user prefers full-window fill over crisp-but-letterboxed.
+        const scaleX = (ww / cw) * zoom;
+        const scaleY = (wh / ch) * zoom;
+        guacScreen.style.transform = "scale(" + scaleX + ", " + scaleY + ")";
+        guacScreen.style.transformOrigin = "top left";
         zoomLabel.textContent = Math.round(zoom * 100) + "%";
       }
 
