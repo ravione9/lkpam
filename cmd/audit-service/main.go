@@ -359,7 +359,8 @@ func cleanupPendingSessions(ctx context.Context, d *db.DB, v *vault.Vault) {
 		 WHERE ended_at IS NULL
 		   AND started_at <= ?
 		   AND COALESCE(recording_path,'') != ''
-		   AND COALESCE(protocol,'ssh') IN ('ssh','rdp')`,
+		   AND COALESCE(protocol,'ssh') IN ('ssh','rdp')
+		   AND id NOT LIKE 'ssh-%'`,
 		cutoff)
 	if err != nil {
 		return

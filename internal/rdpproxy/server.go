@@ -78,7 +78,8 @@ func (s *Server) Run(ctx context.Context) error {
 		srv.Close()
 	}()
 
-	log.Printf("rdp-proxy listening on %s (guacd=%s)", s.ListenAddr, s.GuacdAddr)
+	sshHost, sshPort := sshProxyAddrForGuacd(s.SSHProxyAddr)
+	log.Printf("rdp-proxy listening on %s (guacd=%s, browser-ssh-via=%s:%d)", s.ListenAddr, s.GuacdAddr, sshHost, sshPort)
 	err := srv.ListenAndServe()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -130,7 +131,9 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 	}
 	failConnect := func(format string, args ...any) (guac.Tunnel, error) {
 		err := fmt.Errorf(format, args...)
-		s.failSession(r.Context(), sessionID, "failed", err.Error())
+		// Do not end the session or delete vault tokens here — the user may retry
+		// from the viewer; failSession would block reconnects.
+		log.Printf("rdp-proxy: session %s connect failed: %v", sessionID, err)
 		return nil, err
 	}
 
@@ -139,18 +142,19 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 		config.Protocol = "ssh"
 		config.Parameters = map[string]string{
 			"hostname":               params.Host,
-			"port":                     strconv.Itoa(params.Port),
-			"username":                 params.Username,
-			"typescript-path":          params.RecDir,
-			"typescript-name":          params.SessionID,
-			"create-typescript-path":   "true",
-			"recording-path":           params.RecDir,
-			"recording-name":           params.SessionID,
-			"create-recording-path":    "true",
-			"font-size":                "14",
-			"color-scheme":             "gray-black",
-			"scrollback":               "1000",
-			"server-alive-interval":    "60",
+			"port":                   strconv.Itoa(params.Port),
+			"username":               params.Username,
+			"typescript-path":        params.RecDir,
+			"typescript-name":        params.SessionID,
+			"create-typescript-path": "true",
+			"recording-path":         params.RecDir,
+			"recording-name":         params.SessionID,
+			"create-recording-path":  "true",
+			"font-size":              "14",
+			"color-scheme":           "gray-black",
+			"scrollback":             "1000",
+			"server-alive-interval":  "60",
+			"timeout":                "30",
 		}
 		if len(params.PrivateKey) > 0 {
 			config.Parameters["private-key"] = string(params.PrivateKey)
@@ -253,7 +257,7 @@ func (s *Server) loadSession(ctx context.Context, sessionID string, callerUID in
 			return nil, fmt.Errorf("session credentials expired or missing")
 		}
 		if creds, perr := sshlaunch.ParseSessionCreds(key); perr == nil && creds.Mode == "browser" {
-			proxyHost, proxyPort := splitHostPort(s.SSHProxyAddr, 2222)
+			proxyHost, proxyPort := sshProxyAddrForGuacd(s.SSHProxyAddr)
 			params.Host = proxyHost
 			params.Port = proxyPort
 			params.Username = creds.PortalUser + "@" + creds.TargetRef
@@ -394,6 +398,18 @@ func splitHostPort(addr string, defaultPort int) (string, int) {
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port <= 0 {
 		port = defaultPort
+	}
+	return host, port
+}
+
+// sshProxyAddrForGuacd returns the host/port guacd should dial. guacd runs in its own
+// container; localhost/127.0.0.1 in env points at guacd itself, not ssh-proxy.
+func sshProxyAddrForGuacd(configured string) (string, int) {
+	host, port := splitHostPort(configured, 2222)
+	switch strings.ToLower(host) {
+	case "", "localhost", "127.0.0.1", "::1":
+		log.Printf("rdp-proxy: PAM_SSH_PROXY_DIAL_ADDR=%q is not reachable from guacd; using ssh-proxy:%d", configured, port)
+		return "ssh-proxy", port
 	}
 	return host, port
 }

@@ -103,8 +103,15 @@
       });
 
       tunnel.onerror = status => {
-        const detail = status && status.message ? status.message : JSON.stringify(status);
-        showFallback("Tunnel error — is guacd running? " + detail);
+        let msg = "Tunnel error — ";
+        if (status && status.code === 519) {
+          msg += "guacd could not reach the PAM SSH proxy. On the server run: docker compose ps guacd rdp-proxy ssh-proxy — all must be Up. Set PAM_SSH_PROXY_DIAL_ADDR=ssh-proxy:2222 (not localhost).";
+        } else if (status && status.message) {
+          msg += status.message;
+        } else {
+          msg += "is guacd running? " + JSON.stringify(status);
+        }
+        showFallback(msg);
       };
 
       connect();

@@ -149,7 +149,22 @@ func main() {
 }
 
 func reverse(target *url.URL) http.Handler {
-	return httputil.NewSingleHostReverseProxy(target)
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	orig := proxy.Director
+	proxy.Director = func(r *http.Request) {
+		orig(r)
+		if r.Header.Get("X-Forwarded-Host") == "" {
+			r.Header.Set("X-Forwarded-Host", r.Host)
+		}
+		if r.Header.Get("X-Forwarded-Proto") == "" {
+			if r.TLS != nil {
+				r.Header.Set("X-Forwarded-Proto", "https")
+			} else {
+				r.Header.Set("X-Forwarded-Proto", "http")
+			}
+		}
+	}
+	return proxy
 }
 
 // gated wraps a handler with JWT verification AND role enforcement. The JWT
