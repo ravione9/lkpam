@@ -3,6 +3,7 @@ package sshproxy
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/example/pam-platform/internal/linuxprovision"
 	"github.com/example/pam-platform/internal/policy"
@@ -10,7 +11,7 @@ import (
 )
 
 // dialLinux connects to a Linux target as the portal user. Passthrough is tried first.
-// The privileged bootstrap account is used only to provision the per-user account.
+// The privileged bootstrap account is used to provision/sync the per-user account.
 func (s *Server) dialLinux(
 	targetAddr string,
 	targetKind, portalUser, ptPassword, privUser, privPassword, linuxPriv string,
@@ -18,23 +19,29 @@ func (s *Server) dialLinux(
 ) (client *ssh.Client, deviceUser, authMode string, err error) {
 	linuxUser := linuxprovision.LinuxUsername(portalUser)
 
-	if ptPassword != "" {
-		cfg := s.buildDownstreamConfig(linuxUser, ptPassword, authMethods)
-		log.Printf("ssh-proxy: linux passthrough %s as %q", targetAddr, linuxUser)
-		c, err := ssh.Dial("tcp", targetAddr, cfg)
-		if err == nil {
-			return c, linuxUser, "passthrough", nil
-		}
-		if privUser == "" || privPassword == "" || !isDownstreamAuthFailure(err) {
-			return nil, linuxUser, "passthrough", err
-		}
-		log.Printf("ssh-proxy: linux passthrough failed for %q — provisioning via %q", linuxUser, privUser)
+	if ptPassword == "" {
+		return nil, linuxUser, "passthrough", fmt.Errorf("portal password required for Linux login")
 	}
 
-	if privUser == "" || privPassword == "" {
-		return nil, linuxUser, "passthrough", fmt.Errorf(
-			"no bootstrap account for provisioning — link a privileged account (e.g. pam-svc) to this target")
+	// Sync sudoers/password when policy grants elevation (runs even if passthrough already works).
+	if needsLinuxPrivilegeSync(linuxPriv) {
+		if err := s.syncLinuxAccount(targetAddr, portalUser, ptPassword, privUser, privPassword, linuxPriv, authMethods); err != nil {
+			log.Printf("ssh-proxy: linux privilege sync for %q: %v", linuxUser, err)
+			return nil, linuxUser, "provision", fmt.Errorf(
+				"could not apply Linux sudo policy for %q (check pam-svc bootstrap account): %w", linuxUser, err)
+		}
 	}
+
+	cfg := s.buildDownstreamConfig(linuxUser, ptPassword, authMethods)
+	log.Printf("ssh-proxy: linux passthrough %s as %q (linux_priv=%s)", targetAddr, linuxUser, linuxPriv)
+	c, err := ssh.Dial("tcp", targetAddr, cfg)
+	if err == nil {
+		return c, linuxUser, "passthrough", nil
+	}
+	if privUser == "" || privPassword == "" || !isDownstreamAuthFailure(err) {
+		return nil, linuxUser, "passthrough", err
+	}
+	log.Printf("ssh-proxy: linux passthrough failed for %q — provisioning via %q", linuxUser, privUser)
 
 	bootstrap, err := ssh.Dial("tcp", targetAddr, s.buildDownstreamConfig(privUser, privPassword, authMethods))
 	if err != nil {
@@ -42,19 +49,41 @@ func (s *Server) dialLinux(
 	}
 	defer bootstrap.Close()
 
-	if ptPassword == "" {
-		return nil, linuxUser, "provision", fmt.Errorf("portal password required to provision Linux user %q", linuxUser)
-	}
 	if err := linuxprovision.EnsureUser(bootstrap, portalUser, ptPassword, linuxPriv); err != nil {
 		return nil, linuxUser, "provision", err
 	}
 
-	cfg := s.buildDownstreamConfig(linuxUser, ptPassword, authMethods)
-	c, err := ssh.Dial("tcp", targetAddr, cfg)
+	c, err = ssh.Dial("tcp", targetAddr, cfg)
 	if err != nil {
 		return nil, linuxUser, "provisioned", fmt.Errorf("login as provisioned user %q: %w", linuxUser, err)
 	}
 	return c, linuxUser, "provisioned", nil
+}
+
+func needsLinuxPrivilegeSync(linuxPriv string) bool {
+	switch strings.ToLower(strings.TrimSpace(linuxPriv)) {
+	case "sudo", "root":
+		return true
+	default:
+		return false
+	}
+}
+
+// syncLinuxAccount updates password and /etc/sudoers.d via the bootstrap account.
+func (s *Server) syncLinuxAccount(targetAddr, portalUser, ptPassword, privUser, privPassword, linuxPriv string, authMethods []ssh.AuthMethod) error {
+	if privUser == "" || privPassword == "" {
+		return fmt.Errorf("no bootstrap account linked to target")
+	}
+	bootstrap, err := ssh.Dial("tcp", targetAddr, s.buildDownstreamConfig(privUser, privPassword, authMethods))
+	if err != nil {
+		return fmt.Errorf("bootstrap login: %w", err)
+	}
+	defer bootstrap.Close()
+	if err := linuxprovision.EnsureUser(bootstrap, portalUser, ptPassword, linuxPriv); err != nil {
+		return err
+	}
+	log.Printf("ssh-proxy: synced Linux account %q (privilege=%s)", linuxprovision.LinuxUsername(portalUser), linuxPriv)
+	return nil
 }
 
 func useLinuxPerUserLogin(kind string) bool {

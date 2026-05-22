@@ -55,16 +55,17 @@ if ! id -u "$U" >/dev/null 2>&1; then
 fi
 printf '%%s:%%s\n' "$U" "$PW" | RUN chpasswd
 if [ "$PRIV" = "sudo" ] || [ "$PRIV" = "root" ]; then
-  if getent group sudo >/dev/null 2>&1; then
-    RUN usermod -aG sudo "$U" 2>/dev/null || true
-  fi
-  if getent group wheel >/dev/null 2>&1; then
-    RUN usermod -aG wheel "$U" 2>/dev/null || true
-  fi
+  set +e
+  getent group sudo >/dev/null 2>&1 && RUN usermod -aG sudo "$U"
+  getent group wheel >/dev/null 2>&1 && RUN usermod -aG wheel "$U"
+  set -e
   f="/etc/sudoers.d/pam-${U}"
   printf '%%s ALL=(ALL) NOPASSWD: ALL\n' "$U" | RUN tee "$f" >/dev/null
   RUN chmod 0440 "$f"
-  RUN visudo -cf "$f" >/dev/null 2>&1 || true
+  if ! RUN visudo -cf "$f" >/dev/null 2>&1; then
+    echo "PAM: visudo check failed for $f" >&2
+    exit 1
+  fi
 fi
 id -u "$U" >/dev/null
 `, user, pwB64, pwB64, privilege)
