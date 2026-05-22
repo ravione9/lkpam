@@ -1210,16 +1210,17 @@ func loginHandler(
 
 		mfaPolicy, _ := settingsStore.Get(ctx, settingsKeyMFAPolicy)
 		effectivePolicy := auth.EffectiveMFAPolicy(mfaPolicy)
-		dec, err := svc.LoginMFADecisionForUser(ctx, u, mfaPolicy)
+		var dec auth.MFALoginDecision
+		if deviceAuth {
+			dec, err = svc.LoginMFADecisionForDevice(ctx, u)
+		} else {
+			dec, err = svc.LoginMFADecisionForUser(ctx, u, mfaPolicy)
+		}
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
 		}
 		if dec.RequireEnrollment {
-			if deviceAuth {
-				httpx.Error(w, http.StatusUnauthorized, errors.New("MFA enrollment required — sign in to the PAM portal and complete MFA setup first"))
-				return
-			}
 			tok, err := svc.IssueEnrollmentToken(u)
 			if err != nil {
 				httpx.Error(w, http.StatusInternalServerError, err)
@@ -1241,7 +1242,7 @@ func loginHandler(
 			}
 			if otp == "" {
 				if deviceAuth {
-					httpx.Error(w, http.StatusUnauthorized, errors.New("MFA required — append your 6-digit authenticator code to the password (no space), or use SSH keyboard-interactive for a separate MFA prompt"))
+					httpx.Error(w, http.StatusUnauthorized, errors.New("MFA required — append your 6-digit authenticator code to the password with no space (e.g. MyPass482913)"))
 					return
 				}
 				httpx.JSON(w, http.StatusAccepted, map[string]any{

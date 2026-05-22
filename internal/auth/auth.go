@@ -103,6 +103,24 @@ func (s *Service) LoginMFADecisionForUser(ctx context.Context, u *User, policy s
 	}
 	return MFALoginDecision{}, nil
 }
+
+// LoginMFADecisionForDevice applies MFA on SSH/TACACS only when the user has
+// completed TOTP enrollment. Unenrolled users may access devices with password
+// alone; portal login still drives MFA setup when policy is required.
+func (s *Service) LoginMFADecisionForDevice(ctx context.Context, u *User) (MFALoginDecision, error) {
+	if u.MFAExempt || !u.MFAEnabled {
+		return MFALoginDecision{}, nil
+	}
+	secret, err := s.GetMFASecret(ctx, u.ID)
+	if err != nil {
+		return MFALoginDecision{}, err
+	}
+	if secret == "" {
+		return MFALoginDecision{}, nil
+	}
+	return MFALoginDecision{RequireOTP: true}, nil
+}
+
 func (s *Service) CreateUser(ctx context.Context, username, email, password, role string) (int64, error) {
 	if role == "" {
 		role = "user"

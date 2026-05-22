@@ -93,11 +93,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-// passwordAuth verifies "user@target" SSH login. It first delegates the
-// credential check to auth-service (so AD/LDAP users authenticate the same way
-// they do in the portal). If auth-service signals that MFA is required, this
-// path fails with a hint — the SSH client retries via keyboard-interactive,
-// which prompts for the OTP.
+// passwordAuth verifies "user@target" SSH login via auth-service (AD/LDAP/local).
+// Append the 6-digit MFA code to the password when enrolled (no space).
 func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, error) {
 	user, target, ok := splitUserTarget(c.User())
 	if !ok {
@@ -108,9 +105,6 @@ func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, 
 	}
 	authedUser, err := s.authenticate(user, string(pw), "")
 	if err != nil {
-		if errors.Is(err, errMFANeeded) {
-			return nil, errors.New("MFA required — retry with keyboard-interactive")
-		}
 		return nil, err
 	}
 	perms, err := s.authorizeAndStash(authedUser, target)
@@ -121,38 +115,30 @@ func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, 
 	return perms, nil
 }
 
-// keyboardInteractiveAuth is the SSH fallback that lets us prompt for an MFA
-// code over the SSH session itself: "Password:" then "MFA code:".
+// keyboardInteractiveAuth prompts once for the portal password. When MFA is
+// enrolled, append the 6-digit code to the password (same as FortiGate TACACS).
 func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 	user, target, ok := splitUserTarget(c.User())
 	if !ok {
 		return nil, errors.New("login must be user@target")
 	}
-	// Resolve the target up front so the user sees a clear "PAM → <NAME>
-	// (<HOST>:<PORT>)" banner during the password/MFA prompt. This eliminates
-	// the previous ambiguity where '#id' refs gave no hint which machine you
-	// were about to log into.
 	resolvedHint := target
 	if tid, name, kind, host, port, _, rerr := s.resolveTarget(target); rerr == nil {
 		resolvedHint = fmt.Sprintf("%s [%s] %s:%d (id %d)", name, kind, host, port, tid)
 	} else {
 		resolvedHint = target + " — unknown machine (will fail authorization)"
 	}
-	answers, err := ch(user, fmt.Sprintf("PAM Platform → %s\r\nAuthenticate with your portal credentials (AD or local). MFA is required when enrolled.", resolvedHint),
-		[]string{"Password: ", "MFA code (required if enrolled): "},
-		[]bool{false, true})
+	answers, err := ch(user, fmt.Sprintf("PAM Platform -> %s\r\nEnter portal password (append 6-digit MFA code if enrolled, no space).", resolvedHint),
+		[]string{"Password: "},
+		[]bool{false})
 	if err != nil {
 		return nil, err
 	}
-	if len(answers) < 1 {
+	if len(answers) < 1 || answers[0] == "" {
 		return nil, errors.New("no password provided")
 	}
 	pw := answers[0]
-	otp := ""
-	if len(answers) > 1 {
-		otp = answers[1]
-	}
-	authedUser, err := s.authenticate(user, pw, otp)
+	authedUser, err := s.authenticate(user, pw, "")
 	if err != nil {
 		log.Printf("ssh-proxy: portal auth failed for %q: %v", user, err)
 		s.Bus.Publish(events.Event{
