@@ -28,6 +28,8 @@ type cmdGate struct {
 	injectEnableOnEnter bool
 	execPrivileged      bool // true when last prompt ended with #
 	enableMaskLen       int
+	enableInjected      bool // true after we sent the secret for this enable attempt
+	lastEnableInject    time.Time
 }
 
 func newCmdGate(up, down io.Writer, allow, deny []string, onDeny func(cmd string), enableSecret, portalPassword string, onSessionEnd func()) *cmdGate {
@@ -66,6 +68,13 @@ func (g *cmdGate) credentialForEnable() string {
 	return g.portalPassword
 }
 
+func (g *cmdGate) resetEnableFlow() {
+	g.expectEnablePass = false
+	g.injectEnableOnEnter = false
+	g.enableInjected = false
+	g.enableMaskLen = 0
+}
+
 func (g *cmdGate) noteOutput(p []byte) {
 	var autoInject bool
 	g.mu.Lock()
@@ -81,10 +90,12 @@ func (g *cmdGate) noteOutput(p []byte) {
 			trim := strings.TrimSpace(strings.ToLower(string(g.devLine)))
 			if strings.HasSuffix(trim, "#") {
 				g.execPrivileged = true
-				g.expectEnablePass = false
-				g.injectEnableOnEnter = false
+				g.resetEnableFlow()
 			} else if strings.HasSuffix(trim, ">") {
 				g.execPrivileged = false
+				if g.expectEnablePass {
+					g.resetEnableFlow()
+				}
 			}
 			g.devLine = g.devLine[:0]
 		case 0x08, 0x7f:
@@ -104,34 +115,53 @@ func (g *cmdGate) noteOutput(p []byte) {
 		strings.Contains(trim, "passphrase:") ||
 		strings.Contains(trim, "secret:") {
 		g.ignoreLine = true
-		if g.expectEnablePass && g.credentialForEnable() != "" && !g.injectEnableOnEnter {
+		// Auto-inject once per enable (first Password: prompt only).
+		if g.expectEnablePass && g.credentialForEnable() != "" && !g.enableInjected {
 			g.injectEnableOnEnter = true
 			autoInject = true
 		}
 	}
 }
 
-// tryAutoInjectEnable sends the enable secret upstream and shows only asterisks
-// to the user. SSH clients often echo keystrokes locally while we wait for Enter;
-// injecting on prompt avoids visible typing and clears the Password: line.
+// tryAutoInjectEnable sends the enable secret upstream once. Never synthesize
+// Password lines on the user terminal — that duplicated prompts (see audit screenshots).
 func (g *cmdGate) tryAutoInjectEnable() {
 	g.mu.Lock()
 	if !g.injectEnableOnEnter {
 		g.mu.Unlock()
 		return
 	}
-	secret := g.credentialForEnable()
 	g.injectEnableOnEnter = false
-	g.ignoreLine = true
-	if secret != "" {
-		g.enableMaskLen = len(secret)
-	}
 	g.mu.Unlock()
-	if secret == "" {
+	g.sendEnableSecret(false)
+}
+
+func (g *cmdGate) sendEnableSecret(force bool) {
+	g.mu.Lock()
+	if g.execPrivileged {
+		g.mu.Unlock()
 		return
 	}
-	stars := strings.Repeat("*", len(secret))
-	_, _ = g.down.Write([]byte("\r\x1b[KPassword: " + stars + "\r\n"))
+	secret := g.credentialForEnable()
+	if secret == "" {
+		g.mu.Unlock()
+		return
+	}
+	if !force {
+		if g.enableInjected {
+			g.mu.Unlock()
+			return
+		}
+		if time.Since(g.lastEnableInject) < 800*time.Millisecond {
+			g.mu.Unlock()
+			return
+		}
+	}
+	g.enableInjected = true
+	g.lastEnableInject = time.Now()
+	g.enableMaskLen = len(secret)
+	g.ignoreLine = true
+	g.mu.Unlock()
 	_, _ = g.up.Write([]byte(secret + "\r"))
 }
 
@@ -142,7 +172,7 @@ func (g *cmdGate) waitingForEnablePassword() bool {
 	if secret == "" || g.execPrivileged {
 		return false
 	}
-	return g.expectEnablePass || g.injectEnableOnEnter
+	return g.expectEnablePass
 }
 
 // filterDownstream redacts enable/passthrough secrets echoed by the device or client.
@@ -236,8 +266,22 @@ func (g *cmdGate) scheduleSessionEnd() {
 	}()
 }
 
+func (g *cmdGate) containsEnableSecret(p []byte) bool {
+	secret := g.credentialForEnable()
+	return secret != "" && strings.Contains(string(p), secret)
+}
+
 func (g *cmdGate) Write(p []byte) (int, error) {
 	n := len(p)
+	g.mu.Lock()
+	privileged := g.execPrivileged
+	g.mu.Unlock()
+	if privileged && g.containsEnableSecret(p) {
+		_, _ = g.down.Write([]byte(
+			"\r\nPAM: enable password is sent automatically after en — do not type or paste it.\r\n"))
+		return n, nil
+	}
+
 	for _, b := range p {
 		if g.handlePasswordKeystroke(b) {
 			continue
@@ -263,7 +307,6 @@ func (g *cmdGate) handlePasswordKeystroke(b byte) bool {
 	if !g.waitingForEnablePassword() {
 		return false
 	}
-	secret := g.credentialForEnable()
 	if b == '\r' || b == '\n' {
 		if b == '\n' && g.skipNextLF {
 			g.skipNextLF = false
@@ -272,22 +315,11 @@ func (g *cmdGate) handlePasswordKeystroke(b byte) bool {
 		if b == '\r' {
 			g.skipNextLF = true
 		}
-		g.mu.Lock()
-		g.injectEnableOnEnter = false
-		g.ignoreLine = true
-		g.enableMaskLen = len(secret)
-		g.mu.Unlock()
-		stars := strings.Repeat("*", len(secret))
-		_, _ = g.down.Write([]byte("\r\x1b[KPassword: " + stars + "\r\n"))
-		_, _ = g.up.Write([]byte(secret))
-		if b == '\r' {
-			_, _ = g.up.Write([]byte{'\r'})
-		} else {
-			_, _ = g.up.Write([]byte{'\n'})
-		}
+		// Enter at Password: retry after a failed attempt (debounced inside sendEnableSecret).
+		g.sendEnableSecret(true)
 		return true
 	}
-	// Swallow printable keys so the enable secret is never shown while typing.
+	// Swallow printable keys during Password: so the secret is never typed in the browser.
 	return true
 }
 
@@ -321,6 +353,7 @@ func (g *cmdGate) handleLineEnd(endByte byte) {
 	if cmd != "" && isEnableCommand(cmd) && g.credentialForEnable() != "" {
 		g.mu.Lock()
 		g.expectEnablePass = true
+		g.enableInjected = false
 		g.mu.Unlock()
 	}
 	if cmd != "" && g.shouldEndSession(cmd) {

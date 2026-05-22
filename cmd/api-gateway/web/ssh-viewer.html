@@ -60,7 +60,7 @@
   <div id="pasteOverlay" role="dialog" aria-labelledby="pasteTitle">
     <div class="paste-dialog">
       <h3 id="pasteTitle">Paste into session</h3>
-      <p>Press <strong>Ctrl+V</strong> in the box below (works on HTTP), then click <strong>Send to terminal</strong>.</p>
+      <p>Press <strong>Ctrl+V</strong> in the box below, then click <strong>Send to terminal</strong>. Do <strong>not</strong> paste the enable password — type <strong>en</strong> only; PAM sends it automatically.</p>
       <textarea id="pasteArea" placeholder="Paste commands here…"></textarea>
       <div class="paste-actions">
         <button type="button" id="pasteCancelBtn">Cancel</button>
@@ -187,7 +187,7 @@
         if (tail === "en" || tail.endsWith(" en") || /\ben$/.test(tail)) {
           enableInputLock = true;
           typedKeysyms.length = 0;
-          statusEl.textContent = "Enable: PAM injects the password — do not type it; wait for # prompt…";
+          statusEl.textContent = "Enable: wait for # prompt — do not type or paste the enable password.";
           setTimeout(() => { enableInputLock = false; }, 20000);
         }
       }
@@ -226,6 +226,12 @@
         if (!text) {
           statusEl.textContent = "Nothing to paste — use Ctrl+V in the paste box first.";
           return;
+        }
+        const trimmed = text.trim();
+        if (!/\s/.test(trimmed) && /@/.test(trimmed) && trimmed.length >= 8 && trimmed.length <= 64) {
+          if (!confirm("This looks like a password. After en, PAM sends enable automatically. Paste anyway?")) {
+            return;
+          }
         }
         closePasteDialog();
         pasteAsKeys(text);
