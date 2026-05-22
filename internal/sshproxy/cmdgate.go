@@ -81,6 +81,8 @@ func (g *cmdGate) noteOutput(p []byte) {
 			trim := strings.TrimSpace(strings.ToLower(string(g.devLine)))
 			if strings.HasSuffix(trim, "#") {
 				g.execPrivileged = true
+				g.expectEnablePass = false
+				g.injectEnableOnEnter = false
 			} else if strings.HasSuffix(trim, ">") {
 				g.execPrivileged = false
 			}
@@ -120,17 +122,16 @@ func (g *cmdGate) tryAutoInjectEnable() {
 	}
 	secret := g.credentialForEnable()
 	g.injectEnableOnEnter = false
-	g.expectEnablePass = false
 	g.ignoreLine = true
+	if secret != "" {
+		g.enableMaskLen = len(secret)
+	}
 	g.mu.Unlock()
 	if secret == "" {
 		return
 	}
-	g.mu.Lock()
-	g.enableMaskLen = len(secret)
-	g.mu.Unlock()
-	// Inject only upstream — do not synthesize a Password line on the user terminal
-	// (avoids duplicate Password: lines in browser/guacd viewers).
+	stars := strings.Repeat("*", len(secret))
+	_, _ = g.down.Write([]byte("\r\x1b[KPassword: " + stars + "\r\n"))
 	_, _ = g.up.Write([]byte(secret + "\r"))
 }
 
@@ -138,7 +139,10 @@ func (g *cmdGate) waitingForEnablePassword() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	secret := g.credentialForEnable()
-	return secret != "" && (g.expectEnablePass || g.injectEnableOnEnter)
+	if secret == "" || g.execPrivileged {
+		return false
+	}
+	return g.expectEnablePass || g.injectEnableOnEnter
 }
 
 // filterDownstream redacts enable/passthrough secrets echoed by the device or client.
@@ -158,9 +162,7 @@ func (g *cmdGate) filterDownstream(p []byte) []byte {
 		if secret == "" {
 			continue
 		}
-		if strings.Contains(out, secret) {
-			out = strings.ReplaceAll(out, secret, strings.Repeat("*", len(secret)))
-		}
+		out = strings.ReplaceAll(out, secret, strings.Repeat("*", len(secret)))
 	}
 	return []byte(maskPasswordPromptLines(out, maskLen))
 }
@@ -179,8 +181,12 @@ func maskPasswordPromptLines(s string, maskLen int) string {
 				continue
 			}
 			rest := strings.TrimSpace(line[idx+len(kw):])
-			if rest == "" || rest == stars || strings.Trim(rest, "*") == "" {
+			if rest == "" || strings.Trim(rest, "*") == "" {
 				continue
+			}
+			if len(rest) > maskLen {
+				maskLen = len(rest)
+				stars = strings.Repeat("*", maskLen)
 			}
 			line = line[:idx] + line[idx:idx+len(kw)] + " " + stars
 			break
@@ -268,10 +274,11 @@ func (g *cmdGate) handlePasswordKeystroke(b byte) bool {
 		}
 		g.mu.Lock()
 		g.injectEnableOnEnter = false
-		g.expectEnablePass = false
 		g.ignoreLine = true
 		g.enableMaskLen = len(secret)
 		g.mu.Unlock()
+		stars := strings.Repeat("*", len(secret))
+		_, _ = g.down.Write([]byte("\r\x1b[KPassword: " + stars + "\r\n"))
 		_, _ = g.up.Write([]byte(secret))
 		if b == '\r' {
 			_, _ = g.up.Write([]byte{'\r'})
