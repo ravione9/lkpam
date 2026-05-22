@@ -373,3 +373,65 @@ func (s *Service) getUserByID(ctx context.Context, id int64) (*User, error) {
 	u.RoleLocked = roleLocked != 0
 	return &u, nil
 }
+
+// DeleteUser removes a user and related membership/checkout rows. Sessions and
+// audit history are kept with the orphaned user_id for forensics.
+func (s *Service) DeleteUser(ctx context.Context, id, actorID int64) (string, error) {
+	if id <= 0 {
+		return "", errors.New("invalid user id")
+	}
+	if id == actorID {
+		return "", errors.New("cannot delete your own account")
+	}
+	u, err := s.getUserByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if u.Role == "admin" && !u.Disabled {
+		var others int
+		if err := s.DB.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM users WHERE role='admin' AND disabled=0 AND id != ?`, id).
+			Scan(&others); err != nil {
+			return "", err
+		}
+		if others == 0 {
+			return "", errors.New("cannot delete the last active admin")
+		}
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	cleanup := []struct {
+		q string
+		a any
+	}{
+		{`DELETE FROM approval_decisions WHERE approver_id = ?`, id},
+		{`DELETE FROM approval_decisions WHERE request_id IN (SELECT id FROM access_requests WHERE user_id = ?)`, id},
+		{`DELETE FROM access_requests WHERE user_id = ?`, id},
+		{`UPDATE access_requests SET approver_id = NULL WHERE approver_id = ?`, id},
+		{`DELETE FROM credential_checkouts WHERE user_id = ?`, id},
+		{`DELETE FROM session_terminations WHERE requested_by = ?`, id},
+		{`DELETE FROM saml_sessions WHERE user_id = ?`, id},
+		{`DELETE FROM safe_members WHERE principal_type='user' AND principal_id = ?`, id},
+		{`UPDATE threat_alerts SET user_id = NULL WHERE user_id = ?`, id},
+	}
+	for _, step := range cleanup {
+		if _, err := tx.ExecContext(ctx, step.q, step.a); err != nil {
+			return "", fmt.Errorf("auth: delete user cleanup: %w", err)
+		}
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	if err != nil {
+		return "", fmt.Errorf("auth: delete user: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return "", errors.New("user not found")
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return u.Username, nil
+}

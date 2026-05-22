@@ -160,6 +160,25 @@ func main() {
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	mux.HandleFunc("DELETE /users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		actorID, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		username, err := svc.DeleteUser(r.Context(), id, actorID)
+		if err != nil {
+			code := http.StatusBadRequest
+			if err.Error() == "user not found" {
+				code = http.StatusNotFound
+			}
+			httpx.Error(w, code, err)
+			return
+		}
+		bus.Publish(events.Event{
+			Source: "auth", Kind: "user.delete", Severity: "warn",
+			Actor: r.Header.Get("X-PAM-User"), Target: username,
+		})
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
 	// --- Groups ---
 	mux.HandleFunc("GET /groups", func(w http.ResponseWriter, r *http.Request) {
 		out, err := groupSvc.List(r.Context())

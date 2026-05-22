@@ -2232,11 +2232,6 @@ async function loadDashboard() {
       $("#stat-ldap-detail").textContent = "admin only";
     }
 
-    const first = (targets || [])[0];
-    const uname = currentUser ? currentUser.username : "user";
-    $("#sshHint").textContent = first
-      ? buildSshCommand(uname, first)
-      : buildSshCommand(uname, { id: 1, name: "machine" });
     loadAccessProfileSummary();
 
     // Login activity chart (24h, hourly buckets)
@@ -3570,6 +3565,7 @@ async function loadUsers() {
         <td class="actions">
           <button class="ghost" onclick="editUser(${u.id})">Edit</button>
           ${u.mfa_enabled ? `<button class="ghost danger" onclick="disableUserMFA(${u.id})">Disable MFA</button>` : ''}
+          ${currentUser && currentUser.id === u.id ? '' : `<button class="ghost danger" onclick="deleteUser(${u.id})">Delete</button>`}
         </td>
       </tr>`).join("");
   } catch (e) { $("#userRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
@@ -3669,6 +3665,21 @@ window.disableUserMFA = async id => {
   if (!confirm(`Disable MFA for ${u.username}?`)) return;
   try { await api("/auth/users/"+id+"/mfa", {method:"DELETE"}); toast("MFA disabled", "ok"); loadUsers(); }
   catch (e) { toast(e.message, "err"); }
+};
+window.deleteUser = async id => {
+  const u = cache.users.find(x => x.id === id);
+  if (!u) return;
+  if (currentUser && currentUser.id === id) {
+    toast("You cannot delete your own account", "err");
+    return;
+  }
+  const src = u.source && u.source !== "local" ? ` (${u.source})` : "";
+  if (!confirm(`Delete user "${u.username}"${src}? This cannot be undone.`)) return;
+  try {
+    await api("/auth/users/" + id, { method: "DELETE" });
+    toast("User deleted", "ok");
+    loadUsers();
+  } catch (e) { toast(e.message, "err"); }
 };
 
 // --- Groups ---

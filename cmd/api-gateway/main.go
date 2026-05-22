@@ -57,6 +57,7 @@ var adminWriteMatchers = []struct {
 	{"PUT", "/api/policy/targets/"},
 	{"DELETE", "/api/policy/targets/"},
 	{"POST", "/api/auth/users"},
+	{"DELETE", "/api/auth/users/"},
 	{"POST", "/api/auth/groups"},
 	{"PUT", "/api/auth/groups/"},
 	{"DELETE", "/api/auth/groups/"},
