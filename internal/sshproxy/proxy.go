@@ -165,7 +165,14 @@ func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInte
 		})
 		return nil, err
 	}
-	s.stashPassthrough(perms, pw)
+	// Passthrough downstream auth: append OTP so the target's TACACS request
+	// (which has a single password field) carries the full credential. Auth-service
+	// splits the trailing 6 digits back into the OTP when validating.
+	stashedPW := pw
+	if otp != "" {
+		stashedPW = pw + otp
+	}
+	s.stashPassthrough(perms, stashedPW)
 	return perms, nil
 }
 
