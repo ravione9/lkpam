@@ -13,11 +13,10 @@
     .toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 14px; min-width: 36px; }
     .toolbar button:hover { background: #475569; }
     #zoomLabel { font-size: 12px; color: #94a3b8; min-width: 48px; text-align: center; }
-    #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #111; position: relative; cursor: default; }
-    #displayWrap, #displayWrap * { cursor: default !important; }
-    #display { outline: none; display: block; width: 100%; height: 100%; position: relative; }
+    #displayWrap { flex: 1; min-height: 320px; overflow: hidden; background: #111; position: relative; cursor: text; }
+    #display { outline: none; display: block; width: 100%; height: 100%; position: relative; cursor: text; }
     #zoomSizer { position: absolute; top: 0; left: 0; transform-origin: top left; line-height: 0; pointer-events: none; }
-    #zoomSizer canvas { pointer-events: none; }
+    #zoomSizer canvas { pointer-events: none; cursor: text; }
     #status { padding: 8px 16px; font-size: 12px; background: #020617; color: #94a3b8; font-family: system-ui, sans-serif; }
     .err { color: #f87171; }
     #fallback { display: none; padding: 24px; font-family: system-ui, sans-serif; max-width: 560px; }
@@ -266,16 +265,19 @@
         reader.onend = () => copyToPC(text);
       };
 
-      const keyboard = new Guacamole.Keyboard(document);
+      // Bind keyboard to the display element so form inputs (paste textarea,
+      // dialog buttons) keep working when focused. Guacamole.Keyboard on the
+      // document intercepted Ctrl+V inside the paste box.
+      const keyboard = new Guacamole.Keyboard(displayEl);
       keyboard.onkeydown = keysym => {
-        if (!connected || enableInputLock || pasteOverlay.classList.contains("open")) return;
+        if (!connected || enableInputLock) return true;
         rememberKeysym(keysym);
         client.sendKeyEvent(1, keysym);
       };
       keyboard.onkeyup = keysym => {
-        if (!connected || pasteOverlay.classList.contains("open")) return;
+        if (!connected) return true;
         maybeStartEnableLock(keysym);
-        if (enableInputLock) return;
+        if (enableInputLock) return true;
         client.sendKeyEvent(0, keysym);
       };
 
@@ -339,22 +341,23 @@
         showFallback(msg);
       };
 
-      document.addEventListener("keydown", e => {
+      // Global shortcut: Ctrl+V opens the paste dialog (works only when terminal has focus
+      // since textarea Ctrl+V is handled natively by the browser).
+      displayEl.addEventListener("keydown", e => {
         if (!connected) return;
-        if (pasteOverlay.classList.contains("open")) {
-          if (e.key === "Escape") {
-            e.preventDefault();
-            closePasteDialog();
-          }
-          return;
-        }
         if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "v" || e.key === "V")) {
           e.preventDefault();
           e.stopImmediatePropagation();
           openPasteDialog();
-          return;
         }
       }, true);
+
+      document.addEventListener("keydown", e => {
+        if (pasteOverlay.classList.contains("open") && e.key === "Escape") {
+          e.preventDefault();
+          closePasteDialog();
+        }
+      });
 
       pasteArea.addEventListener("paste", () => {
         statusEl.textContent = "Text pasted — click Send to terminal when ready.";
