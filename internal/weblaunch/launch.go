@@ -22,6 +22,7 @@ import (
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/policy"
+	"github.com/example/pam-platform/internal/sessions"
 	"github.com/example/pam-platform/internal/vault"
 )
 
@@ -116,6 +117,10 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 			return nil, ErrApprovalRequired
 		}
 	}
+
+	// Close any prior active web sessions for this user+target so the Sessions tab
+	// does not accumulate stale rows when users re-launch or close tabs without End.
+	_ = sessions.EndActiveForUserTarget(ctx, s.DB, s.Vault, userID, targetID, "web", "superseded")
 
 	// Look up the privileged account linked to this target.
 	sessionID := fmt.Sprintf("web-%d-%d", time.Now().UnixNano(), targetID)

@@ -20,11 +20,17 @@ import (
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/httpx"
+	"github.com/example/pam-platform/internal/sessions"
+	"github.com/example/pam-platform/internal/vault"
+	"github.com/example/pam-platform/internal/weblaunch"
 )
 
 func errStr(s string) error { return errors.New(s) }
 
-const pendingSessionTimeoutSeconds = 120
+const (
+	pendingSessionTimeoutSeconds = 120
+	webSessionIdleTimeoutSeconds = 30 * 60 // web tabs closed without End still need cleanup
+)
 
 type record struct {
 	TS       int64  `json:"ts"`
@@ -55,6 +61,11 @@ func main() {
 		log.Fatalf("audit: db: %v", err)
 	}
 	defer d.Close()
+
+	v, err := vault.New(d, config.Get("PAM_MASTER_KEY", ""))
+	if err != nil {
+		log.Fatalf("audit: vault: %v", err)
+	}
 
 	sink, err := audit.Open(d, config.Get("PAM_AUDIT_JSONL", "./data/audit.jsonl"))
 	if err != nil {
@@ -169,8 +180,11 @@ func main() {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		// Confirm session exists and is active.
 		var ended sql.NullInt64
+		var ownerID int64
+		var protocol string
 		err := d.QueryRowContext(r.Context(),
-			`SELECT ended_at FROM sessions WHERE id = ?`, sid).Scan(&ended)
+			`SELECT ended_at, user_id, COALESCE(protocol,'') FROM sessions WHERE id = ?`, sid).
+			Scan(&ended, &ownerID, &protocol)
 		if err == sql.ErrNoRows {
 			httpx.Error(w, http.StatusNotFound, errStr("session not found"))
 			return
@@ -182,6 +196,16 @@ func main() {
 		if ended.Valid {
 			httpx.Error(w, http.StatusConflict, errStr("session already ended"))
 			return
+		}
+		if role != "admin" {
+			if uid <= 0 || ownerID != uid {
+				httpx.Error(w, http.StatusForbidden, errStr("admin role required"))
+				return
+			}
+			if protocol != "web" {
+				httpx.Error(w, http.StatusForbidden, errStr("only web sessions can be ended by the owner"))
+				return
+			}
 		}
 		if _, err := d.ExecContext(r.Context(), `
 			INSERT INTO session_terminations(session_id, requested_by, requested_at, reason)
@@ -198,11 +222,7 @@ func main() {
 		// when no proxy is actively polling (e.g. dangling native sessions).
 		// The proxy that owns an active tunnel will still kill the live process
 		// within ~5s via its own poller, then acknowledge the row.
-		_, _ = d.ExecContext(r.Context(), `
-			UPDATE sessions
-			   SET ended_at = ?, ended_reason = 'terminated'
-			 WHERE id = ? AND ended_at IS NULL`,
-			db.Now(), sid)
+		_, _ = sessions.End(r.Context(), d, v, sid, "terminated")
 		// Best-effort audit row.
 		_, _ = d.ExecContext(r.Context(), `
 			INSERT INTO audit_events(ts, actor, kind, target, detail, severity)
@@ -256,7 +276,7 @@ func main() {
 		if limit <= 0 || limit > 500 {
 			limit = 100
 		}
-		cleanupPendingSessions(r.Context(), d)
+		cleanupPendingSessions(r.Context(), d, v)
 		rows, err := d.QueryContext(context.Background(), `
 			SELECT id, user_id, target_id, started_at, ended_at,
 			       COALESCE(recording_path,''), COALESCE(client_ip,''), COALESCE(ended_reason,''),
@@ -332,7 +352,7 @@ func main() {
 // viewer/proxy never produced a recording. These rows are created before
 // guacd proves the target connection works, so failed launches can otherwise
 // sit in the UI as "active" forever.
-func cleanupPendingSessions(ctx context.Context, d *db.DB) {
+func cleanupPendingSessions(ctx context.Context, d *db.DB, v *vault.Vault) {
 	cutoff := db.Now() - pendingSessionTimeoutSeconds
 	rows, err := d.QueryContext(ctx, `
 		SELECT id, COALESCE(recording_path,'')
@@ -361,16 +381,45 @@ func cleanupPendingSessions(ctx context.Context, d *db.DB) {
 		}
 	}
 	for _, p := range stale {
-		_, _ = d.ExecContext(ctx, `
-			UPDATE sessions
-			   SET ended_at = ?, ended_reason = 'failed'
-			 WHERE id = ? AND ended_at IS NULL`,
-			db.Now(), p.id)
+		_, _ = sessions.End(ctx, d, v, p.id, "failed")
 		_, _ = d.ExecContext(ctx, `
 			INSERT INTO audit_events(ts, actor, kind, target, detail, severity)
 			VALUES(?,?,?,?,?,?)`,
 			db.Now(), "audit", "session.auto.failed", p.id,
 			"no browser recording/connection appeared before timeout", "warn")
+	}
+
+	webRows, err := d.QueryContext(ctx, `
+		SELECT id, started_at FROM sessions
+		 WHERE ended_at IS NULL AND COALESCE(protocol,'') = 'web'`)
+	if err != nil {
+		return
+	}
+	defer webRows.Close()
+	webCutoff := db.Now() - webSessionIdleTimeoutSeconds
+	for webRows.Next() {
+		var id string
+		var started int64
+		if err := webRows.Scan(&id, &started); err != nil {
+			continue
+		}
+		_, vaultErr := v.GetSecret(ctx, weblaunch.SessionSecretName(id))
+		reason := ""
+		if vaultErr != nil {
+			reason = "orphaned"
+		} else if started <= webCutoff {
+			reason = "idle"
+		}
+		if reason == "" {
+			continue
+		}
+		if ok, _ := sessions.End(ctx, d, v, id, reason); ok {
+			_, _ = d.ExecContext(ctx, `
+				INSERT INTO audit_events(ts, actor, kind, target, detail, severity)
+				VALUES(?,?,?,?,?,?)`,
+				db.Now(), "audit", "session.auto."+reason, id,
+				"web session cleaned up ("+reason+")", "info")
+		}
 	}
 }
 

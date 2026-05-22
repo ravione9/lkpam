@@ -31,6 +31,7 @@ import (
 	"github.com/example/pam-platform/internal/reports"
 	"github.com/example/pam-platform/internal/roles"
 	"github.com/example/pam-platform/internal/safes"
+	"github.com/example/pam-platform/internal/sessions"
 	"github.com/example/pam-platform/internal/sshlaunch"
 	"github.com/example/pam-platform/internal/weblaunch"
 	samlpkg "github.com/example/pam-platform/internal/saml"
@@ -970,6 +971,48 @@ func main() {
 			Detail: map[string]string{"session_id": res.SessionID, "target": res.TargetName},
 		})
 		httpx.JSON(w, http.StatusOK, res)
+	})
+
+	// --- End web session (viewer close / End button; owner or admin) ---
+	mux.HandleFunc("POST /web-session/{id}/end", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.PathValue("id")
+		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		role := r.Header.Get("X-PAM-Role")
+		var in struct {
+			Reason string `json:"reason"`
+		}
+		_ = httpx.ReadJSON(r, &in)
+		var ownerID int64
+		var protocol string
+		err := d.QueryRowContext(r.Context(), `
+			SELECT user_id, COALESCE(protocol,'') FROM sessions WHERE id = ?`, sessionID).
+			Scan(&ownerID, &protocol)
+		if err != nil {
+			httpx.Error(w, http.StatusNotFound, errors.New("session not found"))
+			return
+		}
+		if protocol != "web" {
+			httpx.Error(w, http.StatusBadRequest, errors.New("not a web session"))
+			return
+		}
+		if role != "admin" && (uid <= 0 || ownerID != uid) {
+			httpx.Error(w, http.StatusForbidden, errors.New("session belongs to another user"))
+			return
+		}
+		reason := in.Reason
+		if reason == "" {
+			reason = "closed"
+		}
+		ok, err := sessions.End(r.Context(), d, v, sessionID, reason)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		if !ok {
+			httpx.Error(w, http.StatusConflict, errors.New("session already ended"))
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ended"})
 	})
 
 	// --- Web session info (used by web-viewer.html to show target name + creds) ---

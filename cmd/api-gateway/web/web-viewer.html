@@ -146,15 +146,23 @@
     return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
 
-  document.getElementById("endBtn").onclick = async () => {
-    if (!sessionId || !token) return;
+  async function endWebSession(reason) {
+    if (!sessionId || !token) return false;
     try {
-      await fetch("/api/audit/sessions/" + encodeURIComponent(sessionId) + "/terminate", {
+      const r = await fetch("/api/auth/web-session/" + encodeURIComponent(sessionId) + "/end", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: "User ended web session" }),
+        body: JSON.stringify({ reason: reason || "User ended web session" }),
+        keepalive: true,
       });
-    } catch {}
+      return r.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  document.getElementById("endBtn").onclick = async () => {
+    await endWebSession("User ended web session");
     document.cookie = "pam_web_sid=; Path=/; Max-Age=0";
     document.cookie = "pam_web_tok=; Path=/; Max-Age=0";
     statusEl.textContent = "ended";
@@ -165,6 +173,12 @@
     document.getElementById("endBtn").disabled = true;
     setTimeout(() => window.close(), 1500);
   };
+
+  window.addEventListener("pagehide", () => {
+    endWebSession("Viewer closed");
+    document.cookie = "pam_web_sid=; Path=/; Max-Age=0";
+    document.cookie = "pam_web_tok=; Path=/; Max-Age=0";
+  });
 </script>
 </body>
 </html>

@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/example/pam-platform/internal/authclient"
@@ -601,6 +602,20 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		}
 	}
 
+	// Track concurrent shell channels; end the DB row when the last one closes
+	// (logout/exit) even if the SSH client keeps the TCP connection open briefly.
+	var activePipes int32
+	var endSessionOnce sync.Once
+	endNativeSession := func() {
+		if browserSess != "" {
+			return
+		}
+		endSessionOnce.Do(func() {
+			_, _ = s.DB.Exec(`UPDATE sessions SET ended_at = ?, ended_reason = COALESCE(ended_reason, 'closed') WHERE id = ? AND ended_at IS NULL`,
+				time.Now().Unix(), sessionID)
+		})
+	}
+
 	// Each downstream channel from the user is mirrored to the target.
 	for newChan := range chans {
 		if newChan.ChannelType() != "session" {
@@ -651,11 +666,19 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 		if _, privPW, ok := s.lookupPrivilegedAccount(targetID); ok {
 			enableSecret = privPW
 		}
-		go s.pipeSession(newChan, upClient, rec, sessionID, user, targetName, buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode),
-			parseCSV(sconn.Permissions.Extensions["allow-csv"]),
-			parseCSV(sconn.Permissions.Extensions["deny-csv"]),
-			enableSecret,
-			ptPassword)
+		atomic.AddInt32(&activePipes, 1)
+		go func(ch ssh.NewChannel) {
+			defer func() {
+				if atomic.AddInt32(&activePipes, -1) == 0 {
+					endNativeSession()
+				}
+			}()
+			s.pipeSession(ch, upClient, rec, sessionID, user, targetName, buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode),
+				parseCSV(sconn.Permissions.Extensions["allow-csv"]),
+				parseCSV(sconn.Permissions.Extensions["deny-csv"]),
+				enableSecret,
+				ptPassword)
+		}(newChan)
 	}
 
 	// Mark session closed (browser sessions are ended by rdp-proxy when guacd disconnects).
