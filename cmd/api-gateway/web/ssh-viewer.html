@@ -50,6 +50,7 @@
       <span id="zoomLabel">100%</span>
       <button type="button" id="zoomInBtn" title="Zoom in">+</button>
       <button type="button" id="pasteBtn" title="Paste into session">Paste</button>
+      <button type="button" id="fullscreenBtn" title="Fullscreen (F11 to exit)">Fullscreen</button>
       <button type="button" id="disconnectBtn">Disconnect</button>
     </div>
   </header>
@@ -132,11 +133,12 @@
         }
         const ww = Math.max(displayWrap.clientWidth, 400);
         const wh = Math.max(displayWrap.clientHeight, 300);
-        const fitX = ww / cw;
-        const fitY = wh / ch;
-        const fit = Math.min(fitX, fitY);
-        const scale = fit * zoom;
-        guacScreen.style.transform = "scale(" + scale + ")";
+        // Non-uniform scale to FILL the wrapper exactly — no empty strips.
+        // Text gets stretched slightly when wrapper aspect ratio differs from
+        // the terminal grid, which is the expected trade-off for full fill.
+        const scaleX = (ww / cw) * zoom;
+        const scaleY = (wh / ch) * zoom;
+        guacScreen.style.transform = "scale(" + scaleX + ", " + scaleY + ")";
         guacScreen.style.transformOrigin = "top left";
         zoomLabel.textContent = Math.round(zoom * 100) + "%";
       }
