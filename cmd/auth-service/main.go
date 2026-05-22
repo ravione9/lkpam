@@ -1242,7 +1242,7 @@ func loginHandler(
 			}
 			if otp == "" {
 				if deviceAuth {
-					httpx.Error(w, http.StatusUnauthorized, errors.New("MFA required — append your 6-digit authenticator code to the password with no space (e.g. MyPass482913)"))
+					httpx.Error(w, http.StatusUnauthorized, errors.New("MFA required — enter the code in the SSH MFA prompt, or append it to the password on FortiGate/web GUI login"))
 					return
 				}
 				httpx.JSON(w, http.StatusAccepted, map[string]any{

@@ -29,7 +29,6 @@ import (
 	"github.com/example/pam-platform/internal/db"
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/groups"
-	"github.com/example/pam-platform/internal/mfa"
 	"github.com/example/pam-platform/internal/policy"
 	"github.com/example/pam-platform/internal/sshlaunch"
 	"github.com/example/pam-platform/internal/vault"
@@ -94,7 +93,7 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 // passwordAuth verifies "user@target" SSH login via auth-service (AD/LDAP/local).
-// Append the 6-digit MFA code to the password when enrolled (no space).
+// When MFA is enrolled, use keyboard-interactive for a separate MFA code prompt.
 func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, error) {
 	user, target, ok := splitUserTarget(c.User())
 	if !ok {
@@ -105,6 +104,9 @@ func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, 
 	}
 	authedUser, err := s.authenticate(user, string(pw), "")
 	if err != nil {
+		if errors.Is(err, errMFANeeded) {
+			return nil, errors.New("MFA required — retry with keyboard-interactive")
+		}
 		return nil, err
 	}
 	perms, err := s.authorizeAndStash(authedUser, target)
@@ -115,8 +117,9 @@ func (s *Server) passwordAuth(c ssh.ConnMetadata, pw []byte) (*ssh.Permissions, 
 	return perms, nil
 }
 
-// keyboardInteractiveAuth prompts once for the portal password. When MFA is
-// enrolled, append the 6-digit code to the password (same as FortiGate TACACS).
+// keyboardInteractiveAuth prompts for portal password and an optional MFA code.
+// Leave MFA blank when not enrolled. GUI devices (FortiGate TACACS) use
+// password+MFA in one field instead — not this SSH path.
 func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 	user, target, ok := splitUserTarget(c.User())
 	if !ok {
@@ -128,9 +131,9 @@ func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInte
 	} else {
 		resolvedHint = target + " — unknown machine (will fail authorization)"
 	}
-	answers, err := ch(user, fmt.Sprintf("PAM Platform -> %s\r\nEnter portal password (append 6-digit MFA code if enrolled, no space).", resolvedHint),
-		[]string{"Password: "},
-		[]bool{false})
+	answers, err := ch(user, fmt.Sprintf("PAM Platform -> %s\r\nAuthenticate with your portal credentials (AD or local).", resolvedHint),
+		[]string{"Password: ", "MFA code (leave blank if not enrolled): "},
+		[]bool{false, true})
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +141,11 @@ func (s *Server) keyboardInteractiveAuth(c ssh.ConnMetadata, ch ssh.KeyboardInte
 		return nil, errors.New("no password provided")
 	}
 	pw := answers[0]
-	authedUser, err := s.authenticate(user, pw, "")
+	otp := ""
+	if len(answers) > 1 {
+		otp = strings.TrimSpace(answers[1])
+	}
+	authedUser, err := s.authenticate(user, pw, otp)
 	if err != nil {
 		log.Printf("ssh-proxy: portal auth failed for %q: %v", user, err)
 		s.Bus.Publish(events.Event{
@@ -190,11 +197,8 @@ type authedUser struct {
 // authenticate prefers auth-service (local + LDAP + MFA) and falls back to the
 // legacy local-DB hash check if no client is configured.
 func (s *Server) authenticate(username, password, otp string) (*authedUser, error) {
-	if otp == "" {
-		if base, appended := mfa.SplitAppendedOTP(password); appended != "" {
-			password, otp = base, appended
-		}
-	}
+	// SSH uses a separate MFA prompt — never strip digits from the password.
+	otp = strings.TrimSpace(otp)
 	if s.Auth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
