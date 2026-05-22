@@ -23,6 +23,7 @@
     #clipPanel button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; align-self: end; }
     #clipHint { grid-column: 1 / -1; color: #64748b; font-size: 11px; }
     #display:focus { outline: 1px solid #38bdf8; outline-offset: -1px; }
+    #display, #display * { cursor: text; }
   </style>
   <script>window.module={exports:{}};</script>
   <script src="/vendor/guacamole-common.min.js"></script>
@@ -35,7 +36,7 @@
     </div>
     <button id="disconnectBtn" style="padding:6px 14px;border-radius:6px;border:1px solid #475569;background:#334155;color:#e2e8f0;cursor:pointer;font-family:system-ui,sans-serif">Disconnect</button>
   </header>
-  <div id="display" tabindex="0" title="Click here, then paste (Ctrl+V) or use the panel below"></div>
+  <div id="display" tabindex="0" title="Click here to type — keyboard is sent to the device"></div>
   <div id="fallback">
     <h2>Browser session could not connect</h2>
     <p id="fallbackMsg">Use Terminal or PuTTY from the PAM portal Launch dialog instead — those use the same SSH proxy path and work without guacd in the browser.</p>
@@ -48,7 +49,7 @@
     <label>Copied from device (select text in terminal above)</label>
     <textarea id="clipLocal" readonly placeholder="Selection from switch appears here…"></textarea>
     <button type="button" id="clipCopyBtn">Copy to PC</button>
-    <div id="clipHint">Tip: focus the terminal and paste with Ctrl+V, or Ctrl+Shift+V. HTTP sites may block automatic copy — use “Copy to PC”. PuTTY-style copy: select in terminal first.</div>
+    <div id="clipHint">Click the terminal above to type. Paste: use this box + Send, or Ctrl+V in the terminal. Copy from device: select text in terminal, then Copy to PC.</div>
   </div>
   <div id="status">Session is recorded by PAM for audit.</div>
   <script>
@@ -107,7 +108,36 @@
 
       const tunnel = new Guacamole.WebSocketTunnel(wsBase);
       const client = new Guacamole.Client(tunnel);
-      displayEl.appendChild(client.getDisplay().getElement());
+      const guacScreen = client.getDisplay().getElement();
+      displayEl.appendChild(guacScreen);
+
+      function inputFocusedOutsideTerminal() {
+        const el = document.activeElement;
+        if (!el) return false;
+        const tag = el.tagName;
+        return tag === "TEXTAREA" || tag === "INPUT" || tag === "BUTTON" || tag === "SELECT";
+      }
+
+      // Required: without Keyboard/Mouse, the terminal display is view-only (frozen).
+      const keyboard = new Guacamole.Keyboard(document);
+      keyboard.onkeydown = keysym => {
+        if (!connected || inputFocusedOutsideTerminal()) return;
+        client.sendKeyEvent(1, keysym);
+      };
+      keyboard.onkeyup = keysym => {
+        if (!connected || inputFocusedOutsideTerminal()) return;
+        client.sendKeyEvent(0, keysym);
+      };
+
+      const mouse = new Guacamole.Mouse(guacScreen);
+      const sendMouse = e => { if (connected) client.sendMouseState(e.state); };
+      if (typeof mouse.onEach === "function") {
+        mouse.onEach(["mousedown", "mouseup", "mousemove"], sendMouse);
+      } else {
+        mouse.onmousedown = mouse.onmouseup = mouse.onmousemove = state => {
+          if (connected) client.sendMouseState(state);
+        };
+      }
 
       let connected = false;
 
@@ -141,7 +171,7 @@
         if (state === Guacamole.Client.State.CONNECTED) {
           connected = true;
           sendDisplaySize();
-          statusEl.textContent = "Connected — terminal session is being recorded.";
+          statusEl.textContent = "Connected — click the terminal to type (or use the paste box below).";
           statusEl.className = "";
           fallbackEl.style.display = "none";
           displayEl.style.display = "";
@@ -197,6 +227,13 @@
         }
       });
       document.getElementById("clipCopyBtn").onclick = copyLocalToPC;
+
+      displayEl.addEventListener("mousedown", () => {
+        if (connected) displayEl.focus();
+      });
+      guacScreen.addEventListener("mousedown", () => {
+        if (connected) displayEl.focus();
+      });
 
       displayEl.addEventListener("paste", e => {
         if (!connected) return;
