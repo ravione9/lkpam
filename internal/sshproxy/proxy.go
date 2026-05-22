@@ -206,7 +206,7 @@ func (s *Server) authenticate(username, password, otp string) (*authedUser, erro
 	if s.Auth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		res, err := s.Auth.Login(ctx, username, password, otp)
+		res, err := s.Auth.Login(ctx, username, password, otp, true)
 		if err != nil {
 			return nil, err
 		}

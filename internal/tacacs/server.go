@@ -159,7 +159,7 @@ func (s *Server) checkPassword(user, pass string) bool {
 	if s.Auth != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
-		res, err := s.Auth.Login(ctx, user, pass, "")
+		res, err := s.Auth.Login(ctx, user, pass, "", true)
 		if err == nil && res != nil && res.User != nil {
 			return true
 		}

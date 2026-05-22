@@ -40,26 +40,29 @@ type User struct {
 	MFAEnabled bool   `json:"mfa_enabled"`
 }
 
-// LoginResult captures the three possible outcomes of POST /login:
+// LoginResult captures the possible outcomes of POST /login:
 //   - Token + User on success
 //   - MFARequired with UserID when the user needs a second factor
 //   - error otherwise
 type LoginResult struct {
-	Token       string
-	User        *User
-	Roles       []string
-	MFARequired bool
-	UserID      int64
+	Token                 string
+	User                  *User
+	Roles                 []string
+	MFARequired           bool
+	MFAEnrollmentRequired bool
+	UserID                int64
 }
 
 // Login attempts password (and optionally TOTP) authentication. Returns
 // MFARequired=true if the user must supply an OTP — the caller should prompt,
 // then call Login again with otp set.
-func (c *Client) Login(ctx context.Context, username, password, otp string) (*LoginResult, error) {
-	body, _ := json.Marshal(map[string]string{
-		"Username": username,
-		"Password": password,
-		"OTP":      otp,
+// DeviceAuth skips portal MFA gates (used by SSH proxy / TACACS).
+func (c *Client) Login(ctx context.Context, username, password, otp string, deviceAuth bool) (*LoginResult, error) {
+	body, _ := json.Marshal(map[string]any{
+		"Username":    username,
+		"Password":    password,
+		"OTP":         otp,
+		"device_auth": deviceAuth,
 	})
 	req, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/login", bytes.NewReader(body))
 	if err != nil {
@@ -86,10 +89,14 @@ func (c *Client) Login(ctx context.Context, username, password, otp string) (*Lo
 		return &LoginResult{Token: out.Token, User: &out.User, Roles: out.Roles}, nil
 	case http.StatusAccepted:
 		var out struct {
-			MFARequired bool  `json:"mfa_required"`
-			UserID      int64 `json:"user_id"`
+			MFARequired           bool  `json:"mfa_required"`
+			MFAEnrollmentRequired bool  `json:"mfa_enrollment_required"`
+			UserID                int64 `json:"user_id"`
 		}
 		_ = json.Unmarshal(raw, &out)
+		if out.MFAEnrollmentRequired {
+			return nil, errors.New("MFA enrollment required — sign in to the PAM portal and complete MFA setup first")
+		}
 		return &LoginResult{MFARequired: out.MFARequired, UserID: out.UserID}, nil
 	default:
 		var e struct{ Error string `json:"error"` }

@@ -1160,7 +1160,10 @@ func loginHandler(
 	threatSvc *threat.Service,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct{ Username, Password, OTP string }
+		var req struct {
+			Username, Password, OTP string
+			DeviceAuth              bool `json:"device_auth"`
+		}
 		if err := httpx.ReadJSON(r, &req); err != nil {
 			httpx.Error(w, http.StatusBadRequest, err)
 			return
@@ -1169,33 +1172,20 @@ func loginHandler(
 			httpx.Error(w, http.StatusBadRequest, errors.New("username and password required"))
 			return
 		}
+		// Internal data-plane callers (SSH proxy, TACACS) set device_auth to skip
+		// portal MFA — LDAP/local password is enough for machine access.
+		deviceAuth := req.DeviceAuth || r.Header.Get("X-PAM-Device-Auth") == "1"
 
 		ctx := r.Context()
 		loginID := strings.TrimSpace(req.Username)
 		ldapCfg := loadLDAPConfig(ctx, settingsStore, v)
 		ldapEnabled := ldapCfg.Enabled && ldapCfg.URL != ""
 
-		existing, _ := svc.FindByLoginID(ctx, loginID)
-
-		var u *auth.User
-		var err error
-		switch {
-		case existing != nil && existing.Source == "ldap" && ldapEnabled:
-			u, err = tryLDAP(ctx, svc, groupSvc, settingsStore, v, loginID, req.Password)
-		case existing != nil && existing.Source == "saml":
-			err = errors.New("use SSO to sign in")
-		case existing != nil && existing.Source == "local" && existing.Disabled && ldapEnabled:
-			// Stale local account with same email — authenticate against AD instead.
-			u, err = tryLDAP(ctx, svc, groupSvc, settingsStore, v, loginID, req.Password)
-		default:
-			u, err = tryLocal(ctx, svc, loginID, req.Password)
-			if err != nil && ldapEnabled {
-				u, err = tryLDAP(ctx, svc, groupSvc, settingsStore, v, loginID, req.Password)
-			}
-		}
+		u, err := authenticateLogin(ctx, svc, groupSvc, settingsStore, v, loginID, req.Password, ldapEnabled)
 		if err != nil {
 			bus.Publish(events.Event{Source: "auth", Kind: "login.failed", Severity: "warn", Actor: req.Username, Detail: map[string]string{"error": err.Error()}})
-			httpx.Error(w, http.StatusUnauthorized, errors.New("invalid credentials"))
+			msg := loginErrorMessage(err)
+			httpx.Error(w, http.StatusUnauthorized, errors.New(msg))
 			return
 		}
 		if u.Disabled {
@@ -1206,7 +1196,14 @@ func loginHandler(
 
 		mfaPolicy, _ := settingsStore.Get(ctx, settingsKeyMFAPolicy)
 		effectivePolicy := auth.EffectiveMFAPolicy(mfaPolicy)
-		dec := auth.LoginMFADecision(u, mfaPolicy)
+		var dec auth.MFALoginDecision
+		if !deviceAuth {
+			dec, err = svc.LoginMFADecisionForUser(ctx, u, mfaPolicy)
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, err)
+				return
+			}
+		}
 		if dec.RequireEnrollment {
 			tok, err := svc.IssueEnrollmentToken(u)
 			if err != nil {
@@ -1270,6 +1267,57 @@ func loginHandler(
 
 func tryLocal(ctx context.Context, svc *auth.Service, username, password string) (*auth.User, error) {
 	return svc.Authenticate(ctx, username, password)
+}
+
+func authenticateLogin(
+	ctx context.Context,
+	svc *auth.Service,
+	groupSvc *groups.Service,
+	settingsStore *settings.Store,
+	v *vault.Vault,
+	loginID, password string,
+	ldapEnabled bool,
+) (*auth.User, error) {
+	existing, _ := svc.FindByLoginID(ctx, loginID)
+	if existing != nil && existing.Source == "saml" {
+		return nil, errors.New("use SSO to sign in")
+	}
+
+	if ldapEnabled {
+		u, ldapErr := tryLDAP(ctx, svc, groupSvc, settingsStore, v, loginID, password)
+		if u != nil {
+			return u, nil
+		}
+		if existing != nil && existing.Source == "ldap" {
+			return nil, ldapErr
+		}
+		if ldapErr != nil && strings.Contains(ldapErr.Error(), "allowlist") {
+			return nil, ldapErr
+		}
+	}
+
+	u, _ := tryLocal(ctx, svc, loginID, password)
+	if u != nil {
+		return u, nil
+	}
+	return nil, errors.New("invalid credentials")
+}
+
+func loginErrorMessage(err error) string {
+	if err == nil {
+		return "invalid credentials"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "allowlist"):
+		return msg
+	case msg == "use SSO to sign in":
+		return msg
+	case msg == "account disabled":
+		return msg
+	default:
+		return "invalid credentials"
+	}
 }
 
 func tryLDAP(

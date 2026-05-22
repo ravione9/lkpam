@@ -84,7 +84,25 @@ func LoginMFADecision(u *User, policy string) MFALoginDecision {
 	return MFALoginDecision{}
 }
 
-// CreateUser inserts a new user with an Argon2id password hash.
+// LoginMFADecisionForUser applies policy and verifies a TOTP secret exists when OTP is required.
+func (s *Service) LoginMFADecisionForUser(ctx context.Context, u *User, policy string) (MFALoginDecision, error) {
+	dec := LoginMFADecision(u, policy)
+	if !dec.RequireOTP {
+		return dec, nil
+	}
+	secret, err := s.GetMFASecret(ctx, u.ID)
+	if err != nil {
+		return dec, err
+	}
+	if secret != "" {
+		return dec, nil
+	}
+	// Enrolled flag set but secret missing — treat as needs setup.
+	if EffectiveMFAPolicy(policy) == "required" && !u.MFAExempt {
+		return MFALoginDecision{RequireEnrollment: true}, nil
+	}
+	return MFALoginDecision{}, nil
+}
 func (s *Service) CreateUser(ctx context.Context, username, email, password, role string) (int64, error) {
 	if role == "" {
 		role = "user"
