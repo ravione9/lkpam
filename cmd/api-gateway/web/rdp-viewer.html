@@ -12,14 +12,12 @@
     .toolbar { display: flex; align-items: center; gap: 6px; }
     .toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 13px; }
     .toolbar button:hover { background: #475569; }
-    /* Remote desktop fills the viewport 1:1 (no CSS scale — that causes twin/offset cursors). */
-    #displayWrap { flex: 1; min-height: 320px; overflow: auto; background: #000; position: relative; display: flex; align-items: flex-start; justify-content: flex-start; }
-    #display { outline: none; position: relative; line-height: 0; }
+    #displayWrap { flex: 1; min-height: 320px; overflow: auto; background: #000; display: flex; align-items: center; justify-content: center; }
+    #display { outline: none; line-height: 0; }
     #display.focused { box-shadow: inset 0 0 0 2px #38bdf8; }
-    /* Hide the browser cursor; Windows RDP draws the pointer on the canvas. */
     #displayWrap.remote-active,
     #displayWrap.remote-active #display,
-    #displayWrap.remote-active canvas { cursor: none !important; }
+    #displayWrap.remote-active .guacamole-display canvas { cursor: none !important; }
     #status { padding: 8px 16px; font-size: 12px; background: #0f172a; color: #94a3b8; }
     .err { color: #f87171; }
   </style>
@@ -33,7 +31,7 @@
       <div class="muted" id="sessionLabel">Connecting…</div>
     </div>
     <div class="toolbar">
-      <button type="button" id="fitBtn" title="Resize remote desktop to window">Fit to window</button>
+      <button type="button" id="fitBtn" title="Fit desktop to window">Fit to window</button>
       <button type="button" id="fullscreenBtn" title="Fullscreen">Fullscreen</button>
       <button type="button" id="disconnectBtn">Disconnect</button>
     </div>
@@ -83,17 +81,43 @@
         };
       }
 
+      /** Use Guacamole's scale() so the canvas is visible AND mouse coords stay aligned. */
+      function fitToWindow() {
+        const dw = guacDisplay.getWidth();
+        const dh = guacDisplay.getHeight();
+        if (dw <= 0 || dh <= 0) return;
+        const ww = Math.max(displayWrap.clientWidth, 400);
+        const wh = Math.max(displayWrap.clientHeight, 300);
+        const scale = Math.min(ww / dw, wh / dh);
+        guacDisplay.scale(scale);
+      }
+
       function sendDisplaySize() {
         if (!connected) return;
         const dim = wrapperSize();
         client.sendSize(dim.w, dim.h);
       }
 
-      function sendMouse(state) {
-        client.sendMouseState(state);
+      function scaledMouseState(state) {
+        const scale = guacDisplay.getScale();
+        if (!scale || scale === 1) return state;
+        return {
+          x: state.x / scale,
+          y: state.y / scale,
+          left: state.left,
+          middle: state.middle,
+          right: state.right,
+          up: state.up,
+          down: state.down,
+        };
       }
 
-      // Mouse on the Guacamole canvas element — coordinates match RDP pixels (no CSS transform).
+      function sendMouse(state) {
+        client.sendMouseState(scaledMouseState(state));
+      }
+
+      guacDisplay.onresize = () => fitToWindow();
+
       const mouse = new Guacamole.Mouse(guacScreen);
       mouse.onmousedown = mouse.onmouseup = state => {
         if (!connected) return;
@@ -126,9 +150,15 @@
         if (state === Guacamole.Client.State.CONNECTED) {
           connected = true;
           displayWrap.classList.add("remote-active");
+          if (typeof guacDisplay.showCursor === "function") {
+            guacDisplay.showCursor(true);
+          }
           sendDisplaySize();
-          setTimeout(() => displayEl.focus(), 100);
-          statusEl.textContent = "Connected — one remote pointer only; click desktop for keyboard.";
+          setTimeout(() => {
+            fitToWindow();
+            displayEl.focus();
+          }, 200);
+          statusEl.textContent = "Connected — click the desktop for keyboard and mouse.";
           statusEl.className = "";
         }
         if (state === Guacamole.Client.State.DISCONNECTED) {
@@ -158,7 +188,10 @@
       window.addEventListener("resize", () => {
         if (!connected) return;
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(sendDisplaySize, 250);
+        resizeTimer = setTimeout(() => {
+          sendDisplaySize();
+          fitToWindow();
+        }, 250);
       });
 
       tunnel.onerror = status => {
@@ -175,13 +208,14 @@
 
       document.getElementById("fitBtn").onclick = () => {
         sendDisplaySize();
+        fitToWindow();
         displayEl.focus();
       };
       document.getElementById("fullscreenBtn").onclick = async () => {
         try {
           if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
           else await document.exitFullscreen();
-          setTimeout(sendDisplaySize, 200);
+          setTimeout(() => { sendDisplaySize(); fitToWindow(); }, 200);
         } catch (_) {}
       };
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();

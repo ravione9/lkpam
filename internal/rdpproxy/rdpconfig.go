@@ -9,6 +9,7 @@ func rdpGuacParams(host string, port int, username, password, recDir, sessionID 
 		"username":                username,
 		"password":                password,
 		"ignore-cert":             "true",
+		"color-depth":             "32",
 		"security":                "any",
 		"resize-method":           "display-update",
 		"enable-wallpaper":        "false",
