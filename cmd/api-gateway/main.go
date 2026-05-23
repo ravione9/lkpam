@@ -624,7 +624,12 @@ func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, u
 	rewriteUpstreamReferer(upstream.Header, targetURL, sessionID)
 	tuneUpstreamRequest(upstream, targetURL, rest)
 
-	if creds.Username != "" && creds.Password != "" && !isPublicWebAsset(rest) {
+	// Only attach Basic Auth on GETs of non-asset paths. Form-auth appliances
+	// (FortiOS, modern PAN-OS) use POST /logincheck or /api with form bodies;
+	// adding an Authorization header on those requests makes the device 401 the
+	// login attempt and bounce the user back to the login page even when the
+	// form credentials are correct.
+	if creds.Username != "" && creds.Password != "" && r.Method == http.MethodGet && !isPublicWebAsset(rest) {
 		upstream.SetBasicAuth(creds.Username, creds.Password)
 	}
 	return upstream, upstreamURL, nil
