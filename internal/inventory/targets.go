@@ -40,6 +40,8 @@ type Target struct {
 	WebURL         string `json:"web_url"`         // for web / https-api
 	Tier           int    `json:"tier"`
 	Tags           string `json:"tags"`
+	LocationID     int64  `json:"location_id"`
+	LocationName   string `json:"location_name"`
 }
 
 // Service provides target CRUD.
@@ -48,10 +50,13 @@ type Service struct{ DB *db.DB }
 // List returns all targets ordered by name.
 func (s *Service) List(ctx context.Context) ([]Target, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, name, kind, COALESCE(vendor,''), COALESCE(os_version,''),
-		       COALESCE(connection_type,'ssh'), host, port,
-		       COALESCE(web_url,''), tier, tags
-		FROM targets ORDER BY name`)
+		SELECT t.id, t.name, t.kind, COALESCE(t.vendor,''), COALESCE(t.os_version,''),
+		       COALESCE(t.connection_type,'ssh'), t.host, t.port,
+		       COALESCE(t.web_url,''), t.tier, t.tags,
+		       COALESCE(t.location_id, 0), COALESCE(l.name, '')
+		FROM targets t
+		LEFT JOIN locations l ON l.id = t.location_id
+		ORDER BY COALESCE(l.sort_order, 9999), COALESCE(l.name, ''), t.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +65,8 @@ func (s *Service) List(ctx context.Context) ([]Target, error) {
 	for rows.Next() {
 		var t Target
 		if err := rows.Scan(&t.ID, &t.Name, &t.Kind, &t.Vendor, &t.OSVersion,
-			&t.ConnectionType, &t.Host, &t.Port, &t.WebURL, &t.Tier, &t.Tags); err != nil {
+			&t.ConnectionType, &t.Host, &t.Port, &t.WebURL, &t.Tier, &t.Tags,
+			&t.LocationID, &t.LocationName); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -72,12 +78,16 @@ func (s *Service) List(ctx context.Context) ([]Target, error) {
 func (s *Service) Get(ctx context.Context, id int64) (Target, error) {
 	var t Target
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT id, name, kind, COALESCE(vendor,''), COALESCE(os_version,''),
-		       COALESCE(connection_type,'ssh'), host, port,
-		       COALESCE(web_url,''), tier, tags
-		FROM targets WHERE id = ?`, id).Scan(
+		SELECT t.id, t.name, t.kind, COALESCE(t.vendor,''), COALESCE(t.os_version,''),
+		       COALESCE(t.connection_type,'ssh'), t.host, t.port,
+		       COALESCE(t.web_url,''), t.tier, t.tags,
+		       COALESCE(t.location_id, 0), COALESCE(l.name, '')
+		FROM targets t
+		LEFT JOIN locations l ON l.id = t.location_id
+		WHERE t.id = ?`, id).Scan(
 		&t.ID, &t.Name, &t.Kind, &t.Vendor, &t.OSVersion,
-		&t.ConnectionType, &t.Host, &t.Port, &t.WebURL, &t.Tier, &t.Tags)
+		&t.ConnectionType, &t.Host, &t.Port, &t.WebURL, &t.Tier, &t.Tags,
+		&t.LocationID, &t.LocationName)
 	if err == sql.ErrNoRows {
 		return t, errors.New("target not found")
 	}
@@ -98,12 +108,13 @@ func (s *Service) Create(ctx context.Context, t Target) (int64, error) {
 	if t.Port <= 0 {
 		t.Port = defaultPort(t.ConnectionType)
 	}
+	locID := nullableLocationID(t.LocationID)
 	res, err := s.DB.ExecContext(ctx, `
 		INSERT INTO targets(name, kind, vendor, os_version, connection_type,
-		                    host, port, web_url, tier, tags)
-		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		                    host, port, web_url, tier, tags, location_id)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		t.Name, t.Kind, t.Vendor, t.OSVersion, t.ConnectionType,
-		t.Host, t.Port, t.WebURL, t.Tier, t.Tags)
+		t.Host, t.Port, t.WebURL, t.Tier, t.Tags, locID)
 	if err != nil {
 		return 0, fmt.Errorf("insert target: %w", err)
 	}
@@ -124,12 +135,13 @@ func (s *Service) Update(ctx context.Context, t Target) error {
 	if t.Port <= 0 {
 		t.Port = defaultPort(t.ConnectionType)
 	}
+	locID := nullableLocationID(t.LocationID)
 	res, err := s.DB.ExecContext(ctx, `
 		UPDATE targets SET name=?, kind=?, vendor=?, os_version=?,
-		  connection_type=?, host=?, port=?, web_url=?, tier=?, tags=?
+		  connection_type=?, host=?, port=?, web_url=?, tier=?, tags=?, location_id=?
 		WHERE id=?`,
 		t.Name, t.Kind, t.Vendor, t.OSVersion, t.ConnectionType,
-		t.Host, t.Port, t.WebURL, t.Tier, t.Tags, t.ID)
+		t.Host, t.Port, t.WebURL, t.Tier, t.Tags, locID, t.ID)
 	if err != nil {
 		return err
 	}
@@ -171,6 +183,13 @@ func validateConnection(t Target) error {
 }
 
 // defaultPort returns the conventional port for a connection type.
+func nullableLocationID(id int64) interface{} {
+	if id <= 0 {
+		return nil
+	}
+	return id
+}
+
 func defaultPort(connType string) int {
 	switch connType {
 	case ConnRDP:

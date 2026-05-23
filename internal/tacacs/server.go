@@ -46,6 +46,9 @@ type Server struct {
 	Auth *authclient.Client
 	// Vault resolves privileged-account passwords for enable / device-level TACACS auth.
 	Vault *vault.Vault
+	// FortinetMemberOf is returned as memberof= on FortiGate authorization (must match
+	// config user group name or config user group match group-name on the firewall).
+	FortinetMemberOf string
 }
 
 // Run starts the TCP listener and blocks until ctx is done.
@@ -102,6 +105,15 @@ func (s *Server) handleAuthen(c net.Conn, h Header, body []byte, clientIP string
 	start, err := ParseAuthenStart(body)
 	if err != nil {
 		log.Printf("tacacs authen parse: %v", err)
+		return
+	}
+	if start.AuthenType == AuthenTypeCHAP {
+		log.Printf("tacacs authen: CHAP from %s not supported — set authen-type pap on FortiGate", clientIP)
+		h.SeqNo++
+		_ = WritePacket(c, h, AuthenReply{
+			Status:    AuthenStatusFail,
+			ServerMsg: "CHAP not supported — use PAP",
+		}.Bytes(), s.Secret)
 		return
 	}
 
@@ -274,10 +286,14 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	var replyArgs []string
 
 	if fullCmd == "" && isAdminAuthService(svc) {
-		// FortiGate / firewall admin login — not per-command authorization.
+		// FortiGate / PAN-OS admin login — not per-command authorization.
 		allow, role = s.authorizeAdmin(req.User)
 		if allow {
-			replyArgs = []string{"priv-lvl=15", "service=" + svc}
+			if isFortinetService(svc) {
+				replyArgs = s.fortinetAuthorArgs(role, svc, extractArg(req.Args, "memberof"))
+			} else {
+				replyArgs = []string{"priv-lvl=15", "service=" + svc}
+			}
 		}
 	} else {
 		allow, role = s.authorize(req.User, deviceIP, fullCmd)
@@ -413,13 +429,53 @@ func extractArg(args []string, key string) string {
 	return ""
 }
 
+func isFortinetService(svc string) bool {
+	svc = strings.ToLower(strings.TrimSpace(svc))
+	switch svc {
+	case "fortigate", "fortinet", "ftm":
+		return true
+	}
+	return strings.Contains(svc, "forti")
+}
+
 func isAdminAuthService(svc string) bool {
 	svc = strings.ToLower(strings.TrimSpace(svc))
 	switch svc {
 	case "administration", "admin", "fortigate", "fortinet", "ftm":
 		return true
 	}
-	return strings.Contains(svc, "forti")
+	return isFortinetService(svc)
+}
+
+// fortinetAuthorArgs builds VSAs FortiOS expects (admin_prof, memberof, service).
+// priv-lvl is ignored by FortiGate; without these attributes authorization fails.
+func (s *Server) fortinetAuthorArgs(role, svc, reqMemberof string) []string {
+	if strings.TrimSpace(svc) == "" {
+		svc = "fortigate"
+	}
+	memberof := strings.TrimSpace(s.FortinetMemberOf)
+	if memberof == "" {
+		memberof = "PAM-Admins"
+	}
+	if strings.TrimSpace(reqMemberof) != "" {
+		memberof = strings.TrimSpace(reqMemberof)
+	}
+	return []string{
+		"service=" + svc,
+		"admin_prof=" + fortinetAdminProf(role),
+		"memberof=" + memberof,
+	}
+}
+
+func fortinetAdminProf(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "admin":
+		return "super_admin"
+	case "secops":
+		return "super_admin"
+	default:
+		return "prof_admin"
+	}
 }
 
 func deviceIPFromAuthor(req *AuthorRequest, clientIP string) string {

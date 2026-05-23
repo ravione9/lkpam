@@ -190,6 +190,53 @@ func main() {
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	})
 
+	mux.HandleFunc("GET /locations", func(w http.ResponseWriter, r *http.Request) {
+		out, err := inv.ListLocations(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+
+	mux.HandleFunc("POST /locations", func(w http.ResponseWriter, r *http.Request) {
+		var loc inventory.Location
+		if err := json.NewDecoder(r.Body).Decode(&loc); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		id, err := inv.CreateLocation(r.Context(), loc)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusCreated, map[string]int64{"id": id})
+	})
+
+	mux.HandleFunc("PUT /locations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		var loc inventory.Location
+		if err := json.NewDecoder(r.Body).Decode(&loc); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		loc.ID = id
+		if err := inv.UpdateLocation(r.Context(), loc); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	mux.HandleFunc("DELETE /locations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := inv.DeleteLocation(r.Context(), id); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	})
+
 	addr := config.Get("PAM_POLICY_ADDR", ":8083")
 	log.Printf("policy-service listening on %s", addr)
 	if err := http.ListenAndServe(addr, httpx.LoggingMiddleware(mux)); err != nil {

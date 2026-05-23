@@ -839,6 +839,56 @@
   }
 
   #tab-targets .empty-state { padding: 32px 16px; }
+
+  #targetsTable tr.loc-group-row td {
+    background: var(--surface-2);
+    padding: 6px 10px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+  }
+  #targetsTable tr.loc-group-row:first-child td { border-top: none; }
+  #targetsTable tr.loc-group-row:hover td { background: #eef2f7; }
+  #targetsTable tr.loc-device-row.loc-hidden { display: none; }
+  #targetsTable tr.loc-device-row td { padding-left: 28px; }
+  .loc-group-inner {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+  }
+  .loc-chevron {
+    width: 18px; height: 18px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 4px;
+    background: #fff;
+  }
+  .loc-group-row.collapsed .loc-chevron::before { content: "▶"; }
+  .loc-group-row:not(.collapsed) .loc-chevron::before { content: "▼"; }
+  .loc-group-title { flex: 1; min-width: 0; font-size: 12px; color: var(--fg); }
+  .loc-group-title .loc-desc { font-weight: 400; color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .loc-group-count {
+    font-size: 10.5px; font-weight: 500; color: var(--muted);
+    background: #fff; border: 1px solid var(--border);
+    border-radius: var(--r-pill); padding: 2px 8px;
+  }
+  .loc-group-actions {
+    display: inline-flex; gap: 4px; flex-shrink: 0;
+  }
+  .loc-group-actions .ghost { padding: 2px 8px; font-size: 10.5px; height: 24px; }
+  .targets-view-toggle {
+    display: inline-flex; border: 1px solid var(--border); border-radius: var(--r);
+    overflow: hidden; background: #fff;
+  }
+  .targets-view-toggle button {
+    border: none; border-radius: 0; padding: 4px 10px; font-size: 11px;
+    background: transparent; color: var(--muted); height: 28px;
+  }
+  .targets-view-toggle button.active {
+    background: var(--accent-soft); color: var(--accent); font-weight: 600;
+  }
+  #locationListTable { width: 100%; margin-bottom: 12px; font-size: 12px; }
+  #locationListTable td.actions { white-space: nowrap; }
   .empty-state { text-align: center; padding: 56px 24px; }
   .empty-state .empty-icon {
     width: 56px; height: 56px;
@@ -1139,12 +1189,20 @@
             <h3>Managed Machines</h3>
             <p class="desc">Register servers, network devices, firewalls, and consoles. Use <b>Launch</b> for SSH (proxy port 2222) or recorded RDP / web sessions after access is approved.</p>
           </div>
-          <button class="primary" id="targetAddBtn">+ Add Machine</button>
+          <div class="row" style="gap:8px">
+            <button type="button" class="ghost" id="locationManageBtn" data-admin title="Add or edit plants / sites">Locations</button>
+            <button class="primary" id="targetAddBtn">+ Add Machine</button>
+          </div>
         </div>
         <div class="machines-toolbar">
           <div class="search-wrap">
-            <input type="search" id="targetSearch" placeholder="Search by name, host, platform, tags…" autocomplete="off"/>
+            <input type="search" id="targetSearch" placeholder="Search by name, host, platform, location, tags…" autocomplete="off"/>
           </div>
+          <label class="machines-filter">Location
+            <select id="targetLocationFilter">
+              <option value="">All locations</option>
+            </select>
+          </label>
           <label class="machines-filter">Tier
             <select id="targetTierFilter">
               <option value="">All</option>
@@ -1168,6 +1226,12 @@
             <button type="button" class="ghost" id="targetColumnsBtn" title="Show or hide columns">Columns ▾</button>
             <div class="col-picker" id="targetColPicker" style="display:none"></div>
           </div>
+          <div class="targets-view-toggle" id="targetsViewToggle" role="group" aria-label="View mode">
+            <button type="button" class="active" data-view="grouped" id="targetsViewGrouped">By location</button>
+            <button type="button" data-view="list" id="targetsViewList">List</button>
+          </div>
+          <button type="button" class="ghost" id="targetExpandAll" title="Expand all location groups">Expand all</button>
+          <button type="button" class="ghost" id="targetCollapseAll" title="Collapse all location groups">Collapse all</button>
           <div class="machines-stats" id="targetStats"></div>
         </div>
         <div class="table-wrap">
@@ -1941,6 +2005,10 @@
             <option value="2" selected>Tier 2 — Staging</option>
             <option value="3">Tier 3 — Development / lab</option>
           </select>
+          <label for="targetLocation">Location / plant</label>
+          <select id="targetLocation">
+            <option value="">— Unassigned —</option>
+          </select>
           <label for="targetTags">Tags</label>
           <input id="targetTags" placeholder="datacenter, network, optional labels"/>
         </div>
@@ -1949,6 +2017,40 @@
     <div class="modal-footer">
       <button type="button" class="ghost" id="targetCancelBtn">Cancel</button>
       <button type="button" class="primary" id="targetSaveBtn">Save machine</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="locationModal" aria-hidden="true">
+  <div class="modal modal-lg">
+    <div class="modal-machine-header">
+      <div>
+        <h3 id="locationModalTitle">Manage locations</h3>
+        <p class="modal-subtitle">Group machines by plant or site (e.g. Bhiwahi Plant, Manesar Plant).</p>
+      </div>
+      <button type="button" class="modal-close" id="locationModalClose" title="Close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <table id="locationListTable">
+        <thead><tr><th>Name</th><th>Description</th><th>Order</th><th>Machines</th><th></th></tr></thead>
+        <tbody id="locationListRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+      </table>
+      <section class="form-section" style="margin-top:12px">
+        <h4 class="form-section-title" id="locationFormTitle">Add location</h4>
+        <input type="hidden" id="locationId"/>
+        <div class="form-grid">
+          <label for="locationName">Name</label>
+          <input id="locationName" placeholder="e.g. Bhiwahi Plant, Manesar Plant"/>
+          <label for="locationDesc">Description</label>
+          <input id="locationDesc" placeholder="Optional notes"/>
+          <label for="locationSort">Display order</label>
+          <input id="locationSort" type="number" value="0" min="0" title="Lower numbers appear first"/>
+        </div>
+      </section>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="ghost" id="locationFormCancel">Cancel</button>
+      <button type="button" class="primary" id="locationFormSave">Save location</button>
     </div>
   </div>
 </div>
@@ -2053,7 +2155,7 @@ const TOKEN_KEY = "pam_token";
 const TAB_KEY = "pam.activeTab";
 const SSH_PROXY_PORT = 2222;
 let pendingMFAUserID = null;
-let cache = { targets: [], users: [], groups: [], roles: [], matrix: [], safes: [], accounts: [], apps: [] };
+let cache = { targets: [], locations: [], users: [], groups: [], roles: [], matrix: [], safes: [], accounts: [], apps: [] };
 let mfaPolicyGlobal = "required";
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
@@ -3007,7 +3109,41 @@ const targetsState = {
   sort: { key: "name", dir: "asc" },
   tier: "",
   conn: "",
+  location: "",
+  view: "grouped",
 };
+const LOC_COLLAPSE_KEY = "pam.targets.locCollapse";
+const TARGETS_VIEW_KEY = "pam.targets.view";
+
+function loadTargetsViewPref() {
+  try { return localStorage.getItem(TARGETS_VIEW_KEY) || "grouped"; } catch { return "grouped"; }
+}
+function saveTargetsViewPref(v) {
+  try { localStorage.setItem(TARGETS_VIEW_KEY, v); } catch { /* ignore */ }
+}
+targetsState.view = loadTargetsViewPref();
+
+function loadLocCollapsePrefs() {
+  try {
+    const raw = localStorage.getItem(LOC_COLLAPSE_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch { return new Set(); }
+}
+function saveLocCollapsePrefs(set) {
+  try { localStorage.setItem(LOC_COLLAPSE_KEY, JSON.stringify([...set])); } catch { /* ignore */ }
+}
+let locCollapsed = loadLocCollapsePrefs();
+
+function locGroupKey(id) {
+  return id > 0 ? "loc:" + id : "unassigned";
+}
+function isLocCollapsed(key) { return locCollapsed.has(key); }
+function setLocCollapsed(key, collapsed) {
+  if (collapsed) locCollapsed.add(key); else locCollapsed.delete(key);
+  saveLocCollapsePrefs(locCollapsed);
+}
 
 const TARGETS_COL_DEF = [
   { id: "name",       label: "Name",     sort: "name",       width: 17, min: 10, hideable: false },
@@ -3240,18 +3376,86 @@ function targetSortAccessor(key) {
   }
 }
 
+function populateLocationFilterSelect() {
+  const sel = $("#targetLocationFilter");
+  if (!sel) return;
+  const cur = sel.value;
+  const locs = (cache.locations || []).slice().sort((a, b) =>
+    (a.sort_order - b.sort_order) || (a.name || "").localeCompare(b.name || ""));
+  let html = `<option value="">All locations</option><option value="none">Unassigned</option>`;
+  for (const l of locs) {
+    html += `<option value="${l.id}">${esc(l.name)}</option>`;
+  }
+  sel.innerHTML = html;
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+
+function populateTargetLocationSelect(selectedId) {
+  const sel = $("#targetLocation");
+  if (!sel) return;
+  const locs = (cache.locations || []).slice().sort((a, b) =>
+    (a.sort_order - b.sort_order) || (a.name || "").localeCompare(b.name || ""));
+  let html = `<option value="">— Unassigned —</option>`;
+  for (const l of locs) {
+    html += `<option value="${l.id}">${esc(l.name)}</option>`;
+  }
+  sel.innerHTML = html;
+  sel.value = selectedId > 0 ? String(selectedId) : "";
+}
+
+function buildTargetLocationGroups(filteredRows) {
+  const locs = (cache.locations || []).slice().sort((a, b) =>
+    (a.sort_order - b.sort_order) || (a.name || "").localeCompare(b.name || ""));
+  const byLoc = new Map();
+  for (const l of locs) byLoc.set(l.id, []);
+  const unassigned = [];
+  for (const t of filteredRows) {
+    const lid = Number(t.location_id) || 0;
+    if (lid > 0 && byLoc.has(lid)) byLoc.get(lid).push(t);
+    else unassigned.push(t);
+  }
+  const locFilter = targetsState.location;
+  const groups = [];
+  for (const l of locs) {
+    if (locFilter === "none") continue;
+    if (locFilter && String(l.id) !== locFilter) continue;
+    const devices = byLoc.get(l.id) || [];
+    if (!devices.length && locFilter !== String(l.id)) continue;
+    groups.push({ key: locGroupKey(l.id), id: l.id, name: l.name, description: l.description || "", devices });
+  }
+  if ((!locFilter || locFilter === "none") && unassigned.length) {
+    groups.push({ key: "unassigned", id: 0, name: "Unassigned", description: "", devices: unassigned });
+  }
+  return groups;
+}
+
+function syncTargetsViewToggle() {
+  const grouped = targetsState.view === "grouped";
+  $("#targetsViewGrouped")?.classList.toggle("active", grouped);
+  $("#targetsViewList")?.classList.toggle("active", !grouped);
+  const showLocBtns = grouped && (cache.targets || []).length > 0;
+  if ($("#targetExpandAll")) $("#targetExpandAll").style.display = showLocBtns ? "" : "none";
+  if ($("#targetCollapseAll")) $("#targetCollapseAll").style.display = showLocBtns ? "" : "none";
+  if ($("#targetPagination")) {
+    /* pagination visibility handled in renderTargetPagination / grouped */
+  }
+}
+
 function getFilteredSortedTargets() {
   const q = ($("#targetSearch")?.value || "").trim().toLowerCase();
   const tier = targetsState.tier;
   const conn = targetsState.conn;
+  const loc = targetsState.location;
   let rows = (cache.targets || []).slice();
   if (tier !== "") rows = rows.filter(t => Number(t.tier) === Number(tier));
   if (conn !== "") rows = rows.filter(t => (t.connection_type || "ssh") === conn);
+  if (loc === "none") rows = rows.filter(t => !(Number(t.location_id) > 0));
+  else if (loc !== "") rows = rows.filter(t => Number(t.location_id) === Number(loc));
   if (q) {
     rows = rows.filter(t => {
       const hay = [
         t.name, t.host, t.web_url, t.tags, t.vendor, t.os_version,
-        kindLabel(t.kind), t.connection_type,
+        t.location_name, kindLabel(t.kind), t.connection_type,
       ].filter(Boolean).join(" ").toLowerCase();
       return hay.includes(q);
     });
@@ -3318,8 +3522,10 @@ window.clearTargetFilters = () => {
   $("#targetSearch").value = "";
   $("#targetTierFilter").value = "";
   $("#targetConnFilter").value = "";
+  $("#targetLocationFilter").value = "";
   targetsState.tier = "";
   targetsState.conn = "";
+  targetsState.location = "";
   targetsState.page = 1;
   renderTargetsPage();
 };
@@ -3395,14 +3601,100 @@ function renderTargetPagination(meta) {
   document.querySelector(".pagination-size").style.display = small ? "none" : "inline-flex";
 }
 
+function renderTargetGroupRow(group, cols, admin) {
+  const key = group.key;
+  const collapsed = isLocCollapsed(key);
+  const count = group.devices.length;
+  const desc = group.description ? `<span class="loc-desc">${esc(group.description)}</span>` : "";
+  const adm = admin && group.id > 0
+    ? `<div class="loc-group-actions">
+        <button type="button" class="ghost" onclick="event.stopPropagation();addTargetInLocation(${group.id})">+ Machine</button>
+        <button type="button" class="ghost" onclick="event.stopPropagation();editLocation(${group.id})">Edit</button>
+        <button type="button" class="ghost danger" onclick="event.stopPropagation();deleteLocation(${group.id})">Delete</button>
+      </div>`
+    : (admin ? `<div class="loc-group-actions"><button type="button" class="ghost" onclick="event.stopPropagation();addTargetInLocation(0)">+ Machine</button></div>` : "");
+  return `<tr class="loc-group-row${collapsed ? " collapsed" : ""}" data-loc-key="${esc(key)}" onclick="toggleLocationGroup('${key}')">
+    <td colspan="${cols}">
+      <div class="loc-group-inner">
+        <span class="loc-chevron" aria-hidden="true"></span>
+        <span class="loc-group-title">${esc(group.name)}${desc}</span>
+        <span class="loc-group-count">${fmtNum(count)} machine${count === 1 ? "" : "s"}</span>
+        ${adm}
+      </div>
+    </td>
+  </tr>`;
+}
+
+function renderTargetDeviceRowHtml(t, admin, hidden) {
+  const platform = kindLabel(t.kind);
+  const meta = [t.vendor, t.os_version].filter(Boolean).join(" · ");
+  const tip = esc(t.name + (meta ? " · " + meta : ""));
+  const key = locGroupKey(Number(t.location_id) || 0);
+  return `<tr class="loc-device-row${hidden ? " loc-hidden" : ""}" data-loc-parent="${esc(key)}">
+    <td data-col="name" title="${tip}"><span class="cell-ellipsis cell-name">${esc(t.name)}</span></td>
+    <td data-col="platform" title="${esc(platform)}"><span class="cell-ellipsis cell-platform">${esc(platform)}</span></td>
+    <td data-col="connection">${targetConnCell(t)}</td>
+    <td data-col="address">${targetAddressCell(t)}</td>
+    <td data-col="tier" class="cell-tier">${tierPill(t.tier)}</td>
+    <td data-col="tags" class="cell-tags" title="${esc(t.tags || "")}">${esc(t.tags) || "—"}</td>
+    <td data-col="actions" class="act-cell">${targetActBar(t, admin)}</td>
+  </tr>`;
+}
+
+function renderTargetsGrouped(filtered) {
+  const cols = visibleTargetsColCount();
+  const total = (cache.targets || []).length;
+  const admin = isAdmin();
+  syncTargetsViewToggle();
+  if (!filtered.length) {
+    renderTargetRowsEmpty(filtered.length);
+    if ($("#targetPagination")) $("#targetPagination").style.display = "none";
+    return;
+  }
+  const groups = buildTargetLocationGroups(filtered);
+  if (!groups.length) {
+    renderTargetRowsEmpty(0);
+    return;
+  }
+  const parts = [];
+  for (const g of groups) {
+    const hidden = isLocCollapsed(g.key);
+    parts.push(renderTargetGroupRow(g, cols, admin));
+    for (const t of g.devices) parts.push(renderTargetDeviceRowHtml(t, admin, hidden));
+  }
+  $("#targetRows").innerHTML = parts.join("");
+  applyTargetColumnVisibility();
+  if ($("#targetPagination")) $("#targetPagination").style.display = "none";
+  const locCount = groups.filter(g => g.id > 0).length;
+  const el = $("#targetStats");
+  if (el) {
+    el.innerHTML = `<span class="machines-stat"><b>${fmtNum(filtered.length)}</b> machine${filtered.length === 1 ? "" : "s"}</span>` +
+      (locCount ? `<span class="machines-stat"><b>${fmtNum(locCount)}</b> location${locCount === 1 ? "" : "s"}</span>` : "");
+  }
+}
+
+window.toggleLocationGroup = key => {
+  setLocCollapsed(key, !isLocCollapsed(key));
+  document.querySelectorAll(`#targetRows tr.loc-device-row[data-loc-parent="${key}"]`).forEach(tr => {
+    tr.classList.toggle("loc-hidden", isLocCollapsed(key));
+  });
+  const gr = document.querySelector(`#targetRows tr.loc-group-row[data-loc-key="${key}"]`);
+  if (gr) gr.classList.toggle("collapsed", isLocCollapsed(key));
+};
+
 function renderTargetsPage() {
   renderTargetSortHeaders();
+  syncTargetsViewToggle();
   const filtered = getFilteredSortedTargets();
   const total = (cache.targets || []).length;
   renderTargetStats(filtered);
   if (!filtered.length) {
     renderTargetRowsEmpty(filtered.length);
     renderTargetPagination({ total, filtered: 0, page: 1, totalPages: 1, start: 0, count: 0 });
+    return;
+  }
+  if (targetsState.view === "grouped") {
+    renderTargetsGrouped(filtered);
     return;
   }
   const pageSize = targetsState.pageSize;
@@ -3430,9 +3722,22 @@ function targetAddress(t) {
   return `<span class="muted" title="${esc(addr)}">${esc(addr)}</span>`;
 }
 
+async function loadLocations() {
+  try {
+    cache.locations = await api("/policy/locations") || [];
+  } catch {
+    cache.locations = [];
+  }
+  populateLocationFilterSelect();
+}
+
 async function loadTargets() {
   try {
-    cache.targets = await api("/policy/targets") || [];
+    const [targets] = await Promise.all([
+      api("/policy/targets"),
+      loadLocations(),
+    ]);
+    cache.targets = targets || [];
     renderTargetsPage();
   } catch (e) {
     $("#targetRows").innerHTML = `<tr><td colspan="${visibleTargetsColCount()}" class="muted" style="padding:24px;text-align:center">${esc(e.message)}</td></tr>`;
@@ -3661,12 +3966,20 @@ function resetTargetForm(closeModal) {
   $("#targetConn").value = "ssh";
   $("#targetPort").value = "22"; $("#targetTier").value = "2";
   $("#targetName").disabled = false;
+  populateTargetLocationSelect(0);
   applyConnectionTypeUI();
   if (closeModal !== false) closeTargetModal();
 }
+window.addTargetInLocation = locId => {
+  resetTargetForm(false);
+  fillTargetKindSelect($("#targetKind"), "cisco-ios", {includeAny: false, forPolicy: false});
+  populateTargetLocationSelect(locId > 0 ? locId : 0);
+  openTargetModal("Add machine");
+};
 $("#targetAddBtn").onclick = () => {
   resetTargetForm(false);
   fillTargetKindSelect($("#targetKind"), "cisco-ios", {includeAny: false, forPolicy: false});
+  populateTargetLocationSelect(0);
   openTargetModal("Add machine");
 };
 $("#targetCancelBtn").onclick = resetTargetForm;
@@ -3721,10 +4034,12 @@ window.editTarget = id => {
   $("#targetHost").value = t.host || ""; $("#targetPort").value = t.port || 22;
   $("#targetWebURL").value = t.web_url || "";
   $("#targetTier").value = t.tier; $("#targetTags").value = t.tags || "";
+  populateTargetLocationSelect(Number(t.location_id) || 0);
   applyConnectionTypeUI();
   openTargetModal("Edit machine");
 };
 $("#targetSaveBtn").onclick = async () => {
+  const locVal = $("#targetLocation")?.value || "";
   const body = {
     name: $("#targetName").value.trim(),
     kind: $("#targetKind").value,
@@ -3736,6 +4051,7 @@ $("#targetSaveBtn").onclick = async () => {
     web_url: $("#targetWebURL").value.trim(),
     tier: parseInt($("#targetTier").value,10),
     tags: $("#targetTags").value.trim(),
+    location_id: locVal ? parseInt(locVal, 10) : 0,
   };
   try {
     const id = $("#targetId").value;
@@ -3751,6 +4067,125 @@ window.deleteTarget = async id => {
   try { await api("/policy/targets/"+id, {method:"DELETE"}); toast("Deleted", "ok"); loadTargets(); }
   catch (e) { toast(e.message, "err"); }
 };
+
+// --- Locations (plants / sites) ---
+function openLocationModal() {
+  $("#locationModal")?.classList.add("show");
+  $("#locationModal")?.setAttribute("aria-hidden", "false");
+  renderLocationList();
+}
+function closeLocationModal() {
+  $("#locationModal")?.classList.remove("show");
+  $("#locationModal")?.setAttribute("aria-hidden", "true");
+  resetLocationForm();
+}
+function resetLocationForm() {
+  ["locationId","locationName","locationDesc"].forEach(id => { const el = $("#"+id); if (el) el.value = ""; });
+  const sort = $("#locationSort"); if (sort) sort.value = "0";
+  $("#locationFormTitle").textContent = "Add location";
+}
+function renderLocationList() {
+  const tbody = $("#locationListRows");
+  if (!tbody) return;
+  const locs = (cache.locations || []).slice().sort((a, b) =>
+    (a.sort_order - b.sort_order) || (a.name || "").localeCompare(b.name || ""));
+  const counts = {};
+  for (const t of cache.targets || []) {
+    const lid = Number(t.location_id) || 0;
+    if (lid > 0) counts[lid] = (counts[lid] || 0) + 1;
+  }
+  if (!locs.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">No locations yet — add Bhiwahi Plant, Manesar Plant, etc.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = locs.map(l => `
+    <tr>
+      <td><b>${esc(l.name)}</b></td>
+      <td class="muted">${esc(l.description) || "—"}</td>
+      <td>${l.sort_order}</td>
+      <td>${counts[l.id] || 0}</td>
+      <td class="actions">
+        <button type="button" class="ghost" onclick="editLocation(${l.id})">Edit</button>
+        <button type="button" class="ghost danger" onclick="deleteLocation(${l.id})">Delete</button>
+      </td>
+    </tr>`).join("");
+}
+window.editLocation = id => {
+  const l = (cache.locations || []).find(x => x.id === id);
+  if (!l) return;
+  $("#locationId").value = l.id;
+  $("#locationName").value = l.name;
+  $("#locationDesc").value = l.description || "";
+  $("#locationSort").value = l.sort_order ?? 0;
+  $("#locationFormTitle").textContent = "Edit location";
+};
+window.deleteLocation = async id => {
+  const l = (cache.locations || []).find(x => x.id === id);
+  if (!l || !confirm(`Delete location "${l.name}"? Machines in this location will become unassigned.`)) return;
+  try {
+    await api("/policy/locations/"+id, {method:"DELETE"});
+    toast("Location deleted", "ok");
+    await loadLocations();
+    await loadTargets();
+    renderLocationList();
+    resetLocationForm();
+  } catch (e) { toast(e.message, "err"); }
+};
+$("#locationManageBtn")?.addEventListener("click", openLocationModal);
+$("#locationModalClose")?.addEventListener("click", closeLocationModal);
+$("#locationFormCancel")?.addEventListener("click", resetLocationForm);
+$("#locationModal")?.addEventListener("click", e => { if (e.target === $("#locationModal")) closeLocationModal(); });
+$("#locationFormSave")?.onclick = async () => {
+  const body = {
+    name: $("#locationName").value.trim(),
+    description: $("#locationDesc").value.trim(),
+    sort_order: parseInt($("#locationSort").value, 10) || 0,
+  };
+  if (!body.name) { toast("Location name is required", "err"); return; }
+  try {
+    const id = $("#locationId").value;
+    if (id) {
+      body.id = +id;
+      await api("/policy/locations/"+id, {method:"PUT", body: JSON.stringify(body)});
+      toast("Location updated", "ok");
+    } else {
+      await api("/policy/locations", {method:"POST", body: JSON.stringify(body)});
+      toast("Location created", "ok");
+    }
+    await loadLocations();
+    populateTargetLocationSelect($("#targetLocation")?.value ? parseInt($("#targetLocation").value, 10) : 0);
+    renderLocationList();
+    resetLocationForm();
+    if (cache.targets.length) renderTargetsPage();
+  } catch (e) { toast(e.message, "err"); }
+};
+
+$("#targetLocationFilter")?.addEventListener("change", e => {
+  targetsState.location = e.target.value;
+  targetsState.page = 1;
+  renderTargetsPage();
+});
+$("#targetsViewToggle")?.addEventListener("click", e => {
+  const btn = e.target.closest("button[data-view]");
+  if (!btn) return;
+  targetsState.view = btn.dataset.view;
+  saveTargetsViewPref(targetsState.view);
+  targetsState.page = 1;
+  renderTargetsPage();
+});
+$("#targetExpandAll")?.addEventListener("click", () => {
+  locCollapsed = new Set();
+  saveLocCollapsePrefs(locCollapsed);
+  renderTargetsPage();
+});
+$("#targetCollapseAll")?.addEventListener("click", () => {
+  const filtered = getFilteredSortedTargets();
+  const keys = buildTargetLocationGroups(filtered).map(g => g.key);
+  locCollapsed = new Set(keys);
+  saveLocCollapsePrefs(locCollapsed);
+  renderTargetsPage();
+});
+syncTargetsViewToggle();
 
 // requestForTarget: shortcut from a target row in the user view.
 window.requestForTarget = id => {
@@ -5292,6 +5727,7 @@ test authentication authentication-profile PAM-AUTH username <user> password <pw
         set key {{SECRET}}
         set port {{TAC_PORT}}
         set authen-type pap
+        set authorization enable
     next
 end` },
       { title: "2. Create remote user group",
@@ -5308,11 +5744,13 @@ end` },
     edit "remote"
         set remote-auth enable
         set accprofile "super_admin"
+        set accprofile-override enable
         set vdom "root"
         set wildcard enable
         set remote-group "PAM-Admins"
     next
-end` },
+end
+! PAM returns memberof=PAM-Admins and admin_prof from the user's portal role.` },
       { title: "4. Test",
         code:
 `# From the FortiGate CLI — append MFA code to password if enrolled:

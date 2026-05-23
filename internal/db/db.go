@@ -84,6 +84,13 @@ func (d *DB) migrate() error {
 			disabled INTEGER NOT NULL DEFAULT 0,
 			role_locked INTEGER NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS locations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS targets (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT UNIQUE NOT NULL,
@@ -91,7 +98,8 @@ func (d *DB) migrate() error {
 			host TEXT NOT NULL,
 			port INTEGER NOT NULL DEFAULT 22,
 			tier INTEGER NOT NULL DEFAULT 2, -- 0=critical (approval required) ... 3=dev
-			tags TEXT NOT NULL DEFAULT ''
+			tags TEXT NOT NULL DEFAULT '',
+			location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS secrets (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -310,6 +318,7 @@ func (d *DB) migrate() error {
 		`ALTER TABLE users ADD COLUMN mfa_exempt INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE audit_events ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE policies ADD COLUMN linux_privilege TEXT NOT NULL DEFAULT 'none'`,
+		`ALTER TABLE targets ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`,
 	} {
 		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
 	}

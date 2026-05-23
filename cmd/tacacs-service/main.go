@@ -55,7 +55,8 @@ func main() {
 		Bus:              events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085")),
 		Auth:             authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
 		Vault:            v,
-		UnknownUserDefer: tacacs.ParseUnknownUserDefer(config.Get("PAM_TACACS_UNKNOWN_USER", "error")),
+		UnknownUserDefer:   tacacs.ParseUnknownUserDefer(config.Get("PAM_TACACS_UNKNOWN_USER", "error")),
+		FortinetMemberOf:   config.Get("PAM_TACACS_FORTINET_MEMBEROF", "PAM-Admins"),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
