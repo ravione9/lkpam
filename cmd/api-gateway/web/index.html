@@ -3914,7 +3914,7 @@ window.launchTarget = async id => {
     } catch (e) {
       const m = (e.message || "").toLowerCase();
       if (m.includes("approved") || m.includes("approval")) {
-        toast("Access not approved yet — submit Request access first", "err");
+        toast("Access approval expired or not yet granted — go to Requests tab and submit a new request", "err");
       } else {
         // Fallback: open directly if launch API fails (e.g. no policy yet)
         let url = t.web_url;
@@ -3949,7 +3949,7 @@ window.launchTarget = async id => {
       if (m.includes("privileged account") || m.includes("no account")) {
         toast("No Windows account linked — admin: go to Privileged Accounts and add one for this machine", "err");
       } else if (m.includes("approved") || m.includes("approval")) {
-        toast("Access not approved yet — submit Request access first", "err");
+        toast("Access approval expired or not yet granted — go to Requests tab and submit a new request", "err");
       } else if (m.includes("not rdp")) {
         toast("This target is not configured as RDP — check connection type", "err");
       } else {
@@ -4032,8 +4032,8 @@ function showSshLaunchModal(target) {
     try {
       await tryLaunch(portalPassword);
     } catch (e) {
-      if (e.message && e.message.includes("approved")) {
-        toast("Access not approved yet — submit Request access first", "err");
+      if (e.message && (e.message.includes("approved") || e.message.includes("approval"))) {
+        toast("Access approval expired or not yet granted — go to Requests tab and submit a new request", "err");
         return;
       }
       const looksLikeAuth = e.message && /password|credential|auth/i.test(e.message);
@@ -4739,7 +4739,16 @@ window.deletePolicy = async id => {
 };
 
 // --- Requests ---
-function reqStatusPill(status) {
+// Returns true when an approved request has passed its TTL window.
+function isApprovalExpired(r) {
+  if (r.status !== "approved" || !r.decided_at || !r.ttl_seconds) return false;
+  return Math.floor(Date.now() / 1000) >= r.decided_at + r.ttl_seconds;
+}
+function reqStatusPill(r) {
+  // Accept either a raw status string (legacy) or a full request object.
+  const status = (typeof r === "string") ? r : r.status;
+  const expired = (typeof r === "object") && isApprovalExpired(r);
+  if (expired) return `<span class="pill warn" title="Approval TTL expired — submit a new request">expired</span>`;
   const cls = status === "approved" ? "ok" : status === "denied" ? "err" : "warn";
   return `<span class="pill ${cls}">${esc(status)}</span>`;
 }
@@ -4773,7 +4782,7 @@ async function loadRequests() {
       $("#myReqRows").innerHTML = mine.map(r => `
         <tr>
           <td>${r.id}</td><td>${esc(r.target_name)}</td><td>${esc(r.reason)}</td>
-          <td>${reqStatusPill(r.status)}</td>
+          <td>${reqStatusPill(r)}</td>
           <td>${approvalProgressCell(r)}</td>
           <td>${r.ttl_seconds}s</td>
           <td class="muted">${fmtTime(r.created_at)}</td>
@@ -7382,7 +7391,12 @@ function showSshMfaPrompt(cachedPw, reason) {
         toast("Recorded SSH session opened in browser", "ok");
       }
     } catch (e) {
-      errEl.textContent = e.message || "Verification failed — try again.";
+      const msg = e.message || "";
+      if (msg.toLowerCase().includes("approved") || msg.toLowerCase().includes("approval")) {
+        errEl.textContent = "Your access approval has expired. Close this dialog, go to the Requests tab, and submit a new access request for this machine.";
+      } else {
+        errEl.textContent = msg || "Verification failed — try again.";
+      }
     } finally {
       $("#sshMfaVerifyBtn").disabled = false;
       $("#sshMfaVerifyBtn").textContent = "Verify & launch";
