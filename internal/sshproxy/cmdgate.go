@@ -132,8 +132,18 @@ func (g *cmdGate) noteOutput(p []byte) {
 		strings.Contains(trim, "passphrase:") ||
 		strings.Contains(trim, "secret:") {
 		g.ignoreLine = true
-		// Auto-inject once per enable (first Password: prompt only).
+		// Cisco/network device enable password prompt — auto-inject enable secret.
 		if g.expectEnablePass && !g.execPrivileged && g.credentialForEnable() != "" && !g.enableInjected {
+			g.injectEnableOnEnter = true
+			autoInject = true
+		}
+		// Linux sudo password prompt: "[sudo] password for user:" — auto-inject the
+		// portal password so the user never needs to know or type the PAM-provisioned
+		// account password (which for MFA users is password+OTP from login time).
+		// Reset enableInjected each time so retries after "Sorry, try again." also work.
+		if strings.Contains(trim, "[sudo]") && g.portalPassword != "" {
+			g.expectEnablePass = true
+			g.enableInjected = false
 			g.injectEnableOnEnter = true
 			autoInject = true
 		}
