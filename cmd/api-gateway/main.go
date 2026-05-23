@@ -838,13 +838,18 @@ func rewriteLocation(loc string, target *url.URL, sessionID, portalToken string)
 
 func rewriteHTML(body []byte, target *url.URL, sessionID, portalToken string) []byte {
 	pfx := "/web/" + sessionID
-	// Inject a <base> tag so relative links resolve through the proxy automatically.
-	// Do not embed portal JWT in base — static assets must not require ?token= on every URL.
-	baseTag := []byte(`<base href="` + pfx + `/">`)
-	if idx := bytes.Index(body, []byte("<head>")); idx >= 0 {
-		body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
-	} else if idx := bytes.Index(body, []byte("<HEAD>")); idx >= 0 {
-		body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
+	// Browsers honour only the FIRST <base> tag in document order. Some appliances
+	// (FortiOS uses <base href="/login/">) emit their own — injecting ours would
+	// stomp on it and make relative assets (styles.css, login.js…) 404. Only
+	// inject when the upstream HTML has no <base href="…"> of its own; the root
+	// path rewriter below will prefix any existing one with /web/{sessionID}/.
+	if !containsBaseHref(body) {
+		baseTag := []byte(`<base href="` + pfx + `/">`)
+		if idx := bytes.Index(body, []byte("<head>")); idx >= 0 {
+			body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
+		} else if idx := bytes.Index(body, []byte("<HEAD>")); idx >= 0 {
+			body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
+		}
 	}
 	// Rewrite absolute target host URLs.
 	for _, scheme := range []string{"https://", "http://"} {
@@ -853,6 +858,36 @@ func rewriteHTML(body []byte, target *url.URL, sessionID, portalToken string) []
 	}
 	// Root-absolute paths (/static/, /api/v2/, …) ignore <base> — prefix them.
 	return rewriteRootPaths(body, pfx, portalToken)
+}
+
+// containsBaseHref reports whether the HTML body already has a <base href="…"> tag.
+// Match is case-insensitive and only matches the <base> element (not <baseLayout>).
+func containsBaseHref(body []byte) bool {
+	lower := bytes.ToLower(body)
+	i := 0
+	for i < len(lower) {
+		idx := bytes.Index(lower[i:], []byte("<base"))
+		if idx < 0 {
+			return false
+		}
+		after := i + idx + len("<base")
+		if after >= len(lower) {
+			return false
+		}
+		c := lower[after]
+		// Reject <baseXYZ>; accept <base ...> or <base>.
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '/' || c == '>' {
+			end := bytes.IndexByte(lower[after:], '>')
+			if end < 0 {
+				return false
+			}
+			if bytes.Contains(lower[after:after+end], []byte("href=")) {
+				return true
+			}
+		}
+		i = after
+	}
+	return false
 }
 
 // rewriteRootPaths prefixes root-absolute URL paths inside HTML/JS/CSS so they

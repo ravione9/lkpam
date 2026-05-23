@@ -43,13 +43,47 @@ func dropUpstreamClient(sessionID string) {
 }
 
 // isPublicWebAsset is true for login-page static files that appliances serve
-// without credentials (Basic auth on these paths can cause 404 on PAN-OS).
+// without credentials. Basic auth on these can cause 404 on PAN-OS, and on
+// FortiOS the Authorization header routes the request to an API handler that
+// returns 404 for non-API URLs (breaking styles.css / login.js etc.).
 func isPublicWebAsset(path string) bool {
 	p := strings.ToLower(path)
-	return strings.HasPrefix(p, "/static/") ||
+	if q := strings.IndexByte(p, '?'); q >= 0 {
+		p = p[:q]
+	}
+	if strings.HasPrefix(p, "/static/") ||
 		strings.HasPrefix(p, "/favicon/") ||
 		strings.HasPrefix(p, "/fonts/") ||
-		strings.HasPrefix(p, "/images/")
+		strings.HasPrefix(p, "/images/") ||
+		strings.HasPrefix(p, "/img/") ||
+		strings.HasPrefix(p, "/css/") ||
+		strings.HasPrefix(p, "/js/") ||
+		strings.HasPrefix(p, "/assets/") {
+		return true
+	}
+	// Bare static-file extensions used by appliance login pages (FortiOS serves
+	// styles.css, legacy-main.css, login.js, legacy_theme_setup.js, site.webmanifest,
+	// favicon-*.png at non-/static/ paths).
+	switch {
+	case strings.HasSuffix(p, ".css"),
+		strings.HasSuffix(p, ".js"),
+		strings.HasSuffix(p, ".mjs"),
+		strings.HasSuffix(p, ".map"),
+		strings.HasSuffix(p, ".webmanifest"),
+		strings.HasSuffix(p, ".ico"),
+		strings.HasSuffix(p, ".png"),
+		strings.HasSuffix(p, ".jpg"),
+		strings.HasSuffix(p, ".jpeg"),
+		strings.HasSuffix(p, ".gif"),
+		strings.HasSuffix(p, ".svg"),
+		strings.HasSuffix(p, ".woff"),
+		strings.HasSuffix(p, ".woff2"),
+		strings.HasSuffix(p, ".ttf"),
+		strings.HasSuffix(p, ".otf"),
+		strings.HasSuffix(p, ".eot"):
+		return true
+	}
+	return false
 }
 
 // rewriteProxySetCookie adjusts device cookies for the PAM proxy path and strips

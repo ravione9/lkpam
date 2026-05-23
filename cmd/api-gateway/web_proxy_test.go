@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"net/http"
 	"net/url"
 	"strings"
@@ -61,6 +62,67 @@ func TestIsPublicWebAsset(t *testing.T) {
 	}
 	if isPublicWebAsset("/login") {
 		t.Fatal("login is not public")
+	}
+}
+
+func TestIsPublicWebAssetBareLoginAssets(t *testing.T) {
+	// FortiOS-style login pages reference these at the device root — they must
+	// be classified as public so the proxy does not attach Basic Auth (which
+	// causes FortiGate to 404 the request).
+	cases := map[string]bool{
+		"/styles.css":              true,
+		"/legacy-main.css":         true,
+		"/login.js":                true,
+		"/legacy_theme_setup.js":   true,
+		"/site.webmanifest":        true,
+		"/favicon.ico":             true,
+		"/some/deep/app.css?v=2":   true,
+		"/login":                   false,
+		"/api/v2/cmdb/system":      false,
+		"/php/utils/router.php":    false,
+	}
+	for p, want := range cases {
+		if got := isPublicWebAsset(p); got != want {
+			t.Errorf("isPublicWebAsset(%q)=%v want %v", p, got, want)
+		}
+	}
+}
+
+func TestRewriteHTMLPreservesUpstreamBase(t *testing.T) {
+	target, _ := url.Parse("https://192.168.24.253/")
+	upstream := []byte(`<!doctype html><html><head><base href="/login/"><link rel="stylesheet" href="styles.css"><script src="login.js"></script></head><body></body></html>`)
+	out := rewriteHTML(upstream, target, "web-123", "")
+	if !bytes.Contains(out, []byte(`<base href="/web/web-123/login/">`)) {
+		t.Fatalf("upstream <base href=\"/login/\"> should be prefixed with /web/web-123/; got: %s", out)
+	}
+	if c := bytes.Count(out, []byte("<base")); c != 1 {
+		t.Fatalf("expected exactly one <base> tag, got %d: %s", c, out)
+	}
+}
+
+func TestRewriteHTMLInjectsBaseWhenAbsent(t *testing.T) {
+	target, _ := url.Parse("https://example.com/")
+	upstream := []byte(`<!doctype html><html><head><link href="/static/a.css"></head><body></body></html>`)
+	out := rewriteHTML(upstream, target, "web-123", "")
+	if !bytes.Contains(out, []byte(`<base href="/web/web-123/">`)) {
+		t.Fatalf("expected injected base, got: %s", out)
+	}
+}
+
+func TestContainsBaseHref(t *testing.T) {
+	cases := map[string]bool{
+		`<html><head><base href="/login/"></head>`:  true,
+		`<HTML><HEAD><BASE HREF="/login/"></HEAD>`:  true,
+		`<head><base    href='/x'></head>`:          true,
+		`<head><baseLayout href="/x"></head>`:       false,
+		`<head><link href="/x"></head>`:             false,
+		`<head><base></head>`:                       false, // <base> without href is meaningless
+		`<head><base target="_blank"></head>`:       false,
+	}
+	for in, want := range cases {
+		if got := containsBaseHref([]byte(in)); got != want {
+			t.Errorf("containsBaseHref(%q)=%v want %v", in, got, want)
+		}
 	}
 }
 
