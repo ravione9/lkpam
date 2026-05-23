@@ -206,6 +206,15 @@ func (d *DB) migrate() error {
 			decided_at INTEGER NOT NULL,
 			UNIQUE(request_id, approver_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS birthright_assignments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+			granted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			granted_at INTEGER NOT NULL,
+			note TEXT NOT NULL DEFAULT '',
+			UNIQUE(user_id, target_id)
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, started_at)`,
 		`CREATE TABLE IF NOT EXISTS safes (

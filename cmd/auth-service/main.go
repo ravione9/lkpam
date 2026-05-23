@@ -996,6 +996,119 @@ func main() {
 		httpx.JSON(w, http.StatusOK, out)
 	})
 
+	// --- Birthright assignments ---
+	type birthrightRow struct {
+		ID         int64  `json:"id"`
+		UserID     int64  `json:"user_id"`
+		TargetID   int64  `json:"target_id"`
+		GrantedBy  int64  `json:"granted_by"`
+		GrantedAt  int64  `json:"granted_at"`
+		Note       string `json:"note"`
+		Username   string `json:"username,omitempty"`
+		TargetName string `json:"target_name,omitempty"`
+	}
+	// List all birthright assignments (admin).
+	mux.HandleFunc("GET /birthright", func(w http.ResponseWriter, r *http.Request) {
+		rows, err := d.QueryContext(r.Context(), `
+			SELECT ba.id, ba.user_id, ba.target_id, ba.granted_by, ba.granted_at, ba.note,
+			       u.username, t.name
+			FROM birthright_assignments ba
+			JOIN users u ON u.id = ba.user_id
+			JOIN targets t ON t.id = ba.target_id
+			ORDER BY ba.granted_at DESC`)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		defer rows.Close()
+		var out []birthrightRow
+		for rows.Next() {
+			var b birthrightRow
+			if err := rows.Scan(&b.ID, &b.UserID, &b.TargetID, &b.GrantedBy, &b.GrantedAt, &b.Note, &b.Username, &b.TargetName); err != nil {
+				continue
+			}
+			out = append(out, b)
+		}
+		if out == nil {
+			out = []birthrightRow{}
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	// List current user's birthright machines.
+	mux.HandleFunc("GET /birthright/mine", func(w http.ResponseWriter, r *http.Request) {
+		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		rows, err := d.QueryContext(r.Context(), `
+			SELECT ba.id, ba.user_id, ba.target_id, ba.granted_by, ba.granted_at, ba.note,
+			       u.username, t.name
+			FROM birthright_assignments ba
+			JOIN users u ON u.id = ba.user_id
+			JOIN targets t ON t.id = ba.target_id
+			WHERE ba.user_id = ?
+			ORDER BY t.name`, uid)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		defer rows.Close()
+		var out []birthrightRow
+		for rows.Next() {
+			var b birthrightRow
+			if err := rows.Scan(&b.ID, &b.UserID, &b.TargetID, &b.GrantedBy, &b.GrantedAt, &b.Note, &b.Username, &b.TargetName); err != nil {
+				continue
+			}
+			out = append(out, b)
+		}
+		if out == nil {
+			out = []birthrightRow{}
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+	// Assign birthright (admin only).
+	mux.HandleFunc("POST /birthright", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-PAM-Role") != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin only"))
+			return
+		}
+		callerUID, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		var req struct {
+			UserID   int64  `json:"user_id"`
+			TargetID int64  `json:"target_id"`
+			Note     string `json:"note"`
+		}
+		if err := httpx.ReadJSON(r, &req); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		if req.UserID == 0 || req.TargetID == 0 {
+			httpx.Error(w, http.StatusBadRequest, errors.New("user_id and target_id required"))
+			return
+		}
+		res, err := d.ExecContext(r.Context(), `
+			INSERT INTO birthright_assignments(user_id, target_id, granted_by, granted_at, note)
+			VALUES(?,?,?,?,?)
+			ON CONFLICT(user_id, target_id) DO UPDATE SET note=excluded.note, granted_by=excluded.granted_by, granted_at=excluded.granted_at`,
+			req.UserID, req.TargetID, callerUID, time.Now().Unix(), req.Note)
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		id, _ := res.LastInsertId()
+		httpx.JSON(w, http.StatusOK, map[string]any{"id": id})
+	})
+	// Remove birthright (admin only).
+	mux.HandleFunc("DELETE /birthright/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-PAM-Role") != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin only"))
+			return
+		}
+		bid, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if _, err := d.ExecContext(r.Context(), `DELETE FROM birthright_assignments WHERE id=?`, bid); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
 	mux.HandleFunc("POST /targets/{id}/ssh-launch", func(w http.ResponseWriter, r *http.Request) {
 		targetID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)

@@ -1136,6 +1136,7 @@
       <button data-tab="roles" data-admin><span class="ico">⬡</span> Roles</button>
       <button data-tab="policies" data-admin><span class="ico">△</span> Policies</button>
       <button data-tab="matrix" data-admin><span class="ico">⧉</span> Approval Matrix</button>
+      <button data-tab="birthright" data-admin><span class="ico">★</span> Birthright Access</button>
       <button data-tab="requests"><span class="ico">✦</span> Access Requests</button>
       <div class="section-title">Vault</div>
       <button data-tab="safes" data-admin><span class="ico">▣</span> Safes</button>
@@ -1602,6 +1603,47 @@
       </section>
 
       <!-- Access Requests -->
+      <!-- Birthright Access -->
+      <section class="card tab" id="tab-birthright" style="display:none">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:4px">
+          <div>
+            <h3 style="margin:0">Birthright Access</h3>
+            <p class="desc" style="margin:4px 0 0">Assign permanent machine access to users — no JIT approval needed. Birthright users bypass the approval requirement entirely.</p>
+          </div>
+          <button class="primary" id="birthrightAddBtn">+ Assign machine</button>
+        </div>
+
+        <!-- Add form (hidden by default) -->
+        <div class="form-panel" id="birthrightForm" style="display:none;margin-top:12px">
+          <h4 style="margin:0 0 10px">Assign Birthright Access</h4>
+          <div class="form-grid" style="grid-template-columns:1fr 1fr">
+            <label>User</label>
+            <select id="birthrightUser"><option value="">Select user…</option></select>
+            <label>Machine</label>
+            <select id="birthrightTarget"><option value="">Select machine…</option></select>
+            <label>Note <span class="muted">(optional)</span></label>
+            <input id="birthrightNote" placeholder="e.g. NOC engineer permanent access"/>
+          </div>
+          <div class="row" style="margin-top:12px;gap:8px">
+            <button class="primary" id="birthrightSaveBtn">Assign</button>
+            <button class="ghost" id="birthrightCancelBtn">Cancel</button>
+          </div>
+        </div>
+
+        <table style="margin-top:16px">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Machine</th>
+              <th>Note</th>
+              <th>Granted</th>
+              <th style="width:60px"></th>
+            </tr>
+          </thead>
+          <tbody id="birthrightRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </section>
+
       <section class="card tab" id="tab-requests" style="display:none">
         <div class="form-panel" id="reqForm">
           <h4>Request JIT Access</h4>
@@ -1619,6 +1661,16 @@
           <thead><tr><th>ID</th><th>Machine</th><th>Reason</th><th>Status</th><th>Approvals</th><th>TTL</th><th>Created</th></tr></thead>
           <tbody id="myReqRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
         </table>
+
+        <!-- My birthright machines (permanent access, no approval needed) -->
+        <div id="myBirthrightSection" style="margin-top:24px">
+          <h3 style="margin:0 0 4px">My Birthright Machines</h3>
+          <p class="desc" style="margin:0 0 8px">Machines where you have permanent access — no approval request needed.</p>
+          <table>
+            <thead><tr><th>Machine</th><th>Note</th><th>Granted</th></tr></thead>
+            <tbody id="myBirthrightRows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
 
         <div id="adminReqSection" data-admin>
           <h3 style="margin-top:24px">Awaiting Your Approval</h3>
@@ -2521,7 +2573,7 @@ function showTab(name) {
     dash: loadDashboard, targets: loadTargets, access: loadAccessProfile,
     users: loadUsers, groups: loadGroups, roles: loadRoles,
     secrets: loadSecrets, policies: loadPolicies, matrix: loadMatrix,
-    requests: loadRequests,
+    requests: loadRequests, birthright: loadBirthright,
     sessions: () => { loadSessions(); startSessionAutoRefresh(); }, audit: loadAudit, proxy: loadProxy, ca: loadCA,
     onboard: loadOnboard,
     safes: loadSafes, accounts: loadAccounts, checkouts: loadCheckouts,
@@ -4775,6 +4827,18 @@ async function loadRequests() {
       reqTargets.map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join("");
     if (cur) sel.value = cur;
 
+    // Load the user's birthright machines (permanent access, no approval needed).
+    try {
+      const myBr = await api("/auth/birthright/mine");
+      if (!(myBr||[]).length) {
+        $("#myBirthrightRows").innerHTML = `<tr><td colspan="3" class="muted">None assigned — contact your admin.</td></tr>`;
+      } else {
+        $("#myBirthrightRows").innerHTML = myBr.map(b =>
+          `<tr><td><strong>${esc(b.target_name)}</strong></td><td class="muted">${esc(b.note||"—")}</td><td class="muted">${fmtTime(b.granted_at)}</td></tr>`
+        ).join("");
+      }
+    } catch { /* non-fatal */ }
+
     const mine = await api("/approval/requests/mine");
     if (!(mine||[]).length) {
       $("#myReqRows").innerHTML = `<tr><td colspan="7" class="muted">No requests yet.</td></tr>`;
@@ -4817,6 +4881,71 @@ async function loadRequests() {
     if (isAdmin()) $("#reqRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`;
   }
 }
+// --- Birthright Access ---
+async function loadBirthright() {
+  try {
+    const [assignments, users, targets] = await Promise.all([
+      api("/auth/birthright"),
+      api("/auth/users"),
+      api("/policy/targets"),
+    ]);
+    // Populate form selects
+    const uSel = $("#birthrightUser");
+    const tSel = $("#birthrightTarget");
+    const curU = uSel.value, curT = tSel.value;
+    uSel.innerHTML = '<option value="">Select user…</option>' +
+      (users||[]).map(u => `<option value="${u.id}">${esc(u.username)} (${esc(u.role)})</option>`).join("");
+    tSel.innerHTML = '<option value="">Select machine…</option>' +
+      (targets||[]).map(t => `<option value="${t.id}">${esc(t.name)} (${esc(t.kind)})</option>`).join("");
+    if (curU) uSel.value = curU;
+    if (curT) tSel.value = curT;
+
+    if (!(assignments||[]).length) {
+      $("#birthrightRows").innerHTML = `<tr><td colspan="5" class="muted">No birthright assignments yet.</td></tr>`;
+      return;
+    }
+    $("#birthrightRows").innerHTML = assignments.map(b => `
+      <tr>
+        <td><strong>${esc(b.username)}</strong></td>
+        <td>${esc(b.target_name)}</td>
+        <td class="muted">${esc(b.note || "—")}</td>
+        <td class="muted">${fmtTime(b.granted_at)}</td>
+        <td style="text-align:right">
+          <button class="ghost danger" style="padding:3px 8px;font-size:12px" onclick="removeBirthright(${b.id})">Remove</button>
+        </td>
+      </tr>`).join("");
+  } catch (e) {
+    $("#birthrightRows").innerHTML = `<tr><td colspan="5" class="muted">${esc(e.message)}</td></tr>`;
+  }
+}
+window.removeBirthright = async (id) => {
+  if (!confirm("Remove this birthright assignment? The user will need JIT approval to access this machine.")) return;
+  try {
+    await api(`/auth/birthright/${id}`, {method:"DELETE"});
+    toast("Birthright removed", "ok");
+    loadBirthright();
+  } catch (e) { toast(e.message, "err"); }
+};
+$("#birthrightAddBtn").onclick = () => {
+  const f = $("#birthrightForm");
+  f.style.display = f.style.display === "none" ? "block" : "none";
+};
+$("#birthrightCancelBtn").onclick = () => { $("#birthrightForm").style.display = "none"; };
+$("#birthrightSaveBtn").onclick = async () => {
+  const uid = parseInt($("#birthrightUser").value, 10);
+  const tid = parseInt($("#birthrightTarget").value, 10);
+  const note = $("#birthrightNote").value.trim();
+  if (!uid) { toast("Select a user", "err"); return; }
+  if (!tid) { toast("Select a machine", "err"); return; }
+  try {
+    await api("/auth/birthright", {method:"POST", body: JSON.stringify({user_id: uid, target_id: tid, note})});
+    toast("Birthright access assigned", "ok");
+    $("#birthrightForm").style.display = "none";
+    $("#birthrightNote").value = "";
+    loadBirthright();
+  } catch (e) { toast(e.message, "err"); }
+};
+
 window.decide = async (id, approve) => {
   const comment = approve ? "" : (prompt("Reason for denial (optional):") || "");
   try {

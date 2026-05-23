@@ -7,6 +7,7 @@ package approval
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -370,7 +371,7 @@ type RequestView struct {
 // approval progress for the UI.
 func (s *Service) ListPendingEnriched(ctx context.Context) ([]RequestView, error) {
 	return s.queryEnriched(ctx, `
-		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds,
+		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds, ar.decided_at,
 		       u.username, t.name, t.kind, t.tier
 		FROM access_requests ar
 		JOIN users u ON u.id = ar.user_id
@@ -382,7 +383,7 @@ func (s *Service) ListPendingEnriched(ctx context.Context) ([]RequestView, error
 // ListMineEnriched returns all requests filed by a user (any status).
 func (s *Service) ListMineEnriched(ctx context.Context, userID int64) ([]RequestView, error) {
 	return s.queryEnriched(ctx, `
-		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds,
+		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds, ar.decided_at,
 		       u.username, t.name, t.kind, t.tier
 		FROM access_requests ar
 		JOIN users u ON u.id = ar.user_id
@@ -401,10 +402,14 @@ func (s *Service) queryEnriched(ctx context.Context, q string, args ...any) ([]R
 	var out []RequestView
 	for rows.Next() {
 		var v RequestView
+		var decidedAt sql.NullInt64
 		if err := rows.Scan(&v.ID, &v.UserID, &v.TargetID, &v.Reason, &v.Status,
-			&v.CreatedAt, &v.TTLSeconds,
+			&v.CreatedAt, &v.TTLSeconds, &decidedAt,
 			&v.Username, &v.TargetName, &v.TargetKind, &v.TargetTier); err != nil {
 			return nil, err
+		}
+		if decidedAt.Valid {
+			v.DecidedAt = &decidedAt.Int64
 		}
 		out = append(out, v)
 	}

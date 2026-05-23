@@ -124,12 +124,19 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		return nil, fmt.Errorf("%w: %v", ErrPolicyDenied, dec.Reasons)
 	}
 	if dec.RequireApproval {
-		ok, err := s.Approval.IsApproved(ctx, userID, targetID)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, ErrApprovalRequired
+		// Birthright users bypass JIT approval — they have permanent access.
+		var birthrightCount int
+		_ = s.DB.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM birthright_assignments WHERE user_id=? AND target_id=?`,
+			userID, targetID).Scan(&birthrightCount)
+		if birthrightCount == 0 {
+			ok, err := s.Approval.IsApproved(ctx, userID, targetID)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, ErrApprovalRequired
+			}
 		}
 	}
 	clipboardCopy, clipboardPaste := clipboardPermissions(dec)

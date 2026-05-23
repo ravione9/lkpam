@@ -335,6 +335,8 @@ func requiresAdmin(method, path string) bool {
 				// admin-only: reset another user's TOTP enrollment
 			case strings.HasPrefix(path, "/api/auth/users/") && strings.Contains(path, "/mfa"):
 				return false
+			case path == "/api/auth/birthright/mine":
+				return false
 			case strings.HasSuffix(path, "/checkout"):
 				return false
 			case strings.HasSuffix(path, "/rdp-launch"):
