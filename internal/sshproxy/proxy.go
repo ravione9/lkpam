@@ -363,12 +363,19 @@ func (s *Server) evaluateAccess(ctx context.Context, userID int64, primaryRole s
 		return dec, fmt.Errorf("denied by policy: %v", dec.Reasons)
 	}
 	if dec.RequireApproval && s.Approval != nil {
-		ok, err := s.Approval.IsApproved(ctx, userID, targetID)
-		if err != nil {
-			return dec, err
-		}
-		if !ok {
-			return dec, errors.New("approved access request required — open the portal, request access to this machine, and wait for approval")
+		// Birthright users bypass JIT approval — they have permanent machine access.
+		var birthrightCount int
+		_ = s.DB.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM birthright_assignments WHERE user_id=? AND target_id=?`,
+			userID, targetID).Scan(&birthrightCount)
+		if birthrightCount == 0 {
+			ok, err := s.Approval.IsApproved(ctx, userID, targetID)
+			if err != nil {
+				return dec, err
+			}
+			if !ok {
+				return dec, errors.New("approved access request required — open the portal, request access to this machine, and wait for approval")
+			}
 		}
 	}
 	// Check for an active sudo elevation grant from the JIT approval system.

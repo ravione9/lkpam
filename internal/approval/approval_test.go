@@ -69,7 +69,7 @@ func TestSelfApprovalBlocked(t *testing.T) {
 	svc := &Service{DB: d, Matrix: &MatrixService{DB: d}, GroupMembers: &fakeGroups{d}}
 
 	ctx := context.Background()
-	id, err := svc.Create(ctx, 1, 1, "need access", 0)
+	id, err := svc.Create(ctx, 1, 1, "need access", 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestSingleAdminApprovalNoMatrix(t *testing.T) {
 	svc := &Service{DB: d, Matrix: &MatrixService{DB: d}, GroupMembers: &fakeGroups{d}}
 	ctx := context.Background()
 
-	id, _ := svc.Create(ctx, 1, 1, "need access", 0)
+	id, _ := svc.Create(ctx, 1, 1, "need access", 0, false)
 	if _, err := svc.Decide(ctx, id, 2, "user", true, ""); err != ErrNotApprover {
 		t.Fatalf("expected ErrNotApprover for non-admin, got %v", err)
 	}
@@ -108,7 +108,7 @@ func TestMatrixTwoApprovalsRequired(t *testing.T) {
 	}
 	svc := &Service{DB: d, Matrix: matrix, GroupMembers: &fakeGroups{d}}
 
-	id, _ := svc.Create(ctx, 1, 2, "tier0 access", 0)
+	id, _ := svc.Create(ctx, 1, 2, "tier0 access", 0, false)
 	// admin (uid 2) is NOT in group 10 -> rejected.
 	if _, err := svc.Decide(ctx, id, 2, "admin", true, ""); err != ErrNotApprover {
 		t.Fatalf("expected ErrNotApprover for non-group admin, got %v", err)
@@ -155,7 +155,7 @@ func TestMatrixRequesterGroupRouting(t *testing.T) {
 	// Catch-all: any requester → any admin group not needed, approver group 10 only for sec.
 	svc := &Service{DB: d, Matrix: matrix, GroupMembers: &fakeGroups{d}}
 
-	id, _ := svc.Create(ctx, 1, 2, "tier0 from netsec user", 0)
+	id, _ := svc.Create(ctx, 1, 2, "tier0 from netsec user", 0, false)
 	// admin uid 2 is not in Security group 10.
 	if _, err := svc.Decide(ctx, id, 2, "admin", true, ""); err != ErrNotApprover {
 		t.Fatalf("expected ErrNotApprover for non-security admin, got %v", err)
@@ -179,7 +179,7 @@ func TestMatrixDenialFinalizes(t *testing.T) {
 	})
 	svc := &Service{DB: d, Matrix: matrix, GroupMembers: &fakeGroups{d}}
 
-	id, _ := svc.Create(ctx, 1, 2, "tier0", 0)
+	id, _ := svc.Create(ctx, 1, 2, "tier0", 0, false)
 	res, err := svc.Decide(ctx, id, 3, "admin", false, "looks risky")
 	if err != nil {
 		t.Fatalf("deny: %v", err)
