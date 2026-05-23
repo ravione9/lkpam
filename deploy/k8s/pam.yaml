@@ -22,6 +22,7 @@ stringData:
   PAM_JWT_SECRET: "change-me-in-real-deployment"
   PAM_MASTER_KEY: ""                    # base64 32-byte vault key; leave blank to auto-create on first boot
   PAM_TACACS_SECRET: "change-me"        # TACACS+ shared secret
+  PAM_RADIUS_SECRET: "change-me"        # RADIUS global fallback secret (per-NAS secrets live in radius_clients)
   PAM_ADMIN_PASS: "admin"               # bootstrap admin password (first run only)
 ---
 # --- Shared config ---
@@ -407,6 +408,55 @@ spec:
     - name: ssh
       port: 2222
       targetPort: 2222
+---
+# =========================================================================
+# radius-service (RADIUS AAA for devices that don't speak TACACS+:
+# HP/Aruba, MikroTik, F5, Palo Alto, Juniper, Huawei, VPN/WLC.)
+# Auth on UDP 1812, accounting on UDP 1813. Exposed externally via LoadBalancer.
+# =========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: radius, namespace: pam }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: radius } }
+  template:
+    metadata: { labels: { app: radius } }
+    spec:
+      containers:
+        - name: radius
+          image: pam-platform:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/app/radius-service"]
+          ports:
+            - { name: radius-auth, containerPort: 1812, protocol: UDP }
+            - { name: radius-acct, containerPort: 1813, protocol: UDP }
+          envFrom:
+            - secretRef: { name: pam-secrets }
+            - configMapRef: { name: pam-config }
+          env:
+            - { name: PAM_RADIUS_AUTH_ADDR, value: ":1812" }
+            - { name: PAM_RADIUS_ACCT_ADDR, value: ":1813" }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            tcpSocket: { port: 8081 } # auth-service health (radius itself is UDP-only)
+            periodSeconds: 30
+            initialDelaySeconds: 5
+            failureThreshold: 60
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: pam-data } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: radius, namespace: pam }
+spec:
+  type: LoadBalancer
+  selector: { app: radius }
+  ports:
+    - { name: radius-auth, port: 1812, targetPort: 1812, protocol: UDP }
+    - { name: radius-acct, port: 1813, targetPort: 1813, protocol: UDP }
 ---
 # =========================================================================
 # tacacs-service (TACACS+ AAA for network devices — listens on port 49 and is

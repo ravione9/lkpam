@@ -296,6 +296,20 @@ func (d *DB) migrate() error {
 			reason TEXT NOT NULL DEFAULT '',
 			acknowledged_at INTEGER
 		)`,
+		// RADIUS NAS clients. PAM_RADIUS_SECRET acts as the global default; rows
+		// here override it per NAS-IP. CIDR rows (e.g. "10.20.30.0/24") let you
+		// onboard a whole VLAN of access-switches under one secret.
+		`CREATE TABLE IF NOT EXISTS radius_clients (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL DEFAULT '',
+			nas_ip TEXT NOT NULL,          -- exact IP or CIDR (e.g. 10.0.0.0/24)
+			secret TEXT NOT NULL,          -- shared secret (cleartext for now; vault when HSM lands)
+			require_message_auth INTEGER NOT NULL DEFAULT 1,
+			vendor TEXT NOT NULL DEFAULT '',  -- optional override of target kind detection
+			disabled INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			UNIQUE(nas_ip)
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_groups_group ON user_groups(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_approval_decisions_req ON approval_decisions(request_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_approval_matrix_target ON approval_matrix(target_kind, tier_min, tier_max)`,

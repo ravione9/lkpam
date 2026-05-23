@@ -27,6 +27,16 @@ UI.
                     └─────────────┬─────────────┘
                                   ▼
                       target devices / servers
+
+  ┌───────────────────────┐         ┌─────────────────────────────┐
+  │  tacacs-service :49   │         │  radius-service             │
+  │  (Cisco / Arista /    │         │  :1812 auth  :1813 acct     │
+  │   NX-OS / FortiGate)  │         │  (HP / Aruba / MikroTik /   │
+  │                       │         │   F5 / Palo Alto / Juniper) │
+  └──────────┬────────────┘         └──────────┬──────────────────┘
+             ▼                                 ▼
+       network devices                    network devices
+       (TCP/49 AAA)                       (UDP/1812 AAA, UDP/1813 acct)
 ```
 
 * **auth-service** — Argon2id passwords, HS256 JWTs, MFA stub.
@@ -38,6 +48,13 @@ UI.
 * **audit-service** — SQLite + JSONL append-only audit log; SIEM-ready.
 * **ssh-proxy** — SSH server that accepts users, authorizes via policy,
   connects downstream with a cert, and records the session.
+* **tacacs-service** — RFC 8907 TACACS+ AAA for Cisco / Arista / FortiGate.
+* **radius-service** — RFC 2865/2866 RADIUS AAA for devices that don't speak
+  TACACS+: HP / Aruba switches, MikroTik, F5, Palo Alto admin login, Juniper,
+  Huawei, VPN concentrators, WLCs. Per-NAS shared secrets live in
+  `radius_clients`; PAP / CHAP supported; vendor reply attributes (Cisco AV-pair,
+  Juniper local-user-name, Fortinet-Group-Name, MikroTik-Group, etc.) are
+  emitted automatically based on the target's `kind`.
 * **api-gateway** — externally facing entry point with embedded admin UI.
 
 ## Quick start (local)
@@ -68,6 +85,43 @@ make docker-up                                      # build + start
 ```
 
 See [deploy/docker/README.md](deploy/docker/README.md) for full Docker deployment docs.
+
+### Pointing network devices at the PAM RADIUS server
+
+The RADIUS service exposes UDP/1812 (auth) and UDP/1813 (accounting). Add the
+NAS to the `radius_clients` table (or rely on the global `PAM_RADIUS_SECRET`),
+then configure the device. Examples:
+
+```
+! HP / Aruba ProCurve
+radius-server host 10.20.30.40 key STRONG-SECRET
+aaa authentication ssh login radius local
+aaa accounting commands start-stop radius
+
+! Cisco IOS (RADIUS path — use TACACS+ when available)
+radius server PAM
+ address ipv4 10.20.30.40 auth-port 1812 acct-port 1813
+ key STRONG-SECRET
+aaa authentication login default group radius local
+aaa authorization exec default group radius local
+aaa accounting exec default start-stop group radius
+
+# MikroTik RouterOS
+/radius add service=login address=10.20.30.40 secret=STRONG-SECRET
+/user aaa set use-radius=yes default-group=read
+
+# Palo Alto: Device > Server Profiles > RADIUS (1812, secret),
+#            then Authentication Profile, then Administrators.
+```
+
+Per-device shared secrets live in the `radius_clients` table:
+
+```sql
+INSERT INTO radius_clients(name,nas_ip,secret,require_message_auth,vendor,disabled,created_at)
+VALUES('core-sw-01','10.20.30.41','STRONG-PER-DEVICE-KEY',1,'aruba',0,strftime('%s','now'));
+```
+
+CIDR rows (`10.20.30.0/24`) onboard a whole VLAN under one secret.
 
 ## Trying it out
 
@@ -130,6 +184,12 @@ All services read environment variables (see `internal/config`):
 | `PAM_SSH_PROXY_ADDR` | `:2222` | SSH proxy listen addr |
 | `PAM_GATEWAY_ADDR` | `:8080` | API gateway listen addr |
 | `PAM_REC_DIR` | `./recordings` | where to write session recordings |
+| `PAM_TACACS_ADDR` | `:49` | TACACS+ listen addr |
+| `PAM_TACACS_SECRET` | `change-me` | TACACS+ shared secret |
+| `PAM_RADIUS_AUTH_ADDR` | `:1812` | RADIUS authentication listen addr |
+| `PAM_RADIUS_ACCT_ADDR` | `:1813` | RADIUS accounting listen addr |
+| `PAM_RADIUS_SECRET` | `change-me` | RADIUS global fallback shared secret |
+| `PAM_RADIUS_UNKNOWN_USER` | `reject` | `reject` or `drop` for unknown users |
 
 ## Production hardening
 
@@ -152,8 +212,14 @@ Before this becomes safe to run in production:
    line-by-line, call `/cmd-check`, optionally inject a block).
 8. **Replace the bearer-token / `localStorage` UI auth flow** with
    HttpOnly secure cookies + CSRF tokens.
-9. **Add a TACACS+/RADIUS service** (`cmd/tacacs-service`) that consults the
-   policy engine — drive your switches' AAA at it.
+9. ~~Add a TACACS+/RADIUS service~~ — done. `cmd/tacacs-service` (port 49)
+   and `cmd/radius-service` (UDP 1812/1813) both consult the policy engine
+   and auth-service. Per-NAS shared secrets for RADIUS live in the
+   `radius_clients` table; the `PAM_RADIUS_SECRET` env var is the global
+   fallback for any NAS without a per-device row. **Production todo:**
+   layer RadSec (RFC 6614) on top of the RADIUS UDP listener — wrap the
+   conn in TLS — and run TACACS+ behind a TLS-terminating proxy for
+   transport encryption (TACACS+ obfuscation isn't encryption).
 10. **Enable mTLS between every internal service** (Istio or manual certs).
 
 ## Running unit tests

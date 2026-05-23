@@ -1,7 +1,7 @@
-.PHONY: all build clean test run-auth run-vault run-policy run-approval run-audit run-ssh-proxy run-gateway tidy \
+.PHONY: all build clean test run-auth run-vault run-policy run-approval run-audit run-ssh-proxy run-gateway run-tacacs run-radius tidy \
        docker-build docker-up docker-down docker-logs docker-ps docker-reset
 
-SERVICES := auth-service vault-service policy-service approval-service audit-service ssh-proxy rdp-proxy api-gateway tacacs-service pam-cli
+SERVICES := auth-service vault-service policy-service approval-service audit-service ssh-proxy rdp-proxy api-gateway tacacs-service radius-service pam-cli
 BIN := bin
 
 all: build
@@ -47,6 +47,9 @@ run-gateway:
 
 run-tacacs:
 	PAM_DB=./data/pam.db go run ./cmd/tacacs-service
+
+run-radius:
+	PAM_DB=./data/pam.db go run ./cmd/radius-service
 
 COMPOSE := docker compose -f deploy/docker/docker-compose.yml
 

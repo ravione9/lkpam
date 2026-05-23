@@ -10,6 +10,7 @@
 # Admin UI:  http://localhost:8080  (default admin / admin)
 # SSH proxy: ssh -p 2222 "user@#target-id@localhost"
 # TACACS+:  host port 49 (PAM_TACACS_PORT) — shared secret PAM_TACACS_SECRET
+# RADIUS:   host ports 1812/udp (auth) + 1813/udp (acct) — shared secret PAM_RADIUS_SECRET
 
 name: pam
 
@@ -207,6 +208,38 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
       <<: *http-health
+
+  # RADIUS AAA for network devices that don't speak TACACS+: HP/Aruba switches,
+  # MikroTik, F5, Palo Alto admin, Juniper, Huawei, VPN concentrators, WLCs.
+  # Per-NAS shared secrets live in the radius_clients table; PAM_RADIUS_SECRET
+  # is the global fallback for any NAS without a per-device row.
+  radius:
+    <<: *common
+    container_name: pam-radius
+    command: ["/app/radius-service"]
+    environment:
+      <<: *common-env
+      PAM_RADIUS_AUTH_ADDR: ":1812"
+      PAM_RADIUS_ACCT_ADDR: ":1813"
+      PAM_AUTH_URL: "http://auth:8081"
+      # 'reject' (default) returns Access-Reject for users not in the portal,
+      # stopping the NAS method list. Set to 'drop' for silent fallthrough so
+      # the NAS tries its next method (e.g. 'group radius local').
+      PAM_RADIUS_UNKNOWN_USER: "${PAM_RADIUS_UNKNOWN_USER:-reject}"
+    depends_on:
+      auth:
+        condition: service_healthy
+      policy:
+        condition: service_healthy
+    ports:
+      - "${PAM_RADIUS_AUTH_PORT:-1812}:1812/udp"
+      - "${PAM_RADIUS_ACCT_PORT:-1813}:1813/udp"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -uz 127.0.0.1 1812 || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   # TACACS+ AAA for network devices (Cisco IOS, etc.)
   tacacs:

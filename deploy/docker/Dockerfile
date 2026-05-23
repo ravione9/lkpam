@@ -9,7 +9,7 @@ RUN go mod download
 COPY . .
 RUN go mod tidy
 
-ARG SERVICES="auth-service vault-service policy-service approval-service audit-service ssh-proxy rdp-proxy api-gateway tacacs-service pam-cli"
+ARG SERVICES="auth-service vault-service policy-service approval-service audit-service ssh-proxy rdp-proxy api-gateway tacacs-service radius-service pam-cli"
 RUN mkdir -p /out && \
     for svc in $SERVICES; do \
         echo "building $svc"; \
@@ -32,7 +32,7 @@ RUN chmod +x /entrypoint.sh \
 
 VOLUME ["/data", "/recordings"]
 
-EXPOSE 8080 8081 8082 8083 8084 8085 8086 2222 49
+EXPOSE 8080 8081 8082 8083 8084 8085 8086 2222 49 1812/udp 1813/udp
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/app/api-gateway"]
