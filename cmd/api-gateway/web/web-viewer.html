@@ -39,7 +39,13 @@
   </div>
 </header>
 <div id="credBar" class="cred-box" style="margin:0 16px 6px"></div>
-<iframe id="frame" allow="fullscreen" allowfullscreen></iframe>
+<!-- sandbox prevents the embedded device GUI (FortiOS ships a top.location
+     frame-buster) from navigating the viewer tab and triggering pagehide.
+     allow-same-origin is required so the bridge cookie reaches /api/* and
+     /static/* requests issued by the appliance JS. -->
+<iframe id="frame"
+        sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
+        allow="fullscreen" allowfullscreen></iframe>
 <div id="no-frame" style="display:none">
   <p id="noFrameMsg">The web console could not be loaded in the proxy. This happens with applications that block embedding. Use the <b>Open directly</b> button above to open the target in a new tab — your credentials have been shown in the panel below.</p>
   <button class="btn ghost" id="openDirectBtn2">Open in new tab</button>
@@ -174,11 +180,13 @@
     setTimeout(() => window.close(), 1500);
   };
 
-  window.addEventListener("pagehide", () => {
-    endWebSession("Viewer closed");
-    document.cookie = "pam_web_sid=; Path=/; Max-Age=0";
-    document.cookie = "pam_web_tok=; Path=/; Max-Age=0";
-  });
+  // We intentionally do NOT end the session on pagehide.
+  // pagehide also fires when the appliance GUI inside the iframe navigates the
+  // tab (FortiOS-style frame-busters, target=_top forms, meta-refreshes) —
+  // ending the session there would orphan every asset request on the page
+  // we just navigated to. The session is auto-superseded on the next launch
+  // and expires via vault TTL; users can still explicitly End it with the
+  // button above.
 </script>
 </body>
 </html>
