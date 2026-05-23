@@ -4135,7 +4135,8 @@ $("#locationManageBtn")?.addEventListener("click", openLocationModal);
 $("#locationModalClose")?.addEventListener("click", closeLocationModal);
 $("#locationFormCancel")?.addEventListener("click", resetLocationForm);
 $("#locationModal")?.addEventListener("click", e => { if (e.target === $("#locationModal")) closeLocationModal(); });
-$("#locationFormSave")?.onclick = async () => {
+const locationFormSave = $("#locationFormSave");
+if (locationFormSave) locationFormSave.onclick = async () => {
   const body = {
     name: $("#locationName").value.trim(),
     description: $("#locationDesc").value.trim(),
