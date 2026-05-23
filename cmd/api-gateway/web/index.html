@@ -1651,7 +1651,15 @@
           <div class="row" style="flex-wrap:wrap;gap:8px">
             <select id="reqTarget"><option value="">Select machine…</option></select>
             <input id="reqReason" placeholder="business reason" style="flex:1;min-width:200px"/>
-            <input id="reqTTL" type="number" value="1800" title="TTL seconds" style="width:100px"/>
+            <select id="reqTTL" title="Access duration" style="width:130px">
+              <option value="3600">1 hour</option>
+              <option value="14400">4 hours</option>
+              <option value="28800" selected>8 hours</option>
+              <option value="43200">12 hours</option>
+              <option value="86400">24 hours</option>
+              <option value="259200">3 days</option>
+              <option value="604800">7 days</option>
+            </select>
             <label style="display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:13px;cursor:pointer" title="Request temporary sudo/root access on Linux machines">
               <input type="checkbox" id="reqSudo" style="width:auto;margin:0"/>
               <span>Request sudo access</span>
@@ -1659,7 +1667,7 @@
             <button class="primary" id="reqSubmitBtn">Submit request</button>
           </div>
           <p class="desc" style="margin:6px 0 0;font-size:12px">
-            Check <b>Request sudo access</b> if you need temporary root/sudo on a Linux machine. The admin must grant it when approving.
+            Check <b>Request sudo access</b> if you need temporary root/sudo on a Linux machine. Sudo is automatically granted when the admin approves.
           </p>
         </div>
 

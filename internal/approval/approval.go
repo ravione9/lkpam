@@ -347,12 +347,16 @@ func (s *Service) IsApproved(ctx context.Context, userID, targetID int64) (bool,
 		SELECT id, decided_at, ttl_seconds FROM access_requests
 		WHERE user_id = ? AND target_id = ? AND status = 'approved'
 		ORDER BY decided_at DESC LIMIT 1`, userID, targetID)
-	var id, decided int64
-	var ttl int
+	var id int64
+	var decided, ttl sql.NullInt64
 	if err := row.Scan(&id, &decided, &ttl); err != nil {
 		return false, nil
 	}
-	return time.Now().Unix() < decided+int64(ttl), nil
+	// NULL decided_at or NULL ttl → treat as never-expired (permanent grant).
+	if !decided.Valid || !ttl.Valid {
+		return true, nil
+	}
+	return time.Now().Unix() < decided.Int64+ttl.Int64, nil
 }
 
 // ListPending lists open requests.
@@ -446,7 +450,9 @@ func (s *Service) ListApprovedEnriched(ctx context.Context) ([]RequestView, erro
 		JOIN users u ON u.id = ar.user_id
 		JOIN targets t ON t.id = ar.target_id
 		WHERE ar.status = 'approved'
-		  AND (ar.decided_at IS NULL OR ar.decided_at + ar.ttl_seconds > strftime('%s','now'))
+		  AND (ar.decided_at IS NULL
+		       OR ar.ttl_seconds IS NULL
+		       OR ar.decided_at + ar.ttl_seconds > strftime('%s','now'))
 		ORDER BY ar.decided_at DESC`)
 }
 
