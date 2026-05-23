@@ -217,10 +217,11 @@ func gated(next http.Handler, authBase *url.URL) http.Handler {
 func webGated(next http.Handler, authBase, vaultBase *url.URL) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sessionID := webSessionIDFromPath(r.URL.Path)
-		// FortiGate and similar SPAs load dozens of /static/* assets right after the
-		// login HTML. Those requests often omit ?token= and may not include cookies
-		// inside the iframe yet — an active vault session is enough to proxy them.
-		if sessionID != "" && webSessionActive(r.Context(), vaultBase, sessionID) {
+		// Recorded web-console traffic: session IDs are unguessable (web-<ns>-<target>).
+		// Do not return 401 for /static/* inside the iframe — that breaks FortiGate and
+		// similar SPAs (CSS/JS get text/plain errors). Vault lookup in webConsoleProxy
+		// still gates expired/invalid sessions (404).
+		if sessionID != "" && strings.HasPrefix(sessionID, "web-") {
 			if tok, err := httpx.BearerTokenFromRequest(r); err == nil {
 				setCookie := r.URL.Query().Get("token") != "" || r.Header.Get("Authorization") != ""
 				serveAuthed(w, r, next, authBase, tok, sessionID, setCookie)
@@ -516,11 +517,18 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	}
 	defer upResp.Body.Close()
 
+	portalTok := strings.TrimSpace(r.URL.Query().Get("token"))
+	if portalTok == "" {
+		if c, err := r.Cookie("pam_web_tok"); err == nil {
+			portalTok = strings.TrimSpace(c.Value)
+		}
+	}
+
 	// Copy response headers, rewriting Location redirects to go through proxy.
 	for k, vs := range upResp.Header {
 		if strings.EqualFold(k, "Location") {
 			for _, v := range vs {
-				v = rewriteLocation(v, targetURL, sessionID)
+				v = rewriteLocation(v, targetURL, sessionID, portalTok)
 				w.Header().Add(k, v)
 			}
 			continue
@@ -539,14 +547,43 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	ct := upResp.Header.Get("Content-Type")
 	if shouldRewriteWebBody(ct) {
 		body, _ := io.ReadAll(upResp.Body)
-		body = rewriteHTML(body, targetURL, sessionID)
+		body = rewriteHTML(body, targetURL, sessionID, portalTok)
+		if m := mimeForWebPath(rest); m != "" {
+			w.Header().Set("Content-Type", m)
+		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(upResp.StatusCode)
 		w.Write(body)
 	} else {
+		if m := mimeForWebPath(rest); mimeNeedsFix(ct) && m != "" {
+			w.Header().Set("Content-Type", m)
+		}
 		w.WriteHeader(upResp.StatusCode)
 		io.Copy(w, upResp.Body)
 	}
+}
+
+func mimeNeedsFix(ct string) bool {
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	return ct == "" || ct == "text/plain" || ct == "application/octet-stream"
+}
+
+func pamTokenSuffix(tok string) string {
+	if tok == "" {
+		return ""
+	}
+	return "token=" + url.QueryEscape(tok)
+}
+
+func appendPortalToken(uri, tok string) string {
+	if tok == "" {
+		return uri
+	}
+	s := pamTokenSuffix(tok)
+	if strings.Contains(uri, "?") {
+		return uri + "&" + s
+	}
+	return uri + "?" + s
 }
 
 func shouldRewriteWebBody(ct string) bool {
@@ -604,6 +641,17 @@ func webBridgeMiddleware(inner http.Handler, webProxy http.Handler) http.Handler
 		bridged := r.Clone(r.Context())
 		u := *r.URL
 		u.Path = "/web/" + sid + r.URL.Path
+		if u.Query().Get("token") == "" {
+			if ref := r.Header.Get("Referer"); ref != "" {
+				if ru, err := url.Parse(ref); err == nil {
+					if t := strings.TrimSpace(ru.Query().Get("token")); t != "" {
+						q := u.Query()
+						q.Set("token", t)
+						u.RawQuery = q.Encode()
+					}
+				}
+			}
+		}
 		bridged.URL = &u
 		webProxy.ServeHTTP(w, bridged)
 	})
@@ -668,24 +716,28 @@ func isReservedPAMPath(path string) bool {
 	return false
 }
 
-func rewriteLocation(loc string, target *url.URL, sessionID string) string {
+func rewriteLocation(loc string, target *url.URL, sessionID, portalToken string) string {
 	if strings.HasPrefix(loc, "http://"+target.Host) ||
 		strings.HasPrefix(loc, "https://"+target.Host) {
 		u, err := url.Parse(loc)
 		if err == nil {
-			return "/web/" + sessionID + u.RequestURI()
+			return appendPortalToken("/web/"+sessionID+u.RequestURI(), portalToken)
 		}
 	}
 	if strings.HasPrefix(loc, "/") {
-		return "/web/" + sessionID + loc
+		return appendPortalToken("/web/"+sessionID+loc, portalToken)
 	}
 	return loc
 }
 
-func rewriteHTML(body []byte, target *url.URL, sessionID string) []byte {
+func rewriteHTML(body []byte, target *url.URL, sessionID, portalToken string) []byte {
 	pfx := "/web/" + sessionID
+	tokQ := ""
+	if portalToken != "" {
+		tokQ = "?" + pamTokenSuffix(portalToken)
+	}
 	// Inject a <base> tag so relative links resolve through the proxy automatically.
-	baseTag := []byte(`<base href="` + pfx + `/">`)
+	baseTag := []byte(`<base href="` + pfx + `/` + tokQ + `">`)
 	if idx := bytes.Index(body, []byte("<head>")); idx >= 0 {
 		body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
 	} else if idx := bytes.Index(body, []byte("<HEAD>")); idx >= 0 {
@@ -697,12 +749,12 @@ func rewriteHTML(body []byte, target *url.URL, sessionID string) []byte {
 		body = bytes.ReplaceAll(body, old, []byte(pfx))
 	}
 	// Root-absolute paths (/static/, /api/v2/, …) ignore <base> — prefix them.
-	return rewriteRootPaths(body, pfx)
+	return rewriteRootPaths(body, pfx, portalToken)
 }
 
 // rewriteRootPaths prefixes root-absolute URL paths inside HTML/JS/CSS so they
 // route through /web/{sessionID}/ instead of the PAM gateway root.
-func rewriteRootPaths(body []byte, pfx string) []byte {
+func rewriteRootPaths(body []byte, pfx, portalToken string) []byte {
 	if len(pfx) == 0 {
 		return body
 	}
@@ -728,13 +780,13 @@ func rewriteRootPaths(body []byte, pfx string) []byte {
 	// HTML attributes: href="/…", src="/…", action="/…" (skip protocol-relative //).
 	for _, attr := range []string{"href=", "src=", "action="} {
 		for _, q := range []byte{'"', '\''} {
-			body = rewriteRootAttr(body, attr, q, pfx)
+			body = rewriteRootAttr(body, attr, q, pfx, portalToken)
 		}
 	}
 	return body
 }
 
-func rewriteRootAttr(body []byte, attr string, quote byte, pfx string) []byte {
+func rewriteRootAttr(body []byte, attr string, quote byte, pfx, portalToken string) []byte {
 	needle := append(append([]byte(attr), quote), '/')
 	repl := append(append([]byte(attr), quote), []byte(pfx)...)
 	repl = append(repl, '/')
@@ -763,7 +815,24 @@ func rewriteRootAttr(body []byte, attr string, quote byte, pfx string) []byte {
 		}
 		out.Write(body[i:idx])
 		out.Write(repl)
-		i = absStart
+		j := absStart
+		for j < len(body) && body[j] != quote && body[j] != '?' {
+			j++
+		}
+		out.Write(body[absStart:j])
+		if portalToken != "" && j > absStart && (j >= len(body) || body[j] == quote) {
+			sep := "?"
+			if bytes.Contains(body[absStart:j], []byte("?")) {
+				sep = "&"
+			}
+			out.Write([]byte(sep + pamTokenSuffix(portalToken)))
+		}
+		if j < len(body) && body[j] == quote {
+			out.Write(body[j : j+1])
+			i = j + 1
+		} else {
+			i = j
+		}
 	}
 	return out.Bytes()
 }
