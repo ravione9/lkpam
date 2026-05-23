@@ -4007,19 +4007,19 @@ function showSshLaunchModal(target) {
   modal.querySelector("#sshBrowserBtn").onclick = async () => {
     const reason = prompt("Reason for recorded browser session:", "Approved access");
     if (reason === null) return;
+    // If the user has MFA enabled, gate the launch behind an OTP prompt first.
+    if (currentUser && currentUser.mfa_enabled && !currentUser.mfa_exempt) {
+      window._sshMfaTargetId = target.id;
+      window._sshMfaReason = reason;
+      showSshMfaPrompt(getCachedPortalPassword(), reason);
+      return;
+    }
     const portalPassword = getCachedPortalPassword();
-    async function tryLaunch(pw, mfaCode) {
+    async function tryLaunch(pw) {
       const res = await api(`/auth/targets/${target.id}/ssh-launch`, {
         method: "POST",
-        body: JSON.stringify({ reason, portal_password: pw || "", mfa_code: mfaCode || "" }),
+        body: JSON.stringify({ reason, portal_password: pw || "" }),
       });
-      // 202 → server needs MFA before it will create the session
-      if (res && res._accepted && res._accepted.mfa_required) {
-        window._sshMfaTargetId = target.id;
-        window._sshMfaReason = reason;
-        showSshMfaPrompt(pw, reason);
-        return;
-      }
       if (openPamViewer("ssh-viewer.html", res.session_id)) {
         toast("Recorded SSH session opened in browser", "ok");
       }
@@ -7358,9 +7358,15 @@ function showSshMfaPrompt(cachedPw, reason) {
     $("#sshMfaVerifyBtn").disabled = true;
     $("#sshMfaVerifyBtn").textContent = "Verifying…";
     try {
+      // Step 1: verify the TOTP code via the dedicated check endpoint
+      await api(`/auth/users/${currentUser.id}/mfa/check`, {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      });
+      // Step 2: code is valid — proceed with the SSH launch
       const res = await api(`/auth/targets/${window._sshMfaTargetId}/ssh-launch`, {
         method: "POST",
-        body: JSON.stringify({ reason: window._sshMfaReason, portal_password: cachedPw || "", mfa_code: code }),
+        body: JSON.stringify({ reason: window._sshMfaReason, portal_password: cachedPw || "" }),
       });
       modal.classList.remove("show");
       if (openPamViewer("ssh-viewer.html", res.session_id)) {
