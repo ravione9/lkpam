@@ -464,6 +464,9 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		if resp != nil {
 			resp.Body.Close()
 		}
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			dropUpstreamClient(sessionID)
+		}
 		writeWebProxyError(w, rest, "session not found or expired", http.StatusNotFound)
 		return
 	}
@@ -497,21 +500,18 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	upstream.Header.Del("X-PAM-User")
 	upstream.Header.Del("X-PAM-Web-Session")
 	upstream.Header.Del("Authorization")
+	upstream.Header.Del("Cookie")
 	rewriteUpstreamReferer(upstream.Header, targetURL, sessionID)
 	upstream.Host = targetURL.Host
 
-	if creds.Username != "" && creds.Password != "" {
+	useBasic := creds.Username != "" && creds.Password != "" && !isPublicWebAsset(rest)
+	if useBasic {
 		upstream.SetBasicAuth(creds.Username, creds.Password)
 	}
 
-	// Skip TLS verification for self-signed appliance certs (common on firewalls/switches).
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tlsConfig{InsecureSkipVerify: true},
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse // let browser follow redirects
-		},
+	httpClient := upstreamClientForSession(sessionID)
+	if isPublicWebAsset(rest) {
+		primeUpstreamSession(r.Context(), httpClient, targetURL)
 	}
 
 	upResp, err := httpClient.Do(upstream)
@@ -520,6 +520,11 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		return
 	}
 	defer upResp.Body.Close()
+
+	if upResp.StatusCode == http.StatusNotFound && strings.HasPrefix(rest, "/static/") {
+		log.Printf("web-proxy: upstream 404 session=%s url=%s (device cookies=%d)",
+			sessionID, upstreamURL, len(httpClient.Jar.Cookies(upstream.URL)))
+	}
 
 	portalTok := strings.TrimSpace(r.URL.Query().Get("token"))
 	if portalTok == "" {
@@ -539,6 +544,12 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		}
 		// Content-Type is set below from the path / body type (appliances often send text/plain).
 		if strings.EqualFold(k, "Content-Type") {
+			continue
+		}
+		if strings.EqualFold(k, "Set-Cookie") {
+			for _, v := range vs {
+				w.Header().Add(k, rewriteProxySetCookie(v, sessionID))
+			}
 			continue
 		}
 		// Strip security headers that block iframe embedding in our viewer.

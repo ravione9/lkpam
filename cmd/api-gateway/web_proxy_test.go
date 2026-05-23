@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -54,13 +55,32 @@ func TestMimeForWebPath(t *testing.T) {
 	}
 }
 
+func TestIsPublicWebAsset(t *testing.T) {
+	if !isPublicWebAsset("/static/css/legacy-main.css") {
+		t.Fatal("static css is public")
+	}
+	if isPublicWebAsset("/login") {
+		t.Fatal("login is not public")
+	}
+}
+
+func TestRewriteProxySetCookie(t *testing.T) {
+	got := rewriteProxySetCookie("PHPSESSID=abc; Path=/; Secure; HttpOnly", "web-1-7")
+	if strings.Contains(got, "Secure") {
+		t.Fatalf("Secure should be stripped: %q", got)
+	}
+	if !strings.Contains(got, "Path=/web/web-1-7/") {
+		t.Fatalf("Path not rewritten: %q", got)
+	}
+}
+
 func TestRewriteUpstreamReferer(t *testing.T) {
 	target, _ := url.Parse("https://192.168.48.5/")
 	h := make(http.Header)
 	h.Set("Referer", "http://192.168.24.253:8080/web/web-123/login?token=abc")
 	rewriteUpstreamReferer(h, target, "web-123")
 	got := h.Get("Referer")
-	if got != "https://192.168.48.5/login?token=abc" {
+	if got != "https://192.168.48.5/login" {
 		t.Fatalf("Referer=%q", got)
 	}
 }
