@@ -4,42 +4,84 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 )
 
-// webUpstreamClients holds one HTTP client per web-console session so device
+// webProxyDebug enables verbose request/response logging when env PAM_WEB_PROXY_DEBUG=1.
+var webProxyDebug = os.Getenv("PAM_WEB_PROXY_DEBUG") == "1"
+
+// webSessionState carries the upstream HTTP client (with its cookie jar) plus
+// vendor-quirk fields like the discovered static-asset URL prefix.
+type webSessionState struct {
+	client *http.Client
+	mu     sync.Mutex
+	// assetPrefix is the upstream URL path the appliance actually serves login
+	// static assets under (e.g. "/login" on FortiOS, "" on PAN-OS/root). Empty
+	// until probed; populated the first time a fallback retry returns < 400.
+	assetPrefix string
+}
+
+// webUpstreamClients holds one *webSessionState per web-console session so device
 // Set-Cookie headers (PAN-OS, FortiGate, etc.) are replayed on /static/ assets.
 // Browsers often drop Secure cookies when the portal is served over HTTP.
 var webUpstreamClients sync.Map
 
-func upstreamClientForSession(sessionID string) *http.Client {
-	if c, ok := webUpstreamClients.Load(sessionID); ok {
-		return c.(*http.Client)
+func upstreamSessionState(sessionID string) *webSessionState {
+	if v, ok := webUpstreamClients.Load(sessionID); ok {
+		return v.(*webSessionState)
 	}
 	jar, _ := cookiejar.New(nil)
-	c := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tlsConfig{InsecureSkipVerify: true},
-		},
-		Jar: jar,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
+	s := &webSessionState{
+		client: &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tlsConfig{InsecureSkipVerify: true},
+			},
+			Jar: jar,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 10 {
+					return fmt.Errorf("too many redirects")
+				}
+				return nil
+			},
 		},
 	}
-	actual, _ := webUpstreamClients.LoadOrStore(sessionID, c)
-	return actual.(*http.Client)
+	actual, _ := webUpstreamClients.LoadOrStore(sessionID, s)
+	return actual.(*webSessionState)
+}
+
+func upstreamClientForSession(sessionID string) *http.Client {
+	return upstreamSessionState(sessionID).client
 }
 
 func dropUpstreamClient(sessionID string) {
 	webUpstreamClients.Delete(sessionID)
+}
+
+// assetFallbackPrefixes lists URL prefixes appliances commonly use to serve
+// pre-auth login static assets when the bare path at root returns 404. The
+// order matters: FortiOS uses /login, some PHP appliances use /p, SSL VPN
+// portals use /sslvpn or /remote.
+var assetFallbackPrefixes = []string{
+	"/login",
+	"/p",
+	"/sslvpn",
+	"/remote",
+	"/portal",
+	"/static",
+}
+
+// debugf logs at debug level when PAM_WEB_PROXY_DEBUG=1.
+func debugf(format string, args ...interface{}) {
+	if webProxyDebug {
+		log.Printf("web-proxy: "+format, args...)
+	}
 }
 
 // isPublicWebAsset is true for login-page static files that appliances serve

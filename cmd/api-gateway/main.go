@@ -492,38 +492,56 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	// Build the upstream request (strip PAM ?token= from query — never forward to target).
 	upQ := r.URL.Query()
 	upQ.Del("token")
-	upstreamURL := buildUpstreamURL(targetURL, rest, upQ)
-	upstream, _ := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, r.Body)
-	upstream.Header = r.Header.Clone()
-	upstream.Header.Del("X-PAM-UID")
-	upstream.Header.Del("X-PAM-Role")
-	upstream.Header.Del("X-PAM-User")
-	upstream.Header.Del("X-PAM-Web-Session")
-	upstream.Header.Del("Authorization")
-	upstream.Header.Del("Cookie")
-	rewriteUpstreamReferer(upstream.Header, targetURL, sessionID)
-	tuneUpstreamRequest(upstream, targetURL, rest)
+	state := upstreamSessionState(sessionID)
+	httpClient := state.client
 
-	useBasic := creds.Username != "" && creds.Password != "" && !isPublicWebAsset(rest)
-	if useBasic {
-		upstream.SetBasicAuth(creds.Username, creds.Password)
-	}
-
-	httpClient := upstreamClientForSession(sessionID)
+	// Apply a previously-discovered asset prefix (e.g. "/login" on FortiOS) for
+	// static assets, so we don't repeat the 404+retry for every asset.
+	effectiveRest := rest
+	var triedPrefix string
 	if isPublicWebAsset(rest) {
+		state.mu.Lock()
+		ap := state.assetPrefix
+		state.mu.Unlock()
+		if ap != "" && !strings.HasPrefix(rest, ap+"/") && rest != ap {
+			effectiveRest = ap + rest
+			triedPrefix = ap
+		}
 		primeUpstreamSession(r.Context(), httpClient, targetURL)
 	}
+
+	upstream, upstreamURL, err := buildWebUpstreamRequest(r, targetURL, effectiveRest, upQ, sessionID, creds)
+	if err != nil {
+		writeWebProxyError(w, rest, "proxy build error: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	debugf("upstream req session=%s method=%s url=%s asset=%v basic=%v",
+		sessionID, upstream.Method, upstreamURL, isPublicWebAsset(rest), upstream.Header.Get("Authorization") != "")
 
 	upResp, err := httpClient.Do(upstream)
 	if err != nil {
 		writeWebProxyError(w, rest, "proxy error: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+
+	// On 404 for a static asset, try common appliance asset prefixes until one
+	// serves it. FortiOS for example serves login-page assets under /login/, not /.
+	if upResp.StatusCode == http.StatusNotFound && isPublicWebAsset(rest) && r.Method == http.MethodGet {
+		log.Printf("web-proxy: upstream 404 session=%s url=%s — trying fallback prefixes (skip=%q)",
+			sessionID, upstreamURL, triedPrefix)
+		if alt, altURL, ok := retryAssetWithFallback(r, state, targetURL, rest, upQ, sessionID, creds, upResp, triedPrefix); ok {
+			upResp = alt
+			upstreamURL = altURL
+		}
+	}
 	defer upResp.Body.Close()
 
 	if upResp.StatusCode == http.StatusNotFound && isPublicWebAsset(rest) {
-		log.Printf("web-proxy: upstream 404 session=%s url=%s authcheck=off cookies=%d",
+		log.Printf("web-proxy: final 404 session=%s url=%s cookies=%d",
 			sessionID, upstreamURL, len(httpClient.Jar.Cookies(upstream.URL)))
+	} else {
+		debugf("upstream resp session=%s url=%s status=%d", sessionID, upstreamURL, upResp.StatusCode)
 	}
 
 	portalTok := strings.TrimSpace(r.URL.Query().Get("token"))
@@ -586,6 +604,78 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		w.WriteHeader(upResp.StatusCode)
 		io.Copy(w, upResp.Body)
 	}
+}
+
+// buildWebUpstreamRequest constructs the outbound request to the device,
+// stripping internal PAM headers/cookies and conditionally attaching Basic Auth.
+func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, upQ url.Values, sessionID string, creds weblaunch.SessionCreds) (*http.Request, string, error) {
+	upstreamURL := buildUpstreamURL(targetURL, rest, upQ)
+	upstream, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, r.Body)
+	if err != nil {
+		return nil, upstreamURL, err
+	}
+	upstream.Header = r.Header.Clone()
+	upstream.Header.Del("X-PAM-UID")
+	upstream.Header.Del("X-PAM-Role")
+	upstream.Header.Del("X-PAM-User")
+	upstream.Header.Del("X-PAM-Web-Session")
+	upstream.Header.Del("Authorization")
+	upstream.Header.Del("Cookie")
+	rewriteUpstreamReferer(upstream.Header, targetURL, sessionID)
+	tuneUpstreamRequest(upstream, targetURL, rest)
+
+	if creds.Username != "" && creds.Password != "" && !isPublicWebAsset(rest) {
+		upstream.SetBasicAuth(creds.Username, creds.Password)
+	}
+	return upstream, upstreamURL, nil
+}
+
+// retryAssetWithFallback closes prevResp and tries the request with each
+// candidate URL prefix from assetFallbackPrefixes until one returns < 400.
+// The discovered prefix is cached on the session so subsequent assets skip
+// the probing dance. skipPrefix is the prefix already attempted by the
+// caller (the session's cached prefix, if any) so we don't retry it.
+func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *url.URL, rest string, upQ url.Values, sessionID string, creds weblaunch.SessionCreds, prevResp *http.Response, skipPrefix string) (*http.Response, string, bool) {
+	httpClient := state.client
+	// Drain and close the original 404 so the connection can be reused.
+	io.Copy(io.Discard, prevResp.Body)
+	prevResp.Body.Close()
+
+	for _, prefix := range assetFallbackPrefixes {
+		if prefix == skipPrefix {
+			continue
+		}
+		altRest := prefix + rest
+		altReq, altURL, err := buildWebUpstreamRequest(r, targetURL, altRest, upQ, sessionID, creds)
+		if err != nil {
+			continue
+		}
+		debugf("upstream retry session=%s url=%s", sessionID, altURL)
+		altResp, err := httpClient.Do(altReq)
+		if err != nil {
+			continue
+		}
+		if altResp.StatusCode < 400 {
+			log.Printf("web-proxy: fallback success session=%s prefix=%s url=%s", sessionID, prefix, altURL)
+			state.mu.Lock()
+			state.assetPrefix = prefix
+			state.mu.Unlock()
+			return altResp, altURL, true
+		}
+		io.Copy(io.Discard, altResp.Body)
+		altResp.Body.Close()
+	}
+	// All fallbacks failed — fetch the original path once more so the caller
+	// gets a real Response object to render the 404 with.
+	finalReq, finalURL, err := buildWebUpstreamRequest(r, targetURL, rest, upQ, sessionID, creds)
+	if err != nil {
+		return nil, "", false
+	}
+	finalResp, err := httpClient.Do(finalReq)
+	if err != nil {
+		return nil, finalURL, false
+	}
+	return finalResp, finalURL, true
 }
 
 func mimeNeedsFix(ct string) bool {
