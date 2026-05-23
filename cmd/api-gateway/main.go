@@ -464,13 +464,13 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		if resp != nil {
 			resp.Body.Close()
 		}
-		http.Error(w, "session not found or expired", http.StatusNotFound)
+		writeWebProxyError(w, rest, "session not found or expired", http.StatusNotFound)
 		return
 	}
 	var creds weblaunch.SessionCreds
 	if err := json.NewDecoder(resp.Body).Decode(&creds); err != nil {
 		resp.Body.Close()
-		http.Error(w, "invalid session credentials", http.StatusInternalServerError)
+		writeWebProxyError(w, rest, "invalid session credentials", http.StatusInternalServerError)
 		return
 	}
 	resp.Body.Close()
@@ -489,13 +489,15 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	// Build the upstream request (strip PAM ?token= from query — never forward to target).
 	upQ := r.URL.Query()
 	upQ.Del("token")
-	upstream, _ := http.NewRequestWithContext(r.Context(), r.Method,
-		targetURL.Scheme+"://"+targetURL.Host+rest+"?"+upQ.Encode(), r.Body)
+	upstreamURL := buildUpstreamURL(targetURL, rest, upQ)
+	upstream, _ := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, r.Body)
 	upstream.Header = r.Header.Clone()
 	upstream.Header.Del("X-PAM-UID")
 	upstream.Header.Del("X-PAM-Role")
 	upstream.Header.Del("X-PAM-User")
+	upstream.Header.Del("X-PAM-Web-Session")
 	upstream.Header.Del("Authorization")
+	rewriteUpstreamReferer(upstream.Header, targetURL, sessionID)
 	upstream.Host = targetURL.Host
 
 	if creds.Username != "" && creds.Password != "" {
@@ -514,7 +516,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 
 	upResp, err := httpClient.Do(upstream)
 	if err != nil {
-		http.Error(w, "proxy error: "+err.Error(), http.StatusBadGateway)
+		writeWebProxyError(w, rest, "proxy error: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer upResp.Body.Close()
@@ -535,6 +537,10 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 			}
 			continue
 		}
+		// Content-Type is set below from the path / body type (appliances often send text/plain).
+		if strings.EqualFold(k, "Content-Type") {
+			continue
+		}
 		// Strip security headers that block iframe embedding in our viewer.
 		if strings.EqualFold(k, "X-Frame-Options") ||
 			strings.EqualFold(k, "Content-Security-Policy") {
@@ -547,18 +553,24 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 
 	// Rewrite HTML/JS/CSS bodies so root-absolute SPA paths go through the proxy.
 	ct := upResp.Header.Get("Content-Type")
-	if shouldRewriteWebBody(ct) {
+	mimeByPath := mimeForWebPath(rest)
+	rewriteBody := shouldRewriteWebBody(ct) || shouldRewriteWebPath(rest)
+	if rewriteBody {
 		body, _ := io.ReadAll(upResp.Body)
 		body = rewriteHTML(body, targetURL, sessionID, portalTok)
-		if m := mimeForWebPath(rest); m != "" {
-			w.Header().Set("Content-Type", m)
+		if mimeByPath != "" {
+			w.Header().Set("Content-Type", mimeByPath)
+		} else if ct != "" {
+			w.Header().Set("Content-Type", ct)
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(upResp.StatusCode)
 		w.Write(body)
 	} else {
-		if m := mimeForWebPath(rest); mimeNeedsFix(ct) && m != "" {
-			w.Header().Set("Content-Type", m)
+		if mimeByPath != "" && (mimeByPath != ct || mimeNeedsFix(ct)) {
+			w.Header().Set("Content-Type", mimeByPath)
+		} else if ct != "" {
+			w.Header().Set("Content-Type", ct)
 		}
 		w.WriteHeader(upResp.StatusCode)
 		io.Copy(w, upResp.Body)
@@ -568,6 +580,87 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 func mimeNeedsFix(ct string) bool {
 	ct = strings.ToLower(strings.TrimSpace(ct))
 	return ct == "" || ct == "text/plain" || ct == "application/octet-stream"
+}
+
+func shouldRewriteWebPath(path string) bool {
+	switch {
+	case strings.HasSuffix(path, ".html"), strings.HasSuffix(path, ".htm"):
+		return true
+	case strings.HasSuffix(path, ".js"), strings.HasSuffix(path, ".mjs"):
+		return true
+	case strings.HasSuffix(path, ".css"):
+		return true
+	case strings.HasSuffix(path, ".json"), strings.HasSuffix(path, ".webmanifest"):
+		return true
+	}
+	return false
+}
+
+// buildUpstreamURL joins the target base URL (including any path prefix in web_url)
+// with the proxied request path and query string.
+func buildUpstreamURL(target *url.URL, rest string, query url.Values) string {
+	if !strings.HasPrefix(rest, "/") {
+		rest = "/" + rest
+	}
+	ref, err := url.Parse(rest)
+	if err != nil {
+		return target.ResolveReference(&url.URL{Path: rest}).String()
+	}
+	if len(query) > 0 {
+		ref.RawQuery = query.Encode()
+	}
+	return target.ResolveReference(ref).String()
+}
+
+func rewriteUpstreamReferer(h http.Header, target *url.URL, sessionID string) {
+	base := target.Scheme + "://" + target.Host
+	if target.Path != "" && target.Path != "/" {
+		base += strings.TrimSuffix(target.Path, "/")
+	}
+	for _, key := range []string{"Referer", "Origin"} {
+		v := strings.TrimSpace(h.Get(key))
+		if v == "" {
+			continue
+		}
+		u, err := url.Parse(v)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(u.Path, "/web/"+sessionID) {
+			suffix := strings.TrimPrefix(u.Path, "/web/"+sessionID)
+			u.Scheme = target.Scheme
+			u.Host = target.Host
+			u.Path = strings.TrimSuffix(target.Path, "/") + suffix
+			q := u.Query()
+			q.Del("token")
+			u.RawQuery = q.Encode()
+			h.Set(key, u.String())
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(u.Host), strings.ToLower(target.Host)) {
+			continue
+		}
+		h.Set(key, base)
+	}
+}
+
+// writeWebProxyError returns an error body with the correct MIME type for static
+// assets so browsers do not reject CSS/JS with "text/plain" on proxy failures.
+func writeWebProxyError(w http.ResponseWriter, rest, msg string, code int) {
+	if m := mimeForWebPath(rest); m != "" {
+		w.Header().Set("Content-Type", m)
+		w.WriteHeader(code)
+		switch {
+		case strings.HasSuffix(rest, ".css"):
+			_, _ = w.Write([]byte("/* PAM: " + msg + " */"))
+		case strings.HasSuffix(rest, ".js"), strings.HasSuffix(rest, ".mjs"):
+			_, _ = w.Write([]byte("/* PAM: " + msg + " */"))
+		default:
+			_, _ = w.Write([]byte(msg))
+		}
+		return
+	}
+	http.Error(w, msg, code)
 }
 
 func pamTokenSuffix(tok string) string {
@@ -766,6 +859,10 @@ func rewriteRootPaths(body []byte, pfx, portalToken string) []byte {
 		{`'/api/`, `'` + pfx + `/api/`},
 		{`"/static/`, `"` + pfx + `/static/`},
 		{`'/static/`, `'` + pfx + `/static/`},
+		{`"/static/js/`, `"` + pfx + `/static/js/`},
+		{`'/static/js/`, `'` + pfx + `/static/js/`},
+		{`"/static/css/`, `"` + pfx + `/static/css/`},
+		{`'/static/css/`, `'` + pfx + `/static/css/`},
 		{`"/assets/`, `"` + pfx + `/assets/`},
 		{`'/assets/`, `'` + pfx + `/assets/`},
 		{`"/favicon/`, `"` + pfx + `/favicon/`},
