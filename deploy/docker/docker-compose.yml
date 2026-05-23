@@ -129,15 +129,15 @@ services:
       retries: 5
       start_period: 30s
 
+  # guacd uses the HOST network so RDP dials to LAN targets (192.168.x.x) use the
+  # PAM server IP — bridge-network guacd often gets UPSTREAM_NOT_FOUND (519).
+  # On Windows Docker Desktop only, comment network_mode and restore networks/extra_hosts below.
   guacd:
     image: guacamole/guacd:1.5.5
     container_name: pam-guacd
     restart: unless-stopped
-    # Image default USER is guacd; entrypoint must chmod /recordings as root.
+    network_mode: host
     user: "0:0"
-    networks: [pam-net]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     entrypoint: ["/bin/sh", "/guacd-entrypoint.sh"]
     volumes:
       - pam-rec:/recordings
@@ -147,10 +147,12 @@ services:
     <<: *common
     container_name: pam-rdp-proxy
     command: ["/app/rdp-proxy"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       <<: *common-env
       PAM_RDP_PROXY_ADDR: ":8086"
-      PAM_GUACD_ADDR: "guacd:4822"
+      PAM_GUACD_ADDR: "${PAM_GUACD_ADDR:-host.docker.internal:4822}"
       # Map target localhost/127.0.0.1 to a host reachable from guacd (Windows Docker Desktop).
       PAM_RDP_DOCKER_HOST: "${PAM_RDP_DOCKER_HOST:-host.docker.internal}"
       PAM_SSH_PROXY_DIAL_ADDR: "ssh-proxy:2222"

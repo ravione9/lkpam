@@ -261,6 +261,11 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 	}
 	log.Printf("rdp-proxy: session %s started (%s route=%s) → %s:%d as %s (recording %s)",
 		sessionID, params.Protocol, route, params.Host, params.Port, params.Username, params.RecDir)
+	if params.Protocol == "rdp" && params.Username != "" {
+		if strings.Contains(strings.ToLower(params.Username), "administraor") {
+			log.Printf("rdp-proxy: WARNING session %s username %q looks misspelled (Administrator?)", sessionID, params.Username)
+		}
+	}
 	return rt, nil
 }
 
@@ -381,6 +386,20 @@ func (s *Server) closeSession(ctx context.Context, sessionID string) {
 	s.mu.Unlock()
 
 	recPath := s.findRecording(sessionID)
+	var protocol string
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT COALESCE(protocol,'') FROM sessions WHERE id = ?`, sessionID).Scan(&protocol)
+	if err != nil {
+		protocol = ""
+	}
+
+	// RDP upstream can drop before a desktop appears (519). Keep vault creds and the
+	// session row open so the viewer can retry without a new Launch.
+	if protocol == "rdp" && recPath == "" {
+		log.Printf("rdp-proxy: session %s upstream closed before desktop (no recording); credentials kept — retry from viewer or Launch again", sessionID)
+		return
+	}
+
 	_, _ = s.DB.ExecContext(ctx, `
 		UPDATE sessions SET ended_at = ?, ended_reason = COALESCE(ended_reason, 'closed'),
 		  recording_path = CASE WHEN ? != '' THEN ? ELSE recording_path END

@@ -200,18 +200,27 @@ docker compose -f deploy/docker/docker-compose.yml down -v
 
 **Browser RDP: “Tunnel error” code 519 (UPSTREAM_NOT_FOUND)**
 
-Guacamole status **519** means **guacd could not connect to the Windows target** on port 3389 — not a portal login issue.
+Guacamole status **519** means **guacd could not connect to the Windows target** on port 3389.
 
-1. In **Machines**, set **Host** to the server's **LAN IP** (e.g. `192.168.1.50`), not `localhost` or `127.0.0.1`.
-2. If the RDP server is the **same PC as Docker Desktop**, use Host **`host.docker.internal`** (or set `PAM_RDP_DOCKER_HOST` in `.env`).
-3. Confirm **port 3389**, **Remote Desktop enabled**, and Windows Firewall allows RDP from the Docker host.
-4. Link a **privileged account** (Safes → Privileged Accounts) before Launch.
-5. Inspect the proxy log after a failed connect:
+Your logs show the usual pattern: `session … started → … closed` in the same second — guacd is up, but the **RDP TCP dial from the container network** to the target failed.
+
+**Linux server (recommended):** `guacd` runs with **`network_mode: host`** so RDP uses the PAM host IP (`192.168.24.253`). `rdp-proxy` talks to guacd at `host.docker.internal:4822`. After `git pull`:
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml up -d --force-recreate guacd rdp-proxy
+docker exec pam-rdp-proxy wget -qO- http://127.0.0.1:8086/health/deps   # guacd_tcp: true
+```
+
+**Checklist:**
+
+1. **Machines → Host** = target LAN IP (`192.168.28.93`), **Port** `3389`, not `localhost`.
+2. **Privileged account username** must match Windows exactly (logs showed `administraor` — fix to `Administrator` or your local user).
+3. **Remote Desktop enabled** on the Windows server; firewall allows **3389 from the PAM host IP**.
+4. From the PAM server: `nc -zv 192.168.28.93 3389` (must succeed before browser RDP will work).
 
 ```bash
 docker logs pam-rdp-proxy --tail 30
 docker logs pam-guacd --tail 30
-docker exec pam-rdp-proxy wget -qO- http://127.0.0.1:8086/health/deps
 ```
 
 **Browser SSH: “Tunnel error” / guacd Permission denied on recordings**
