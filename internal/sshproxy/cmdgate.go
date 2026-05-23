@@ -22,6 +22,13 @@ type cmdGate struct {
 
 	mu                  sync.Mutex
 	devLine             []byte
+	// userTyped accumulates printable keystrokes the user has sent since the
+	// last Enter. It is the authoritative source for "what command did the
+	// user press Enter on" — devLine is only the device's echo, which may
+	// not arrive before the device sends the next prompt (Cisco Password:
+	// after "en", or any device that buffers echo). Without it, "enable",
+	// "logout", and "exit" all silently bypass the gate.
+	userTyped           []byte
 	ignoreLine          bool
 	skipNextLF          bool
 	expectEnablePass    bool
@@ -271,6 +278,7 @@ func (g *cmdGate) streamMaskPassword(p []byte) []byte {
 func (g *cmdGate) resetLineMirror() {
 	g.mu.Lock()
 	g.devLine = g.devLine[:0]
+	g.userTyped = g.userTyped[:0]
 	g.ignoreLine = false
 	g.injectEnableOnEnter = false
 	g.mu.Unlock()
@@ -281,7 +289,16 @@ func (g *cmdGate) currentCommand() string {
 	if i := strings.LastIndexAny(line, "#>$"); i >= 0 {
 		line = line[i+1:]
 	}
-	return strings.TrimSpace(line)
+	cmd := strings.TrimSpace(line)
+	if cmd == "" {
+		// Device hasn't echoed the typed line yet — fall back to what the user
+		// actually keyed in since the last Enter. Required for enable/logout/
+		// exit detection to fire on the press-Enter event rather than waiting
+		// for an echo that may never come (Cisco "en" → device skips echo and
+		// prints Password: directly).
+		cmd = strings.TrimSpace(string(g.userTyped))
+	}
+	return cmd
 }
 
 func (g *cmdGate) shouldEndSession(cmd string) bool {
@@ -338,7 +355,19 @@ func (g *cmdGate) Write(p []byte) (int, error) {
 		case '\r':
 			g.skipNextLF = true
 			g.handleLineEnd(b)
+		case 0x08, 0x7f: // backspace / DEL
+			g.mu.Lock()
+			if len(g.userTyped) > 0 {
+				g.userTyped = g.userTyped[:len(g.userTyped)-1]
+			}
+			g.mu.Unlock()
+			_, _ = g.up.Write([]byte{b})
 		default:
+			if b >= 0x20 && b < 0x7f {
+				g.mu.Lock()
+				g.userTyped = append(g.userTyped, b)
+				g.mu.Unlock()
+			}
 			_, _ = g.up.Write([]byte{b})
 		}
 	}
@@ -373,6 +402,8 @@ func (g *cmdGate) handleLineEnd(endByte byte) {
 	}
 	inject := g.injectEnableOnEnter && g.credentialForEnable() != ""
 	cmd := g.currentCommand()
+	// Clear typed buffer at every Enter so the next command starts fresh.
+	g.userTyped = g.userTyped[:0]
 	g.mu.Unlock()
 
 	if inject {
@@ -396,6 +427,13 @@ func (g *cmdGate) handleLineEnd(endByte byte) {
 		g.mu.Lock()
 		g.expectEnablePass = true
 		g.enableInjected = false
+		// Clear the device-echo mirror so the next chunk's leading "\r\n"
+		// does not trigger the ">"-prompt reset path on the stale prompt
+		// that was present *before* the user typed "en". Without this,
+		// devices that skip echoing "en" (or send the new prompt before
+		// the echo arrives) reset expectEnablePass on the device's own
+		// "\r\nPassword:" reply and the auto-inject never fires.
+		g.devLine = g.devLine[:0]
 		g.mu.Unlock()
 	}
 	if cmd != "" && g.shouldEndSession(cmd) {

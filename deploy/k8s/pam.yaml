@@ -440,11 +440,19 @@ spec:
             - { name: PAM_RADIUS_ACCT_ADDR, value: ":1813" }
           volumeMounts:
             - { name: data, mountPath: /data }
+          # RADIUS is UDP-only, so we can't use httpGet or tcpSocket probes.
+          # Check the radius-service process is alive via busybox pidof.
           readinessProbe:
-            tcpSocket: { port: 8081 } # auth-service health (radius itself is UDP-only)
-            periodSeconds: 30
+            exec:
+              command: ["sh", "-c", "pidof radius-service > /dev/null"]
+            periodSeconds: 15
             initialDelaySeconds: 5
-            failureThreshold: 60
+            failureThreshold: 4
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pidof radius-service > /dev/null"]
+            periodSeconds: 30
+            failureThreshold: 3
       volumes:
         - { name: data, persistentVolumeClaim: { claimName: pam-data } }
 ---

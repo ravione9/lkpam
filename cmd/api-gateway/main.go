@@ -705,17 +705,40 @@ func shouldRewriteWebPath(path string) bool {
 // buildUpstreamURL joins the target base URL (including any path prefix in web_url)
 // with the proxied request path and query string.
 func buildUpstreamURL(target *url.URL, rest string, query url.Values) string {
+	if target == nil {
+		return rest
+	}
 	if !strings.HasPrefix(rest, "/") {
 		rest = "/" + rest
 	}
-	ref, err := url.Parse(rest)
-	if err != nil {
-		return target.ResolveReference(&url.URL{Path: rest}).String()
+	// Split rest into path + optional embedded query so the caller can pass
+	// "/foo?x=1" and have the query survive.
+	embeddedQuery := ""
+	if i := strings.IndexByte(rest, '?'); i >= 0 {
+		embeddedQuery = rest[i+1:]
+		rest = rest[:i]
+	}
+	// Preserve the target's base path (e.g. FortiOS "/ui", PAN-OS "/php") so
+	// requests for "/static/x" reach "/ui/static/x" on the device instead of
+	// the host root (which 404s on every appliance that runs its admin UI
+	// behind a mount point).
+	base := strings.TrimSuffix(target.Path, "/")
+	if base != "" && !strings.HasPrefix(rest, base+"/") && rest != base {
+		rest = base + rest
+	}
+	// upstreamHost strips :443 / :80 from the host so the rewritten URL has a
+	// canonical origin — SPAs that compare window.location.host against the
+	// served URL (FortiOS legacy login, F5 LTM) reject the page otherwise.
+	u := &url.URL{
+		Scheme:   target.Scheme,
+		Host:     upstreamHost(target),
+		Path:     rest,
+		RawQuery: embeddedQuery,
 	}
 	if len(query) > 0 {
-		ref.RawQuery = query.Encode()
+		u.RawQuery = query.Encode()
 	}
-	return target.ResolveReference(ref).String()
+	return u.String()
 }
 
 func rewriteUpstreamReferer(h http.Header, target *url.URL, sessionID string) {

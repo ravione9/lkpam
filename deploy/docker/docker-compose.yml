@@ -234,8 +234,11 @@ services:
     ports:
       - "${PAM_RADIUS_AUTH_PORT:-1812}:1812/udp"
       - "${PAM_RADIUS_ACCT_PORT:-1813}:1813/udp"
+    # UDP has no handshake, so "is the port open" can't be tested with nc -z
+    # reliably. Use pidof on the binary instead — Alpine's busybox always
+    # has pidof.
     healthcheck:
-      test: ["CMD", "sh", "-c", "nc -uz 127.0.0.1 1812 || exit 1"]
+      test: ["CMD-SHELL", "pidof radius-service > /dev/null || exit 1"]
       interval: 20s
       timeout: 5s
       retries: 5
