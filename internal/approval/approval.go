@@ -247,6 +247,18 @@ func (s *Service) tally(ctx context.Context, id int64) (int, int, error) {
 }
 
 func (s *Service) finalize(ctx context.Context, id int64, status string, approverID int64) error {
+	if status == "approved" {
+		// When approving, automatically grant sudo if it was requested.
+		// The admin can still toggle it off afterwards via the grant-sudo endpoint,
+		// but requiring a separate manual step means users silently never get sudo.
+		_, err := s.DB.ExecContext(ctx, `
+			UPDATE access_requests
+			SET status = ?, approver_id = ?, decided_at = ?,
+			    sudo_granted = CASE WHEN COALESCE(sudo_requested,0)=1 THEN 1 ELSE 0 END
+			WHERE id = ? AND status = 'pending'`,
+			status, approverID, db.Now(), id)
+		return err
+	}
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE access_requests
 		SET status = ?, approver_id = ?, decided_at = ?

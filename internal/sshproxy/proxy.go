@@ -385,7 +385,7 @@ func (s *Server) evaluateAccess(ctx context.Context, userID int64, primaryRole s
 		_ = s.DB.QueryRowContext(ctx, `
 			SELECT COALESCE(sudo_granted,0) FROM access_requests
 			WHERE user_id=? AND target_id=? AND status='approved' AND COALESCE(sudo_granted,0)=1
-			AND decided_at + ttl_seconds > strftime('%s','now')
+			AND (decided_at IS NULL OR decided_at + ttl_seconds > strftime('%s','now'))
 			ORDER BY decided_at DESC LIMIT 1`, userID, targetID).Scan(&sudoGranted)
 		if sudoGranted == 1 {
 			dec.LinuxPrivilege = "sudo"
