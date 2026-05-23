@@ -741,8 +741,7 @@ func main() {
 		httpx.JSON(w, http.StatusOK, cfg)
 	})
 	mux.HandleFunc("PUT /settings/tacacs", func(w http.ResponseWriter, r *http.Request) {
-		_, role, ok := callerIdentity(r)
-		if !ok || role != "admin" {
+		if r.Header.Get("X-PAM-Role") != "admin" {
 			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
 			return
 		}
