@@ -66,6 +66,13 @@ if [ "$PRIV" = "sudo" ] || [ "$PRIV" = "root" ]; then
     echo "PAM: visudo check failed for $f" >&2
     exit 1
   fi
+else
+  set +e
+  f="/etc/sudoers.d/pam-${U}"
+  [ -f "$f" ] && RUN rm -f "$f"
+  getent group sudo >/dev/null 2>&1 && RUN gpasswd -d "$U" sudo 2>/dev/null
+  getent group wheel >/dev/null 2>&1 && RUN gpasswd -d "$U" wheel 2>/dev/null
+  set -e
 fi
 id -u "$U" >/dev/null
 `, user, pwB64, pwB64, privilege)

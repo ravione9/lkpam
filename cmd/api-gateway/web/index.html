@@ -1648,18 +1648,25 @@
         <div class="form-panel" id="reqForm">
           <h4>Request JIT Access</h4>
           <p class="desc">Select a machine you are allowed to access (see <b>My Access</b>), provide a reason, and submit. Approval routing follows the matrix: your group → approver group.</p>
-          <div class="row">
+          <div class="row" style="flex-wrap:wrap;gap:8px">
             <select id="reqTarget"><option value="">Select machine…</option></select>
             <input id="reqReason" placeholder="business reason" style="flex:1;min-width:200px"/>
-            <input id="reqTTL" type="number" value="1800" title="TTL seconds" style="width:120px"/>
+            <input id="reqTTL" type="number" value="1800" title="TTL seconds" style="width:100px"/>
+            <label style="display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:13px;cursor:pointer" title="Request temporary sudo/root access on Linux machines">
+              <input type="checkbox" id="reqSudo" style="width:auto;margin:0"/>
+              <span>Request sudo access</span>
+            </label>
             <button class="primary" id="reqSubmitBtn">Submit request</button>
           </div>
+          <p class="desc" style="margin:6px 0 0;font-size:12px">
+            Check <b>Request sudo access</b> if you need temporary root/sudo on a Linux machine. The admin must grant it when approving.
+          </p>
         </div>
 
         <h3 style="margin-top:20px">My Requests</h3>
         <table>
-          <thead><tr><th>ID</th><th>Machine</th><th>Reason</th><th>Status</th><th>Approvals</th><th>TTL</th><th>Created</th></tr></thead>
-          <tbody id="myReqRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+          <thead><tr><th>ID</th><th>Machine</th><th>Reason</th><th>Status</th><th>Sudo</th><th>Approvals</th><th>TTL</th><th>Created</th></tr></thead>
+          <tbody id="myReqRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
         </table>
 
         <!-- My birthright machines (permanent access, no approval needed) -->
@@ -1676,8 +1683,8 @@
           <h3 style="margin-top:24px">Awaiting Your Approval</h3>
           <p class="desc">Approve or deny requests from other users. The approval matrix determines who can approve and how many approvals are required.</p>
           <table>
-            <thead><tr><th>ID</th><th>User</th><th>Machine</th><th>Tier</th><th>Reason</th><th>Approvals</th><th>Created</th><th></th></tr></thead>
-            <tbody id="reqRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+            <thead><tr><th>ID</th><th>User</th><th>Machine</th><th>Tier</th><th>Reason</th><th>Sudo req</th><th>Approvals</th><th>Created</th><th></th></tr></thead>
+            <tbody id="reqRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -4841,44 +4848,64 @@ async function loadRequests() {
 
     const mine = await api("/approval/requests/mine");
     if (!(mine||[]).length) {
-      $("#myReqRows").innerHTML = `<tr><td colspan="7" class="muted">No requests yet.</td></tr>`;
+      $("#myReqRows").innerHTML = `<tr><td colspan="8" class="muted">No requests yet.</td></tr>`;
     } else {
-      $("#myReqRows").innerHTML = mine.map(r => `
-        <tr>
+      $("#myReqRows").innerHTML = mine.map(r => {
+        let sudoCell = `<span class="muted">—</span>`;
+        if (r.sudo_requested) {
+          if (r.sudo_granted) {
+            sudoCell = `<span class="pill ok" title="Admin granted sudo for this session">sudo ✓</span>`;
+          } else {
+            sudoCell = `<span class="pill warn" title="Sudo requested — pending admin grant">requested</span>`;
+          }
+        }
+        return `<tr>
           <td>${r.id}</td><td>${esc(r.target_name)}</td><td>${esc(r.reason)}</td>
           <td>${reqStatusPill(r)}</td>
+          <td>${sudoCell}</td>
           <td>${approvalProgressCell(r)}</td>
           <td>${r.ttl_seconds}s</td>
           <td class="muted">${fmtTime(r.created_at)}</td>
-        </tr>`).join("");
+        </tr>`;
+      }).join("");
     }
 
     if (!isAdmin()) return;
     const rows = await api("/approval/requests/pending");
     const others = (rows||[]).filter(r => r.user_id !== currentUser.id);
     if (!others.length) {
-      $("#reqRows").innerHTML = `<tr><td colspan="8" class="muted">No requests awaiting your approval.</td></tr>`;
+      $("#reqRows").innerHTML = `<tr><td colspan="9" class="muted">No requests awaiting your approval.</td></tr>`;
       return;
     }
     $("#reqRows").innerHTML = others.map(r => {
       const myVote = (r.decisions||[]).find(d => d.approver_id === currentUser.id);
+      // If sudo was requested, show extra "Approve + grant sudo" option
+      const sudoGrantBtn = r.sudo_requested
+        ? `<button class="ghost" style="font-size:11px;padding:3px 7px" title="Approve this request AND grant sudo access" onclick="decideWithSudo(${r.id})">Approve + sudo</button>`
+        : "";
       const buttons = myVote
         ? `<span class="pill ${myVote.approve?'ok':'err'}">you voted ${myVote.approve?'approve':'deny'}</span>`
         : `<button class="ghost" onclick="decide(${r.id}, true)">Approve</button>
+           ${sudoGrantBtn}
            <button class="ghost danger" onclick="decide(${r.id}, false)">Deny</button>`;
+      // Sudo cell: if sudo was requested show a "Grant sudo" toggle
+      const sudoReqCell = r.sudo_requested
+        ? `<span class="pill warn" title="User requested sudo access">requested</span>`
+        : `<span class="muted">—</span>`;
       return `<tr>
         <td>${r.id}</td><td>${esc(r.username)}</td>
         <td>${esc(r.target_name)} <span class="muted">(${esc(r.target_kind)})</span></td>
         <td><span class="pill">T${r.target_tier}</span></td>
         <td>${esc(r.reason)}</td>
+        <td>${sudoReqCell}</td>
         <td>${approvalProgressCell(r)}</td>
         <td class="muted">${fmtTime(r.created_at)}</td>
         <td class="actions">${buttons}</td>
       </tr>`;
     }).join("");
   } catch (e) {
-    $("#myReqRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`;
-    if (isAdmin()) $("#reqRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`;
+    $("#myReqRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`;
+    if (isAdmin()) $("#reqRows").innerHTML = `<tr><td colspan="9" class="muted">${esc(e.message)}</td></tr>`;
   }
 }
 // --- Birthright Access ---
@@ -4946,12 +4973,44 @@ $("#birthrightSaveBtn").onclick = async () => {
   } catch (e) { toast(e.message, "err"); }
 };
 
+// Grant or revoke sudo elevation on an already-approved request.
+window.grantSudo = async (id, grant) => {
+  try {
+    await api(`/approval/requests/${id}/grant-sudo`, {method:"POST", body: JSON.stringify({grant})});
+    toast(grant ? "Sudo access granted for this session" : "Sudo access revoked", "ok");
+    loadRequests();
+  } catch (e) { toast(e.message, "err"); }
+};
+
 window.decide = async (id, approve) => {
   const comment = approve ? "" : (prompt("Reason for denial (optional):") || "");
   try {
     const res = await api(`/approval/requests/${id}/decide`, {method:"POST", body: JSON.stringify({approve, comment})});
-    const msg = res && res.status ? `Vote recorded — request ${res.status} (${res.approvals_have||0}/${res.approvals_need||1})` : "Vote recorded";
-    toast(msg, "ok"); loadRequests();
+    const status = res && res.status;
+    // If approved and sudo was requested, ask admin whether to grant sudo too
+    if (approve && status === "approved") {
+      // Find the request row in the table to check sudo_requested
+      const row = document.querySelector(`#reqRows tr td:first-child`);
+      // Simpler: just show a toast with grant option
+      toast(`Approved — if sudo was requested, use "Grant sudo" button`, "ok");
+    } else {
+      const msg = res && res.status ? `Vote recorded — request ${res.status} (${res.approvals_have||0}/${res.approvals_need||1})` : "Vote recorded";
+      toast(msg, "ok");
+    }
+    loadRequests();
+  } catch (e) { toast(e.message, "err"); }
+};
+// Approve a request AND immediately grant sudo elevation.
+window.decideWithSudo = async (id) => {
+  try {
+    const res = await api(`/approval/requests/${id}/decide`, {method:"POST", body: JSON.stringify({approve: true, comment: ""})});
+    if (res && (res.status === "approved" || res.approvals_have >= res.approvals_need)) {
+      await api(`/approval/requests/${id}/grant-sudo`, {method:"POST", body: JSON.stringify({grant: true})});
+      toast("Approved with sudo access granted", "ok");
+    } else {
+      toast(`Vote recorded (${res.approvals_have||0}/${res.approvals_need||1} approvals) — sudo will be granted when fully approved`, "ok");
+    }
+    loadRequests();
   } catch (e) { toast(e.message, "err"); }
 };
 $("#reqSubmitBtn").onclick = async () => {
@@ -4960,13 +5019,16 @@ $("#reqSubmitBtn").onclick = async () => {
   const reason = $("#reqReason").value.trim();
   if (!reason) { toast("Provide a reason", "err"); return; }
   try {
+    const sudoReq = $("#reqSudo").checked;
     await api("/approval/requests", {method:"POST", body: JSON.stringify({
       target_id: tid,
       reason: reason,
       ttl_seconds: parseInt($("#reqTTL").value,10)||1800,
+      sudo_requested: sudoReq,
     })});
-    toast("Request submitted — waiting for admin approval", "ok");
-    $("#reqReason").value = ""; loadRequests();
+    const msg = sudoReq ? "Request submitted — admin must also grant sudo" : "Request submitted — waiting for admin approval";
+    toast(msg, "ok");
+    $("#reqReason").value = ""; $("#reqSudo").checked = false; loadRequests();
   } catch (e) { toast(e.message, "err"); }
 };
 

@@ -3,7 +3,6 @@ package sshproxy
 import (
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/example/pam-platform/internal/linuxprovision"
 	"github.com/example/pam-platform/internal/policy"
@@ -23,12 +22,18 @@ func (s *Server) dialLinux(
 		return nil, linuxUser, "passthrough", fmt.Errorf("portal password required for Linux login")
 	}
 
-	// Sync sudoers/password when policy grants elevation (runs even if passthrough already works).
-	if needsLinuxPrivilegeSync(linuxPriv) {
+	// Always sync when a bootstrap account exists — this covers both granting (sudo/root)
+	// AND revoking (none) sudoers access. Without a bootstrap account we cannot provision.
+	if privUser != "" && privPassword != "" {
 		if err := s.syncLinuxAccount(targetAddr, portalUser, ptPassword, privUser, privPassword, linuxPriv, authMethods); err != nil {
 			log.Printf("ssh-proxy: linux privilege sync for %q: %v", linuxUser, err)
-			return nil, linuxUser, "provision", fmt.Errorf(
-				"could not apply Linux sudo policy for %q (check pam-svc bootstrap account): %w", linuxUser, err)
+			if linuxPriv == "sudo" || linuxPriv == "root" {
+				// Block connection — elevation failed
+				return nil, linuxUser, "provision", fmt.Errorf(
+					"could not apply Linux sudo policy for %q (check pam-svc bootstrap account): %w", linuxUser, err)
+			}
+			// Revocation failed — log and continue. The user may retain elevated
+			// access but we attempted the revocation.
 		}
 	}
 
@@ -58,15 +63,6 @@ func (s *Server) dialLinux(
 		return nil, linuxUser, "provisioned", fmt.Errorf("login as provisioned user %q: %w", linuxUser, err)
 	}
 	return c, linuxUser, "provisioned", nil
-}
-
-func needsLinuxPrivilegeSync(linuxPriv string) bool {
-	switch strings.ToLower(strings.TrimSpace(linuxPriv)) {
-	case "sudo", "root":
-		return true
-	default:
-		return false
-	}
 }
 
 // syncLinuxAccount updates password and /etc/sudoers.d via the bootstrap account.

@@ -371,6 +371,19 @@ func (s *Server) evaluateAccess(ctx context.Context, userID int64, primaryRole s
 			return dec, errors.New("approved access request required — open the portal, request access to this machine, and wait for approval")
 		}
 	}
+	// Check for an active sudo elevation grant from the JIT approval system.
+	// This lets users with linux_privilege=none request temporary sudo via the Requests tab.
+	if dec.LinuxPrivilege == "none" && policy.IsLinuxKind(kind) {
+		var sudoGranted int
+		_ = s.DB.QueryRowContext(ctx, `
+			SELECT COALESCE(sudo_granted,0) FROM access_requests
+			WHERE user_id=? AND target_id=? AND status='approved' AND COALESCE(sudo_granted,0)=1
+			AND decided_at + ttl_seconds > strftime('%s','now')
+			ORDER BY decided_at DESC LIMIT 1`, userID, targetID).Scan(&sudoGranted)
+		if sudoGranted == 1 {
+			dec.LinuxPrivilege = "sudo"
+		}
+	}
 	return dec, nil
 }
 

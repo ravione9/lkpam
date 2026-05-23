@@ -24,7 +24,9 @@ type Request struct {
 	ApproverID *int64 `json:"approver_id,omitempty"`
 	CreatedAt  int64  `json:"created_at"`
 	DecidedAt  *int64 `json:"decided_at,omitempty"`
-	TTLSeconds int    `json:"ttl_seconds"`
+	TTLSeconds    int    `json:"ttl_seconds"`
+	SudoRequested int    `json:"sudo_requested,omitempty"`
+	SudoGranted   int    `json:"sudo_granted,omitempty"`
 }
 
 // Service is the approval workflow facade.
@@ -48,14 +50,18 @@ type GroupMembershipLookup interface {
 }
 
 // Create files a new access request.
-func (s *Service) Create(ctx context.Context, userID, targetID int64, reason string, ttl time.Duration) (int64, error) {
+func (s *Service) Create(ctx context.Context, userID, targetID int64, reason string, ttl time.Duration, sudoRequested bool) (int64, error) {
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}
+	sudo := 0
+	if sudoRequested {
+		sudo = 1
+	}
 	res, err := s.DB.ExecContext(ctx, `
-		INSERT INTO access_requests(user_id, target_id, reason, status, created_at, ttl_seconds)
-		VALUES(?,?,?,'pending',?,?)`,
-		userID, targetID, reason, db.Now(), int(ttl.Seconds()))
+		INSERT INTO access_requests(user_id, target_id, reason, status, created_at, ttl_seconds, sudo_requested)
+		VALUES(?,?,?,'pending',?,?,?)`,
+		userID, targetID, reason, db.Now(), int(ttl.Seconds()), sudo)
 	if err != nil {
 		return 0, err
 	}
@@ -79,10 +85,12 @@ var ErrRequestClosed = errors.New("request is not pending")
 // Get loads a single access request by ID.
 func (s *Service) Get(ctx context.Context, id int64) (*Request, error) {
 	row := s.DB.QueryRowContext(ctx, `
-		SELECT id, user_id, target_id, reason, status, created_at, ttl_seconds
+		SELECT id, user_id, target_id, reason, status, created_at, ttl_seconds,
+		       COALESCE(sudo_requested,0), COALESCE(sudo_granted,0)
 		FROM access_requests WHERE id = ?`, id)
 	var r Request
-	if err := row.Scan(&r.ID, &r.UserID, &r.TargetID, &r.Reason, &r.Status, &r.CreatedAt, &r.TTLSeconds); err != nil {
+	if err := row.Scan(&r.ID, &r.UserID, &r.TargetID, &r.Reason, &r.Status, &r.CreatedAt, &r.TTLSeconds,
+		&r.SudoRequested, &r.SudoGranted); err != nil {
 		return nil, errors.New("request not found")
 	}
 	return &r, nil
@@ -372,6 +380,7 @@ type RequestView struct {
 func (s *Service) ListPendingEnriched(ctx context.Context) ([]RequestView, error) {
 	return s.queryEnriched(ctx, `
 		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds, ar.decided_at,
+		       COALESCE(ar.sudo_requested,0), COALESCE(ar.sudo_granted,0),
 		       u.username, t.name, t.kind, t.tier
 		FROM access_requests ar
 		JOIN users u ON u.id = ar.user_id
@@ -384,6 +393,7 @@ func (s *Service) ListPendingEnriched(ctx context.Context) ([]RequestView, error
 func (s *Service) ListMineEnriched(ctx context.Context, userID int64) ([]RequestView, error) {
 	return s.queryEnriched(ctx, `
 		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds, ar.decided_at,
+		       COALESCE(ar.sudo_requested,0), COALESCE(ar.sudo_granted,0),
 		       u.username, t.name, t.kind, t.tier
 		FROM access_requests ar
 		JOIN users u ON u.id = ar.user_id
@@ -391,6 +401,16 @@ func (s *Service) ListMineEnriched(ctx context.Context, userID int64) ([]Request
 		WHERE ar.user_id = ?
 		ORDER BY ar.created_at DESC
 		LIMIT 50`, userID)
+}
+
+// GrantSudo marks sudo_granted=1 on an approved request.
+func (s *Service) GrantSudo(ctx context.Context, requestID int64, grant bool) error {
+	v := 0
+	if grant {
+		v = 1
+	}
+	_, err := s.DB.ExecContext(ctx, `UPDATE access_requests SET sudo_granted=? WHERE id=?`, v, requestID)
+	return err
 }
 
 func (s *Service) queryEnriched(ctx context.Context, q string, args ...any) ([]RequestView, error) {
@@ -403,14 +423,17 @@ func (s *Service) queryEnriched(ctx context.Context, q string, args ...any) ([]R
 	for rows.Next() {
 		var v RequestView
 		var decidedAt sql.NullInt64
+		var sudoReq, sudoGrant int
 		if err := rows.Scan(&v.ID, &v.UserID, &v.TargetID, &v.Reason, &v.Status,
-			&v.CreatedAt, &v.TTLSeconds, &decidedAt,
+			&v.CreatedAt, &v.TTLSeconds, &decidedAt, &sudoReq, &sudoGrant,
 			&v.Username, &v.TargetName, &v.TargetKind, &v.TargetTier); err != nil {
 			return nil, err
 		}
 		if decidedAt.Valid {
 			v.DecidedAt = &decidedAt.Int64
 		}
+		v.SudoRequested = sudoReq
+		v.SudoGranted = sudoGrant
 		out = append(out, v)
 	}
 	if err := rows.Err(); err != nil {

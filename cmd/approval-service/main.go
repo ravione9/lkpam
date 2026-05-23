@@ -56,16 +56,17 @@ func main() {
 			return
 		}
 		var req struct {
-			TargetID   int64  `json:"target_id"`
-			Reason     string `json:"reason"`
-			TTLSeconds int    `json:"ttl_seconds"`
+			TargetID      int64  `json:"target_id"`
+			Reason        string `json:"reason"`
+			TTLSeconds    int    `json:"ttl_seconds"`
+			SudoRequested bool   `json:"sudo_requested"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpx.Error(w, http.StatusBadRequest, err)
 			return
 		}
 		id, err := svc.Create(r.Context(), uid, req.TargetID, req.Reason,
-			time.Duration(req.TTLSeconds)*time.Second)
+			time.Duration(req.TTLSeconds)*time.Second, req.SudoRequested)
 		if err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return
@@ -103,6 +104,25 @@ func main() {
 			return
 		}
 		httpx.JSON(w, http.StatusOK, res)
+	})
+
+	mux.HandleFunc("POST /requests/{id}/grant-sudo", func(w http.ResponseWriter, r *http.Request) {
+		_, approverRole, ok := callerIdentity(r)
+		if !ok || approverRole != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin only"))
+			return
+		}
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		var req struct{ Grant bool `json:"grant"` }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := svc.GrantSudo(r.Context(), id, req.Grant); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "sudo_granted": req.Grant})
 	})
 
 	mux.HandleFunc("GET /requests/{id}", func(w http.ResponseWriter, r *http.Request) {

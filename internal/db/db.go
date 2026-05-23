@@ -327,6 +327,8 @@ func (d *DB) migrate() error {
 		`ALTER TABLE users ADD COLUMN mfa_exempt INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE audit_events ADD COLUMN source TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE policies ADD COLUMN linux_privilege TEXT NOT NULL DEFAULT 'none'`,
+		`ALTER TABLE access_requests ADD COLUMN sudo_requested INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE access_requests ADD COLUMN sudo_granted INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE targets ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`,
 	} {
 		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
