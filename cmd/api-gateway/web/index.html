@@ -1348,32 +1348,80 @@
           <tbody id="userRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
         </table>
         <div class="form-panel popup-form hidden" id="userForm">
-          <h4 id="userFormTitle">Add user</h4>
+          <!-- Modal header -->
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+            <div>
+              <h3 id="userFormTitle" style="margin:0;font-size:15px;font-weight:600;color:var(--fg)">Add user</h3>
+              <p style="margin:3px 0 0;font-size:12px;color:var(--muted)">Fill in the details below to create or update a user account.</p>
+            </div>
+            <button id="userCancelBtn" style="background:none;border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 9px;cursor:pointer;color:var(--muted);font-size:16px;line-height:1;display:flex;align-items:center" title="Close">&#x2715;</button>
+          </div>
+
           <input type="hidden" id="userId"/>
-          <div class="form-grid">
-            <label>Username</label><input id="userName"/>
-            <label>Email</label><input id="userEmail"/>
-            <label>Role</label>
-            <select id="userRole"></select>
-            <label>Password</label><input id="userPassword" type="password"/>
-            <p class="muted" id="userPasswordHint" style="font-size:12px;margin-top:4px"></p>
-            <label>Disabled</label><div><input type="checkbox" id="userDisabled" style="width:auto"/></div>
-            <label id="userMfaLabel" class="hidden">MFA</label>
-            <div id="userMfaRow" class="hidden">
-              <div class="toggle-field">
-                <label class="switch" title="Require MFA for this user">
+
+          <!-- Account fields -->
+          <div style="margin-bottom:20px">
+            <p style="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-2);margin:0 0 12px">Account</p>
+            <div class="form-grid" style="grid-template-columns:130px 1fr;gap:10px 16px">
+              <label>Username</label>
+              <input id="userName" placeholder="e.g. john.doe"/>
+
+              <label>Email</label>
+              <input id="userEmail" placeholder="john.doe@company.com"/>
+
+              <label>Role</label>
+              <select id="userRole"></select>
+
+              <label>Password</label>
+              <div style="width:100%">
+                <input id="userPassword" type="password" placeholder="new password (blank to keep)" style="width:100%"/>
+                <p class="muted" id="userPasswordHint" style="font-size:11.5px;margin:5px 0 0;line-height:1.5"></p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Access controls -->
+          <div style="margin-bottom:20px">
+            <p style="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-2);margin:0 0 12px">Access controls</p>
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <!-- Disabled toggle -->
+              <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r);padding:11px 14px">
+                <div>
+                  <p style="margin:0;font-size:13px;font-weight:500;color:var(--fg)">Account disabled</p>
+                  <p style="margin:3px 0 0;font-size:11.5px;color:var(--muted)">Prevents this user from signing in</p>
+                </div>
+                <label class="switch" title="Disable this user account" style="flex-shrink:0;margin-left:16px">
+                  <input type="checkbox" id="userDisabled"/>
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
+
+              <!-- MFA toggle -->
+              <div id="userMfaRow" class="hidden" style="display:flex;align-items:center;justify-content:space-between;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r);padding:11px 14px">
+                <div>
+                  <p style="margin:0;font-size:13px;font-weight:500;color:var(--fg)">Require MFA <label id="userMfaLabel" style="font-size:inherit;color:inherit;font-weight:inherit"></label></p>
+                  <p style="margin:3px 0 0;font-size:11.5px;color:var(--muted)" id="userMfaCaption">User must enroll and verify a one-time code at sign-in</p>
+                </div>
+                <label class="switch" title="Require MFA for this user" style="flex-shrink:0;margin-left:16px">
                   <input type="checkbox" id="userMfaRequired"/>
                   <span class="switch-slider"></span>
                 </label>
-                <span class="toggle-caption" id="userMfaCaption">Required — user must enroll and use MFA at sign-in</span>
               </div>
             </div>
-            <label>Groups</label>
-            <div id="userGroupChecks" class="muted" style="font-size:13px">Loading groups…</div>
           </div>
-          <div class="row" style="margin-top:12px">
-            <button class="primary" id="userSaveBtn">Save</button>
-            <button class="ghost" id="userCancelBtn">Cancel</button>
+
+          <!-- Groups -->
+          <div style="margin-bottom:4px">
+            <p style="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-2);margin:0 0 12px">Group membership</p>
+            <div id="userGroupChecks" style="font-size:13px;display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;padding:2px 0">
+              <span class="muted">Loading groups…</span>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:24px;padding-top:16px;border-top:1px solid var(--border)">
+            <button class="ghost" id="userCancelBtnFooter">Cancel</button>
+            <button class="primary" id="userSaveBtn">Save changes</button>
           </div>
         </div>
       </section>
@@ -4245,14 +4293,14 @@ async function loadUsers() {
   } catch (e) { $("#userRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
 }
 function setUserMfaFormVisible(show) {
-  $("#userMfaLabel").classList.toggle("hidden", !show);
-  $("#userMfaRow").classList.toggle("hidden", !show);
+  const row = $("#userMfaRow");
+  row.style.display = show ? "flex" : "none";
 }
 function syncUserMfaCaption() {
   const on = $("#userMfaRequired").checked;
   $("#userMfaCaption").textContent = on
-    ? "Required — user must enroll and use MFA at sign-in"
-    : "Disabled — user is exempt from MFA (admin override)";
+    ? "User must enroll and verify a one-time code at sign-in"
+    : "User is exempt from MFA (admin override)";
 }
 function resetUserForm() {
   ["userId","userName","userEmail","userPassword"].forEach(id => $("#"+id).value = "");
@@ -4276,19 +4324,23 @@ async function renderUserGroupChecks(userId, memberGroupIds) {
   }
   const mids = new Set(memberGroupIds || []);
   $("#userGroupChecks").innerHTML = cache.groups.map(g => `
-    <label style="display:block;margin:4px 0">
-      <input type="checkbox" data-gid="${g.id}" ${mids.has(g.id)?'checked':''} style="width:auto"/>
-      ${esc(g.name)} <span class="muted">→ ${esc(g.role)}</span>
+    <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface-2);cursor:pointer;transition:background .12s">
+      <input type="checkbox" data-gid="${g.id}" ${mids.has(g.id)?'checked':''} style="width:auto;accent-color:var(--accent);width:15px;height:15px;flex-shrink:0"/>
+      <span style="font-size:13px;font-weight:500;color:var(--fg)">${esc(g.name)}</span>
+      <span class="pill accent" style="margin-left:auto;font-size:11px">→ ${esc(g.role)}</span>
     </label>`).join("");
 }
 $("#userAddBtn").onclick = async () => {
   await ensureRoles(); fillRoleSelect($("#userRole"), "user");
   resetUserForm(); $("#userFormTitle").textContent = "Add user";
+  $("#userFormTitle").nextElementSibling.textContent = "Create a new local user account.";
+  $("#userSaveBtn").textContent = "Add user";
   $("#userPassword").placeholder = "password (required)";
   renderUserGroupChecks(null, []);
   $("#userForm").classList.remove("hidden");
 };
 $("#userCancelBtn").onclick = resetUserForm;
+$("#userCancelBtnFooter").onclick = resetUserForm;
 window.editUser = async id => {
   const u = cache.users.find(x => x.id === id); if (!u) return;
   await ensureRoles(); fillRoleSelect($("#userRole"), u.role);
@@ -4305,7 +4357,10 @@ window.editUser = async id => {
     $("#userPassword").placeholder = "new password (blank to keep)";
     $("#userPasswordHint").textContent = "";
   }
-  $("#userDisabled").checked = !!u.disabled; $("#userFormTitle").textContent = "Edit user";
+  $("#userDisabled").checked = !!u.disabled;
+  $("#userFormTitle").textContent = "Edit user";
+  $("#userFormTitle").nextElementSibling.textContent = `Editing account for ${u.username}.`;
+  $("#userSaveBtn").textContent = "Save changes";
   if (isAdmin()) {
     setUserMfaFormVisible(true);
     $("#userMfaRequired").checked = !u.mfa_exempt;
@@ -4339,7 +4394,7 @@ $("#userSaveBtn").onclick = async () => {
     if (id) {
       const body = { email: $("#userEmail").value.trim(), role: $("#userRole").value, disabled: $("#userDisabled").checked };
       const pw = $("#userPassword").value; if (pw) body.password = pw;
-      if (isAdmin() && !$("#userMfaRow").classList.contains("hidden")) {
+      if (isAdmin() && $("#userMfaRow").style.display !== "none") {
         body.mfa_exempt = !$("#userMfaRequired").checked;
       }
       await api("/auth/users/"+id, {method:"PUT", body: JSON.stringify(body)});
