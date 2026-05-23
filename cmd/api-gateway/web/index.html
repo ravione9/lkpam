@@ -1686,6 +1686,13 @@
             <thead><tr><th>ID</th><th>User</th><th>Machine</th><th>Tier</th><th>Reason</th><th>Sudo req</th><th>Approvals</th><th>Created</th><th></th></tr></thead>
             <tbody id="reqRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
           </table>
+
+          <h3 style="margin-top:28px">Active Approvals</h3>
+          <p class="desc">Currently approved JIT access grants that have not yet expired. Revoke to cut access immediately.</p>
+          <table>
+            <thead><tr><th>ID</th><th>User</th><th>Machine</th><th>Tier</th><th>Reason</th><th>Sudo</th><th>Expires in</th><th>Approved</th><th></th></tr></thead>
+            <tbody id="activeApprovalRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+          </table>
         </div>
       </section>
 
@@ -4875,34 +4882,71 @@ async function loadRequests() {
     const others = (rows||[]).filter(r => r.user_id !== currentUser.id);
     if (!others.length) {
       $("#reqRows").innerHTML = `<tr><td colspan="9" class="muted">No requests awaiting your approval.</td></tr>`;
-      return;
+    } else {
+      $("#reqRows").innerHTML = others.map(r => {
+        const myVote = (r.decisions||[]).find(d => d.approver_id === currentUser.id);
+        // If sudo was requested, show extra "Approve + grant sudo" option
+        const sudoGrantBtn = r.sudo_requested
+          ? `<button class="ghost" style="font-size:11px;padding:3px 7px" title="Approve this request AND grant sudo access" onclick="decideWithSudo(${r.id})">Approve + sudo</button>`
+          : "";
+        const buttons = myVote
+          ? `<span class="pill ${myVote.approve?'ok':'err'}">you voted ${myVote.approve?'approve':'deny'}</span>`
+          : `<button class="ghost" onclick="decide(${r.id}, true)">Approve</button>
+             ${sudoGrantBtn}
+             <button class="ghost danger" onclick="decide(${r.id}, false)">Deny</button>`;
+        // Sudo cell: if sudo was requested show a "Grant sudo" toggle
+        const sudoReqCell = r.sudo_requested
+          ? `<span class="pill warn" title="User requested sudo access">requested</span>`
+          : `<span class="muted">—</span>`;
+        return `<tr>
+          <td>${r.id}</td><td>${esc(r.username)}</td>
+          <td>${esc(r.target_name)} <span class="muted">(${esc(r.target_kind)})</span></td>
+          <td><span class="pill">T${r.target_tier}</span></td>
+          <td>${esc(r.reason)}</td>
+          <td>${sudoReqCell}</td>
+          <td>${approvalProgressCell(r)}</td>
+          <td class="muted">${fmtTime(r.created_at)}</td>
+          <td class="actions">${buttons}</td>
+        </tr>`;
+      }).join("");
     }
-    $("#reqRows").innerHTML = others.map(r => {
-      const myVote = (r.decisions||[]).find(d => d.approver_id === currentUser.id);
-      // If sudo was requested, show extra "Approve + grant sudo" option
-      const sudoGrantBtn = r.sudo_requested
-        ? `<button class="ghost" style="font-size:11px;padding:3px 7px" title="Approve this request AND grant sudo access" onclick="decideWithSudo(${r.id})">Approve + sudo</button>`
-        : "";
-      const buttons = myVote
-        ? `<span class="pill ${myVote.approve?'ok':'err'}">you voted ${myVote.approve?'approve':'deny'}</span>`
-        : `<button class="ghost" onclick="decide(${r.id}, true)">Approve</button>
-           ${sudoGrantBtn}
-           <button class="ghost danger" onclick="decide(${r.id}, false)">Deny</button>`;
-      // Sudo cell: if sudo was requested show a "Grant sudo" toggle
-      const sudoReqCell = r.sudo_requested
-        ? `<span class="pill warn" title="User requested sudo access">requested</span>`
-        : `<span class="muted">—</span>`;
-      return `<tr>
-        <td>${r.id}</td><td>${esc(r.username)}</td>
-        <td>${esc(r.target_name)} <span class="muted">(${esc(r.target_kind)})</span></td>
-        <td><span class="pill">T${r.target_tier}</span></td>
-        <td>${esc(r.reason)}</td>
-        <td>${sudoReqCell}</td>
-        <td>${approvalProgressCell(r)}</td>
-        <td class="muted">${fmtTime(r.created_at)}</td>
-        <td class="actions">${buttons}</td>
-      </tr>`;
-    }).join("");
+
+    // Active approvals table — admin can revoke any live grant
+    try {
+      const active = await api("/approval/requests/approved");
+      if (!(active||[]).length) {
+        $("#activeApprovalRows").innerHTML = `<tr><td colspan="9" class="muted">No active approvals right now.</td></tr>`;
+      } else {
+        $("#activeApprovalRows").innerHTML = active.map(r => {
+          const now = Math.floor(Date.now() / 1000);
+          const expiresIn = r.decided_at && r.ttl_seconds
+            ? Math.max(0, (r.decided_at + r.ttl_seconds) - now)
+            : null;
+          const expiryStr = expiresIn !== null
+            ? (expiresIn > 3600
+                ? Math.floor(expiresIn/3600) + "h " + Math.floor((expiresIn%3600)/60) + "m"
+                : Math.floor(expiresIn/60) + "m " + (expiresIn%60) + "s")
+            : "—";
+          const sudoCell = r.sudo_granted
+            ? `<span class="pill ok">sudo ✓</span>`
+            : r.sudo_requested
+              ? `<span class="pill warn">requested</span>`
+              : `<span class="muted">—</span>`;
+          return `<tr>
+            <td>${r.id}</td><td>${esc(r.username)}</td>
+            <td>${esc(r.target_name)} <span class="muted">(${esc(r.target_kind)})</span></td>
+            <td><span class="pill">T${r.target_tier}</span></td>
+            <td>${esc(r.reason)}</td>
+            <td>${sudoCell}</td>
+            <td class="muted">${expiryStr}</td>
+            <td class="muted">${fmtTime(r.decided_at)}</td>
+            <td class="actions"><button class="ghost danger" onclick="revokeApproval(${r.id})">Revoke</button></td>
+          </tr>`;
+        }).join("");
+      }
+    } catch (e) {
+      $("#activeApprovalRows").innerHTML = `<tr><td colspan="9" class="muted">${esc(e.message)}</td></tr>`;
+    }
   } catch (e) {
     $("#myReqRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`;
     if (isAdmin()) $("#reqRows").innerHTML = `<tr><td colspan="9" class="muted">${esc(e.message)}</td></tr>`;
@@ -5000,6 +5044,16 @@ window.decide = async (id, approve) => {
     loadRequests();
   } catch (e) { toast(e.message, "err"); }
 };
+// Revoke an active approval immediately.
+window.revokeApproval = async (id) => {
+  if (!confirm(`Revoke approval #${id}? The user will lose access immediately.`)) return;
+  try {
+    await api(`/approval/requests/${id}/revoke`, {method:"POST"});
+    toast("Access revoked — user will be blocked on next connection attempt", "ok");
+    loadRequests();
+  } catch (e) { toast(e.message, "err"); }
+};
+
 // Approve a request AND immediately grant sudo elevation.
 window.decideWithSudo = async (id) => {
   try {
@@ -5127,9 +5181,17 @@ function renderSessions() {
         dBtn.addEventListener("click", () => downloadRecording(s.id));
         actions.appendChild(dBtn);
       } else {
+        const pBtn = document.createElement("button");
+        pBtn.className = "ghost";
+        pBtn.textContent = "▶ Play";
+        pBtn.title = "Play recording in browser";
+        pBtn.addEventListener("click", () => playGuacRecording(s.id));
+        actions.appendChild(pBtn);
         const dBtn = document.createElement("button");
         dBtn.className = "ghost";
-        dBtn.textContent = "Recording";
+        dBtn.style.marginLeft = "6px";
+        dBtn.textContent = "Download";
+        dBtn.title = "Download .guac recording file";
         dBtn.addEventListener("click", () => downloadRecording(s.id));
         actions.appendChild(dBtn);
       }
@@ -5174,8 +5236,17 @@ window.downloadRecording = async sid => {
     URL.revokeObjectURL(url);
     toast(ct.includes("text/plain")
       ? "Session log downloaded"
-      : "Recording downloaded — replay with Apache Guacamole player", "ok");
+      : "Recording downloaded (.guac) — use ▶ Play button to watch in browser", "ok");
   } catch (e) { toast(e.message, "err"); }
+};
+
+window.playGuacRecording = sid => {
+  const playerUrl = `/guac-player.html?session=${encodeURIComponent(sid)}&token=${encodeURIComponent(token)}`;
+  const w = window.open(playerUrl, "_blank", "width=1200,height=760,noopener,noreferrer");
+  if (!w) {
+    // Pop-up blocked — navigate in current tab as fallback
+    location.href = playerUrl;
+  }
 };
 
 window.viewLogRecording = async sid => {

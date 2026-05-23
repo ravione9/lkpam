@@ -126,7 +126,7 @@ func main() {
 	mux.Handle("/api/rdp/", http.StripPrefix("/api/rdp", reverseWebSocket(rdpURL)))
 
 	// Session viewer pages must never fall back to index.html (that shows the login UI).
-	for _, page := range []string{"rdp-viewer.html", "ssh-viewer.html", "web-viewer.html"} {
+	for _, page := range []string{"rdp-viewer.html", "ssh-viewer.html", "web-viewer.html", "guac-player.html"} {
 		name := page
 		mux.HandleFunc("GET /"+name, serveWebFile(name))
 	}
@@ -707,7 +707,7 @@ func isReservedPAMPath(path string) bool {
 			return true
 		}
 	}
-	for _, p := range []string{"/web-viewer.html", "/rdp-viewer.html", "/ssh-viewer.html"} {
+	for _, p := range []string{"/web-viewer.html", "/rdp-viewer.html", "/ssh-viewer.html", "/guac-player.html"} {
 		if path == p {
 			return true
 		}

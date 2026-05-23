@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>PAM — Session Playback</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; height: 100vh; display: flex; flex-direction: column; }
+
+    header { padding: 10px 16px; background: #020617; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #334155; flex-wrap: wrap; }
+    header h1 { font-size: 15px; font-weight: 600; }
+    header .muted { font-size: 12px; color: #94a3b8; margin-top: 2px; }
+
+    #displayWrap { flex: 1; min-height: 200px; overflow: hidden; background: #000; position: relative; }
+    #display { width: 100%; height: 100%; }
+    #display canvas { display: block; }
+
+    /* Loading overlay */
+    #loadOverlay { position: absolute; inset: 0; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; z-index: 10; }
+    #loadOverlay.hidden { display: none; }
+    #loadBar { width: 260px; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+    #loadFill { height: 100%; background: #38bdf8; border-radius: 3px; width: 0%; transition: width 0.2s; }
+    #loadMsg { font-size: 13px; color: #94a3b8; }
+
+    /* Controls bar */
+    #controls { background: #020617; border-top: 1px solid #334155; padding: 10px 16px; display: flex; flex-direction: column; gap: 8px; }
+    #seekRow { display: flex; align-items: center; gap: 10px; }
+    #seekBar { flex: 1; height: 4px; -webkit-appearance: none; appearance: none; background: #1e293b; border-radius: 2px; cursor: pointer; outline: none; }
+    #seekBar::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #38bdf8; cursor: pointer; }
+    #seekBar::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #38bdf8; cursor: pointer; border: none; }
+    #timeDisplay { font-size: 12px; color: #94a3b8; white-space: nowrap; min-width: 100px; text-align: right; font-family: ui-monospace, monospace; }
+
+    #btnRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ctrl-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 13px; }
+    .ctrl-btn:hover:not(:disabled) { background: #475569; }
+    .ctrl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .ctrl-btn.primary { background: #2563eb; border-color: #3b82f6; }
+    .ctrl-btn.primary:hover:not(:disabled) { background: #1d4ed8; }
+
+    #speedSelect { padding: 5px 8px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; font-size: 13px; cursor: pointer; }
+    .spacer { flex: 1; }
+
+    #statusBar { padding: 6px 16px; font-size: 12px; background: #020617; color: #94a3b8; border-top: 1px solid #1e293b; }
+    #statusBar.err { color: #f87171; }
+
+    #errPanel { display: none; padding: 24px; font-family: system-ui, sans-serif; }
+    #errPanel h2 { font-size: 16px; margin-bottom: 8px; color: #f87171; }
+    #errPanel p { font-size: 13px; color: #94a3b8; line-height: 1.5; margin-bottom: 8px; }
+    #errPanel a { color: #38bdf8; }
+  </style>
+  <script>window.module={exports:{}};</script>
+  <script src="/vendor/guacamole-common.min.js"></script>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>PAM — Session Playback</h1>
+      <div class="muted" id="sessionLabel">Loading recording…</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="ctrl-btn" id="downloadBtn" disabled>Download .guac</button>
+      <button class="ctrl-btn" id="backBtn">← Back to Portal</button>
+    </div>
+  </header>
+
+  <div id="displayWrap">
+    <div id="display"></div>
+    <div id="loadOverlay">
+      <div id="loadBar"><div id="loadFill"></div></div>
+      <div id="loadMsg">Fetching recording…</div>
+    </div>
+  </div>
+
+  <div id="errPanel">
+    <h2>Playback failed</h2>
+    <p id="errMsg">An error occurred.</p>
+    <p><a href="/">← Back to PAM portal</a></p>
+  </div>
+
+  <div id="controls">
+    <div id="seekRow">
+      <input type="range" id="seekBar" min="0" max="1000" value="0" step="1" disabled/>
+      <span id="timeDisplay">0:00 / 0:00</span>
+    </div>
+    <div id="btnRow">
+      <button class="ctrl-btn primary" id="playBtn" disabled>▶ Play</button>
+      <button class="ctrl-btn" id="rewindBtn" disabled title="Jump to start">⏮ Restart</button>
+      <label style="font-size:13px;color:#94a3b8;display:flex;align-items:center;gap:6px">
+        Speed:
+        <select id="speedSelect">
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="5">5×</option>
+          <option value="10">10×</option>
+        </select>
+      </label>
+      <div class="spacer"></div>
+      <span id="recLabel" style="font-size:11px;color:#475569">● REC</span>
+    </div>
+  </div>
+
+  <div id="statusBar">Loading…</div>
+
+  <script>
+    const params      = new URLSearchParams(location.search);
+    const sessionId   = params.get("session");
+    const token       = params.get("token");
+
+    const displayEl   = document.getElementById("display");
+    const displayWrap = document.getElementById("displayWrap");
+    const loadOverlay = document.getElementById("loadOverlay");
+    const loadFill    = document.getElementById("loadFill");
+    const loadMsg     = document.getElementById("loadMsg");
+    const statusBar   = document.getElementById("statusBar");
+    const sessionLabel= document.getElementById("sessionLabel");
+    const playBtn     = document.getElementById("playBtn");
+    const rewindBtn   = document.getElementById("rewindBtn");
+    const seekBar     = document.getElementById("seekBar");
+    const timeDisplay = document.getElementById("timeDisplay");
+    const speedSelect = document.getElementById("speedSelect");
+    const downloadBtn = document.getElementById("downloadBtn");
+    const errPanel    = document.getElementById("errPanel");
+
+    let recording = null;
+    let duration  = 0;
+    let seeking   = false;
+    let blobUrl   = null;
+    let rawBlob   = null;
+
+    function fmtMs(ms) {
+      if (!ms || ms < 0) return "0:00";
+      const totalSec = Math.floor(ms / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+      return `${m}:${String(s).padStart(2,"0")}`;
+    }
+
+    function setStatus(msg, isErr) {
+      statusBar.textContent = msg;
+      statusBar.className = isErr ? "err" : "";
+    }
+
+    function showError(msg) {
+      loadOverlay.classList.add("hidden");
+      displayWrap.style.display = "none";
+      document.getElementById("controls").style.display = "none";
+      errPanel.style.display = "block";
+      document.getElementById("errMsg").textContent = msg;
+      setStatus(msg, true);
+    }
+
+    function enableControls() {
+      playBtn.disabled  = false;
+      rewindBtn.disabled = false;
+      seekBar.disabled  = false;
+    }
+
+    function updateSeek(ms) {
+      if (seeking) return;
+      duration = recording ? recording.getDuration() : duration;
+      if (duration > 0) {
+        seekBar.value = Math.round((ms / duration) * 1000);
+      }
+      timeDisplay.textContent = fmtMs(ms) + " / " + fmtMs(duration);
+    }
+
+    function scaleDisplay() {
+      if (!recording) return;
+      const disp = recording.getDisplay();
+      const cw = disp.getWidth();
+      const ch = disp.getHeight();
+      if (cw <= 0 || ch <= 0) return;
+      const ww = displayWrap.clientWidth || 800;
+      const wh = displayWrap.clientHeight || 400;
+      const scale = Math.min(ww / cw, wh / ch);
+      const el = disp.getElement();
+      el.style.transform = `scale(${scale})`;
+      el.style.transformOrigin = "top left";
+      el.style.position = "absolute";
+      el.style.top = Math.max(0, (wh - ch * scale) / 2) + "px";
+      el.style.left = Math.max(0, (ww - cw * scale) / 2) + "px";
+    }
+
+    async function loadRecording() {
+      if (typeof Guacamole === "undefined") {
+        showError("Guacamole client library failed to load. Redeploy api-gateway.");
+        return;
+      }
+      if (!sessionId || !token) {
+        showError("Missing session or token — open from PAM portal Sessions tab.");
+        return;
+      }
+
+      sessionLabel.textContent = "Session: " + sessionId;
+      loadMsg.textContent = "Fetching recording…";
+
+      let resp;
+      try {
+        resp = await fetch("/api/audit/sessions/" + encodeURIComponent(sessionId) + "/recording", {
+          headers: { Authorization: "Bearer " + token },
+        });
+      } catch (e) {
+        showError("Network error: " + e.message);
+        return;
+      }
+      if (!resp.ok) {
+        let errText = "HTTP " + resp.status;
+        try { const j = await resp.json(); errText = j.error || errText; } catch (_) {}
+        showError("Could not load recording: " + errText);
+        return;
+      }
+
+      // Stream-read with progress
+      const contentLength = parseInt(resp.headers.get("content-length") || "0", 10);
+      let received = 0;
+      const chunks = [];
+      const reader = resp.body.getReader();
+      loadMsg.textContent = "Loading recording data…";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        if (contentLength > 0) {
+          loadFill.style.width = Math.min(95, Math.round(received / contentLength * 95)) + "%";
+        } else {
+          // Unknown size — pulse
+          const pct = (received / 50000) % 1;
+          loadFill.style.width = Math.round(pct * 80 + 10) + "%";
+        }
+      }
+      rawBlob = new Blob(chunks);
+      blobUrl = URL.createObjectURL(rawBlob);
+
+      loadMsg.textContent = "Parsing recording…";
+      loadFill.style.width = "98%";
+
+      // Enable download button
+      downloadBtn.disabled = false;
+
+      // Set up Guacamole.SessionRecording via StaticHTTPTunnel on blob URL
+      let tunnel;
+      try {
+        tunnel = new Guacamole.StaticHTTPTunnel(blobUrl);
+      } catch (e) {
+        showError("Failed to create playback tunnel: " + e.message);
+        return;
+      }
+
+      recording = new Guacamole.SessionRecording(tunnel);
+      const disp = recording.getDisplay();
+      const canvas = disp.getElement();
+      canvas.style.display = "block";
+      displayEl.appendChild(canvas);
+      disp.onresize = scaleDisplay;
+
+      recording.onprogress = (ms, loaded) => {
+        updateSeek(ms);
+        if (!loaded) {
+          // Still indexing keyframes — keep loading bar partial
+          loadFill.style.width = "99%";
+        }
+      };
+
+      recording.oncomplete = () => {
+        loadFill.style.width = "100%";
+        setTimeout(() => loadOverlay.classList.add("hidden"), 300);
+        duration = recording.getDuration();
+        updateSeek(0);
+        enableControls();
+        setStatus("Recording loaded — " + fmtMs(duration) + " duration. Click ▶ Play to start.");
+        // Seek to start to render first frame
+        recording.seek(0, () => { scaleDisplay(); });
+      };
+
+      recording.onplay = () => {
+        playBtn.textContent = "⏸ Pause";
+        setStatus("Playing…");
+      };
+      recording.onpause = () => {
+        playBtn.textContent = "▶ Play";
+        const cur = Math.round((seekBar.value / 1000) * recording.getDuration());
+        setStatus("Paused at " + fmtMs(cur));
+      };
+
+      recording.onseek = (ms) => {
+        updateSeek(ms);
+      };
+
+      // Connect triggers loading of the static recording
+      try {
+        recording.connect();
+      } catch (e) {
+        showError("Playback error: " + e.message);
+        return;
+      }
+
+      window.addEventListener("resize", () => { scaleDisplay(); });
+    }
+
+    // Controls
+    playBtn.onclick = () => {
+      if (!recording) return;
+      if (recording.isPlaying()) {
+        recording.pause();
+      } else {
+        recording.play();
+      }
+    };
+
+    rewindBtn.onclick = () => {
+      if (!recording) return;
+      recording.pause();
+      recording.seek(0, () => {
+        updateSeek(0);
+        playBtn.textContent = "▶ Play";
+        setStatus("Rewound to start.");
+      });
+    };
+
+    seekBar.addEventListener("mousedown", () => { seeking = true; });
+    seekBar.addEventListener("touchstart", () => { seeking = true; }, { passive: true });
+    seekBar.addEventListener("input", () => {
+      if (!recording) return;
+      const ms = Math.round((seekBar.value / 1000) * recording.getDuration());
+      timeDisplay.textContent = fmtMs(ms) + " / " + fmtMs(recording.getDuration());
+    });
+    seekBar.addEventListener("change", () => {
+      if (!recording) return;
+      const ms = Math.round((seekBar.value / 1000) * recording.getDuration());
+      const wasPlaying = recording.isPlaying();
+      recording.pause();
+      recording.seek(ms, () => {
+        seeking = false;
+        updateSeek(ms);
+        if (wasPlaying) recording.play();
+        else {
+          playBtn.textContent = "▶ Play";
+          setStatus("Seeked to " + fmtMs(ms));
+        }
+      });
+    });
+    seekBar.addEventListener("mouseup", () => { seeking = false; });
+    seekBar.addEventListener("touchend", () => { seeking = false; });
+
+    speedSelect.onchange = () => {
+      // Guacamole.SessionRecording doesn't expose a speed API directly.
+      // We simulate speed by overriding the internal clock if available,
+      // otherwise pause and seek in increments. Show a note for speeds ≠ 1.
+      const speed = parseFloat(speedSelect.value);
+      if (speed !== 1) {
+        setStatus("Speed control: pause/resume to apply × " + speed + " (seek-based simulation).");
+        // Store for use in play loop
+        window._playbackSpeed = speed;
+        if (recording && recording.isPlaying()) {
+          recording.pause();
+          startSpeedLoop();
+        }
+      } else {
+        window._playbackSpeed = 1;
+        stopSpeedLoop();
+        if (recording) setStatus("Speed: 1× (native playback).");
+      }
+    };
+
+    // Speed simulation: when speed ≠ 1, drive playback via seek ticks
+    let _speedLoopId = null;
+    let _speedLastTick = null;
+    let _speedPos = 0;
+
+    function startSpeedLoop() {
+      if (_speedLoopId) return;
+      _speedLastTick = performance.now();
+      _speedPos = recording ? Math.round((seekBar.value / 1000) * recording.getDuration()) : 0;
+      _speedLoopId = setInterval(() => {
+        if (!recording) { stopSpeedLoop(); return; }
+        const speed = window._playbackSpeed || 1;
+        const now = performance.now();
+        const elapsed = now - _speedLastTick;
+        _speedLastTick = now;
+        _speedPos = Math.min(_speedPos + elapsed * speed, recording.getDuration());
+        recording.seek(Math.round(_speedPos));
+        if (_speedPos >= recording.getDuration()) {
+          stopSpeedLoop();
+          recording.pause();
+          playBtn.textContent = "▶ Play";
+          setStatus("Playback complete.");
+        }
+      }, 50);
+    }
+
+    function stopSpeedLoop() {
+      if (_speedLoopId) { clearInterval(_speedLoopId); _speedLoopId = null; }
+    }
+
+    downloadBtn.onclick = () => {
+      if (!rawBlob) return;
+      const url = URL.createObjectURL(rawBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = (sessionId || "recording") + ".guac";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    };
+
+    document.getElementById("backBtn").onclick = () => {
+      window.close();
+      if (!window.closed) location.href = "/";
+    };
+
+    loadRecording();
+  </script>
+</body>
+</html>

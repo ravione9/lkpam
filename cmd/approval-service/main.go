@@ -125,6 +125,38 @@ func main() {
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "sudo_granted": req.Grant})
 	})
 
+	mux.HandleFunc("POST /requests/{id}/revoke", func(w http.ResponseWriter, r *http.Request) {
+		callerID, callerRole, ok := callerIdentity(r)
+		if !ok || callerRole != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin only"))
+			return
+		}
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err := svc.Revoke(r.Context(), id, callerID); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	mux.HandleFunc("GET /requests/approved", func(w http.ResponseWriter, r *http.Request) {
+		_, role, ok := callerIdentity(r)
+		if !ok {
+			httpx.Error(w, http.StatusUnauthorized, errors.New("missing caller identity"))
+			return
+		}
+		if role != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
+			return
+		}
+		out, err := svc.ListApprovedEnriched(r.Context())
+		if err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, out)
+	})
+
 	mux.HandleFunc("GET /requests/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		req, err := svc.Get(r.Context(), id)

@@ -384,7 +384,28 @@ func (s *Server) evaluateAccess(ctx context.Context, userID int64, primaryRole s
 			dec.LinuxPrivilege = "sudo"
 		}
 	}
+	// When the user has sudo/root privilege, remove any sudo-blocking entries from
+	// the command deny list. The policy may have "sudo" in denied_commands to prevent
+	// regular SSH users from running it, but that must not apply when elevation is granted.
+	if (dec.LinuxPrivilege == "sudo" || dec.LinuxPrivilege == "root") && policy.IsLinuxKind(kind) {
+		dec.DeniedCmds = filterSudoDenyEntries(dec.DeniedCmds)
+	}
 	return dec, nil
+}
+
+// filterSudoDenyEntries removes entries whose first token is "sudo" or "su"
+// from the command deny list. Called when the user has been granted sudo/root.
+func filterSudoDenyEntries(cmds []string) []string {
+	out := cmds[:0:len(cmds)]
+	for _, c := range cmds {
+		norm := strings.ToLower(strings.TrimSpace(c))
+		first := strings.Fields(norm)
+		if len(first) > 0 && (first[0] == "sudo" || first[0] == "su") {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // authorizeAndStash looks up the target, evaluates policy with the user's

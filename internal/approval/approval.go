@@ -403,6 +403,39 @@ func (s *Service) ListMineEnriched(ctx context.Context, userID int64) ([]Request
 		LIMIT 50`, userID)
 }
 
+// Revoke immediately revokes an approved request by setting status to "denied"
+// and recording the current timestamp as decided_at. This lets admins cancel
+// active access grants before they expire naturally.
+func (s *Service) Revoke(ctx context.Context, requestID, revokerID int64) error {
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE access_requests
+		SET status = 'denied', approver_id = ?, decided_at = ?
+		WHERE id = ? AND status = 'approved'`,
+		revokerID, db.Now(), requestID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("request not found or not currently approved")
+	}
+	return nil
+}
+
+// ListApprovedEnriched returns all currently approved (non-expired) requests for the admin revoke UI.
+func (s *Service) ListApprovedEnriched(ctx context.Context) ([]RequestView, error) {
+	return s.queryEnriched(ctx, `
+		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds, ar.decided_at,
+		       COALESCE(ar.sudo_requested,0), COALESCE(ar.sudo_granted,0),
+		       u.username, t.name, t.kind, t.tier
+		FROM access_requests ar
+		JOIN users u ON u.id = ar.user_id
+		JOIN targets t ON t.id = ar.target_id
+		WHERE ar.status = 'approved'
+		  AND ar.decided_at + ar.ttl_seconds > strftime('%s','now')
+		ORDER BY ar.decided_at DESC`)
+}
+
 // GrantSudo marks sudo_granted=1 on an approved request.
 func (s *Service) GrantSudo(ctx context.Context, requestID int64, grant bool) error {
 	v := 0
