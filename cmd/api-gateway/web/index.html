@@ -4925,7 +4925,15 @@ async function loadRequests() {
       if (!(active||[]).length) {
         $("#activeApprovalRows").innerHTML = `<tr><td colspan="9" class="muted">No active approvals right now.</td></tr>`;
       } else {
-        $("#activeApprovalRows").innerHTML = active.map(r => {
+        // isLinuxKind mirrors the Go policy.IsLinuxKind logic for the UI
+        const isLinuxKind = k => {
+          if (!k) return false;
+          const low = k.toLowerCase().trim();
+          const family = low.includes('-') ? low.split('-')[0] : low;
+          return ['linux','ubuntu','debian','rhel','centos','rocky','alma','suse','amazon'].includes(family)
+                 || low === 'amazon-linux';
+        };
+        $("#activeApprovalRows").innerHTML = active.flatMap(r => {
           const now = Math.floor(Date.now() / 1000);
           const isExpired = r.decided_at && r.ttl_seconds
             ? (r.decided_at + r.ttl_seconds) <= now
@@ -4948,7 +4956,7 @@ async function loadRequests() {
           const actions = isExpired
             ? `<button class="ghost" onclick="renewApproval(${r.id})">Renew 8h</button>`
             : `<button class="ghost danger" onclick="revokeApproval(${r.id})">Revoke</button>`;
-          return `<tr style="${isExpired ? 'opacity:0.6' : ''}">
+          const mainRow = `<tr style="${isExpired ? 'opacity:0.6' : ''}">
             <td>${r.id}</td><td>${esc(r.username)}</td>
             <td>${esc(r.target_name)} <span class="muted">(${esc(r.target_kind)})</span></td>
             <td><span class="pill">T${r.target_tier}</span></td>
@@ -4958,6 +4966,25 @@ async function loadRequests() {
             <td class="muted">${fmtTime(r.decided_at)}</td>
             <td class="actions">${actions}</td>
           </tr>`;
+          // Show a setup-hint row when sudo is granted but the target has no bootstrap account.
+          // Without a bootstrap (pam-svc) account the SSH proxy cannot write /etc/sudoers.d/
+          // and the user will see "not in the sudoers file" even though PAM approved the request.
+          const needsBootstrapHint = r.sudo_granted && !r.has_bootstrap && isLinuxKind(r.target_kind);
+          const linuxUser = r.username ? r.username.replace(/[^a-z0-9._-]/gi,'').toLowerCase() : r.username;
+          const hintRow = needsBootstrapHint ? `<tr style="background:var(--warn-bg,#fffbea);border-top:none">
+            <td colspan="9" style="padding:10px 14px;font-size:12px;line-height:1.6">
+              <strong>⚠ No bootstrap account — sudo cannot be auto-provisioned on ${esc(r.target_name)}</strong><br>
+              The SSH proxy needs a privileged account (e.g. <code>pam-svc</code>) on this host to write
+              <code>/etc/sudoers.d/</code>.
+              <strong>Quick fix (run as root on ${esc(r.target_name)}):</strong><br>
+              <code style="display:block;background:var(--code-bg,#f4f4f4);padding:6px 10px;margin:4px 0;border-radius:4px;white-space:pre">echo "${esc(linuxUser)} ALL=(ALL) NOPASSWD: ALL" | tee /etc/sudoers.d/pam-${esc(linuxUser)}
+chmod 0440 /etc/sudoers.d/pam-${esc(linuxUser)}</code>
+              <strong>Permanent fix:</strong> In <em>Safes</em>, add a <code>pam-svc</code> privileged account for
+              <em>${esc(r.target_name)}</em> with passwordless sudo — PAM will then manage sudoers automatically
+              on every connect.
+            </td>
+          </tr>` : '';
+          return [mainRow, hintRow];
         }).join("");
       }
     } catch (e) {

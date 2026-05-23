@@ -389,6 +389,7 @@ type RequestView struct {
 	ApprovalsHave  int              `json:"approvals_have"`
 	ApprovalsNeed  int              `json:"approvals_need"`
 	Decisions      []DecisionRecord `json:"decisions,omitempty"`
+	HasBootstrap   bool             `json:"has_bootstrap"` // true if target has ≥1 privileged account in Safes
 }
 
 // ListPendingEnriched lists open requests with joined user/target names plus
@@ -441,19 +442,47 @@ func (s *Service) Revoke(ctx context.Context, requestID, revokerID int64) error 
 // ListApprovedEnriched returns approved requests for the admin panel.
 // Shows BOTH active (non-expired) and recently-expired (within last 24h) grants
 // so admins can see and renew grants that timed out under the old 30-min TTL.
+// Each row includes has_bootstrap=1 when the target has at least one privileged
+// account in Safes, so the UI can warn admins when sudo cannot be auto-provisioned.
 func (s *Service) ListApprovedEnriched(ctx context.Context) ([]RequestView, error) {
-	return s.queryEnriched(ctx, `
+	rows, err := s.DB.QueryContext(ctx, `
 		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds, ar.decided_at,
 		       COALESCE(ar.sudo_requested,0), COALESCE(ar.sudo_granted,0),
-		       u.username, t.name, t.kind, t.tier
+		       u.username, t.name, t.kind, t.tier,
+		       CASE WHEN COUNT(pa.id) > 0 THEN 1 ELSE 0 END AS has_bootstrap
 		FROM access_requests ar
 		JOIN users u ON u.id = ar.user_id
 		JOIN targets t ON t.id = ar.target_id
+		LEFT JOIN privileged_accounts pa ON pa.target_id = t.id
 		WHERE ar.status = 'approved'
 		  AND (ar.decided_at IS NULL
 		       OR ar.ttl_seconds IS NULL
 		       OR ar.decided_at + ar.ttl_seconds > strftime('%s','now') - 86400)
+		GROUP BY ar.id
 		ORDER BY ar.decided_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RequestView
+	for rows.Next() {
+		var v RequestView
+		var decidedAt sql.NullInt64
+		var sudoReq, sudoGrant, hasBootstrap int
+		if err := rows.Scan(&v.ID, &v.UserID, &v.TargetID, &v.Reason, &v.Status,
+			&v.CreatedAt, &v.TTLSeconds, &decidedAt, &sudoReq, &sudoGrant,
+			&v.Username, &v.TargetName, &v.TargetKind, &v.TargetTier, &hasBootstrap); err != nil {
+			return nil, err
+		}
+		if decidedAt.Valid {
+			v.DecidedAt = &decidedAt.Int64
+		}
+		v.SudoRequested = sudoReq
+		v.SudoGranted = sudoGrant
+		v.HasBootstrap = hasBootstrap == 1
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 // RenewApproval resets decided_at to now and extends TTL, reactivating an expired grant.
