@@ -548,16 +548,18 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	// chans, so dial failures never reach the user and OpenSSH retries auth.
 	targetAddr := fmt.Sprintf("%s:%s", host, port)
 	type dialOutcome struct {
-		client   *ssh.Client
-		err      error
-		user     string
-		authMode string
+		client        *ssh.Client
+		err           error
+		user          string
+		authMode      string
+		sudoNoBootstrap bool // sudo granted but no bootstrap account — sudoers not written
 	}
 	dialCh := make(chan dialOutcome, 1)
 	go func() {
 		if linuxPerUser {
+			noBootstrap := (linuxPriv == "sudo" || linuxPriv == "root") && privUser == ""
 			c, user, mode, err := s.dialLinux(targetAddr, targetKind, portalUsername, linuxPassword, privUser, privPassword, linuxPriv, authMethods)
-			dialCh <- dialOutcome{client: c, err: err, user: user, authMode: mode}
+			dialCh <- dialOutcome{client: c, err: err, user: user, authMode: mode, sudoNoBootstrap: noBootstrap}
 			return
 		}
 		var last dialOutcome
@@ -693,6 +695,12 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 			upClient = out.client
 			activeMode = out.authMode
 			downUser = out.user
+			if out.sudoNoBootstrap {
+				// sudo was approved in PAM but this target has no bootstrap (privileged) account
+				// configured in the Safes tab, so the sudoers entry could not be written.
+				// This flag is threaded through to the session banner below.
+				activeMode += "+sudo-no-bootstrap"
+			}
 			defer upClient.Close()
 			log.Printf("ssh-proxy: connected to %s as %q (mode=%s)", targetAddr, downUser, activeMode)
 
@@ -732,7 +740,12 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 			if policy.IsLinuxKind(targetKind) {
 				pipePassthrough = linuxPassword
 			}
-			s.pipeSession(ch, upClient, rec, sessionID, user, targetName, sessionBannerWithEnableHint(buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode), enableSecret),
+			banner := sessionBannerWithSudoWarning(
+				sessionBannerWithEnableHint(
+					buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode),
+					enableSecret),
+				activeMode)
+			s.pipeSession(ch, upClient, rec, sessionID, user, targetName, banner,
 				parseCSV(sconn.Permissions.Extensions["allow-csv"]),
 				parseCSV(sconn.Permissions.Extensions["deny-csv"]),
 				enableSecret,
@@ -821,6 +834,18 @@ func sessionBannerWithEnableHint(banner, enableSecret string) string {
 		return banner
 	}
 	return banner + "  \x1b[33mEnable:\x1b[0m type \x1b[1men\x1b[0m only — PAM injects the enable password (do not type it).\r\n\r\n"
+}
+
+// sessionBannerWithSudoWarning appends a warning when sudo was approved but
+// the target has no bootstrap account so the sudoers entry was not written.
+func sessionBannerWithSudoWarning(banner, authMode string) string {
+	if !strings.Contains(authMode, "sudo-no-bootstrap") {
+		return banner
+	}
+	warn := "  \x1b[1;33m⚠  sudo granted in PAM but sudoers entry could not be written.\x1b[0m\r\n" +
+		"     Admin: go to Safes → add a privileged account (e.g. pam-svc) for this\r\n" +
+		"     target with passwordless sudo, then ask user to reconnect.\r\n\r\n"
+	return banner + warn
 }
 
 func (s *Server) pipeSession(newChan ssh.NewChannel, upClient *ssh.Client, rec *os.File, sessionID, user, target string, banner string, allowCmds, denyCmds []string, enableSecret, portalPassword string) {

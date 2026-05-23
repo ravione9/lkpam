@@ -32,9 +32,16 @@ func (s *Server) dialLinux(
 				return nil, linuxUser, "provision", fmt.Errorf(
 					"could not apply Linux sudo policy for %q (check pam-svc bootstrap account): %w", linuxUser, err)
 			}
-			// Revocation failed — log and continue. The user may retain elevated
-			// access but we attempted the revocation.
+			// Revocation failed — log and continue.
 		}
+	} else if (linuxPriv == "sudo" || linuxPriv == "root") {
+		// Sudo was granted in PAM but there is no bootstrap (privileged) account
+		// configured for this target — the SSH proxy cannot write the sudoers entry.
+		// Allow the connection but print a clear banner so both the user and admin
+		// know what to fix: Safes → add a pam-svc account for this target.
+		log.Printf("ssh-proxy: sudo granted for %q on %s but no bootstrap account configured — sudoers cannot be provisioned",
+			linuxUser, targetAddr)
+		// We still allow the connection; the banner is shown below.
 	}
 
 	cfg := s.buildDownstreamConfig(linuxUser, ptPassword, authMethods)

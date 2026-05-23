@@ -46,6 +46,20 @@ func main() {
 		GroupMembers: groupSvc,
 	}
 
+	// One-time migration: backfill sudo_granted for requests that were approved
+	// before the auto-grant logic existed. Without this, users who were approved
+	// with sudo_requested=1 under old code would never get sudo provisioned.
+	if res, err := d.Exec(`
+		UPDATE access_requests
+		SET sudo_granted = 1
+		WHERE status = 'approved'
+		  AND COALESCE(sudo_requested, 0) = 1
+		  AND COALESCE(sudo_granted, 0) = 0`); err == nil {
+		if n, _ := res.RowsAffected(); n > 0 {
+			log.Printf("approval: backfilled sudo_granted=1 on %d existing approved requests", n)
+		}
+	}
+
 	mux := http.NewServeMux()
 	httpx.RegisterHealth(mux)
 
