@@ -508,6 +508,32 @@
   .toggle-caption { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
   .actions { display: flex; gap: 5px; flex-wrap: wrap; }
 
+  /* ===== Kebab / three-dot action menu ===== */
+  .kebab-wrap { position: relative; display: inline-block; }
+  .kebab-btn {
+    background: none; border: 1px solid transparent; border-radius: var(--r-sm);
+    padding: 3px 7px; cursor: pointer; color: var(--muted); font-size: 18px;
+    line-height: 1; display: inline-flex; align-items: center; transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+  }
+  .kebab-btn:hover { background: var(--slate-100); border-color: var(--border); color: var(--fg); }
+  .kebab-menu {
+    display: none; position: absolute; right: 0; top: calc(100% + 4px);
+    background: var(--surface); border: 1px solid var(--border-strong);
+    border-radius: var(--r-md); box-shadow: var(--shadow-md);
+    z-index: 200; min-width: 152px; padding: 4px 0;
+  }
+  .kebab-menu.open { display: block; }
+  .kebab-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 14px; font-size: 13px; color: var(--fg-soft);
+    cursor: pointer; white-space: nowrap; transition: background var(--t-fast);
+    border: none; background: none; width: 100%; text-align: left;
+  }
+  .kebab-item:hover { background: var(--slate-50); color: var(--fg); }
+  .kebab-item.danger { color: var(--err); }
+  .kebab-item.danger:hover { background: var(--err-soft); }
+  .kebab-divider { border: none; border-top: 1px solid var(--divider); margin: 4px 0; }
+
   /* ===== Toast ===== */
   .toast {
     position: fixed; bottom: 24px; right: 24px;
@@ -4212,10 +4238,8 @@ async function loadUsers() {
         <td>${userMfaStatus(u)}</td>
         <td>${u.disabled ? '<span class="pill err">disabled</span>' : '<span class="pill ok">active</span>'}</td>
         <td class="muted">${fmtTime(u.last_login)}</td>
-        <td class="actions">
-          <button class="ghost" onclick="editUser(${u.id})">Edit</button>
-          ${userMfaResetBtn(u)}
-          ${currentUser && currentUser.id === u.id ? '' : `<button class="ghost danger" onclick="deleteUser(${u.id})">Delete</button>`}
+        <td style="text-align:right;overflow:visible">
+          ${userKebabMenu(u)}
         </td>
       </tr>`).join("");
   } catch (e) { $("#userRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
@@ -4343,6 +4367,37 @@ function userMfaResetBtn(u) {
   if (!u.mfa_enabled) return '';
   return `<button class="ghost" onclick="resetUserMFA(${u.id})">Reset MFA</button>`;
 }
+function userKebabMenu(u) {
+  const isSelf = currentUser && currentUser.id === u.id;
+  const canResetMfa = isAdmin() && u.mfa_enabled;
+  const canDelete = !isSelf;
+  const resetItem = canResetMfa
+    ? `<button class="kebab-item" onclick="closeAllKebabs();resetUserMFA(${u.id})">&#128274; Reset MFA</button>`
+    : '';
+  const deleteItem = canDelete
+    ? `<hr class="kebab-divider"><button class="kebab-item danger" onclick="closeAllKebabs();deleteUser(${u.id})">&#128465; Delete</button>`
+    : '';
+  return `
+    <div class="kebab-wrap">
+      <button class="kebab-btn" aria-label="Actions for ${esc(u.username)}" onclick="toggleKebab(event,this)">&#8942;</button>
+      <div class="kebab-menu">
+        <button class="kebab-item" onclick="closeAllKebabs();editUser(${u.id})">&#9998; Edit</button>
+        ${resetItem}
+        ${deleteItem}
+      </div>
+    </div>`;
+}
+function toggleKebab(e, btn) {
+  e.stopPropagation();
+  const menu = btn.nextElementSibling;
+  const isOpen = menu.classList.contains('open');
+  closeAllKebabs();
+  if (!isOpen) menu.classList.add('open');
+}
+function closeAllKebabs() {
+  document.querySelectorAll('.kebab-menu.open').forEach(m => m.classList.remove('open'));
+}
+document.addEventListener('click', closeAllKebabs);
 window.resetUserMFA = async id => {
   const u = cache.users.find(x => x.id === id);
   if (!u || !confirm(`Reset MFA for "${u.username}"? They must scan a new QR code on next sign-in.`)) return;
