@@ -479,14 +479,11 @@ func splitHostPort(addr string, defaultPort int) (string, int) {
 	return host, port
 }
 
-// sshProxyAddrForGuacd returns the host/port guacd should dial. guacd runs in its own
-// container; localhost/127.0.0.1 in env points at guacd itself, not ssh-proxy.
+// sshProxyAddrForGuacd is deprecated; discoverSSHProxyAddr handles dial addresses.
 func sshProxyAddrForGuacd(configured string) (string, int) {
 	host, port := splitHostPort(configured, 2222)
-	switch strings.ToLower(host) {
-	case "", "localhost", "127.0.0.1", "::1":
-		log.Printf("rdp-proxy: PAM_SSH_PROXY_DIAL_ADDR=%q is not reachable from guacd; using ssh-proxy:%d", configured, port)
-		return "ssh-proxy", port
+	if host == "" {
+		return "127.0.0.1", port
 	}
 	return host, port
 }

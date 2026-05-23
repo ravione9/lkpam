@@ -155,7 +155,8 @@ services:
       PAM_GUACD_ADDR: "${PAM_GUACD_ADDR:-host.docker.internal:4822}"
       # Map target localhost/127.0.0.1 to a host reachable from guacd (Windows Docker Desktop).
       PAM_RDP_DOCKER_HOST: "${PAM_RDP_DOCKER_HOST:-host.docker.internal}"
-      PAM_SSH_PROXY_DIAL_ADDR: "ssh-proxy:2222"
+      # guacd uses host network — must dial loopback or the PAM host IP, not "ssh-proxy".
+      PAM_SSH_PROXY_DIAL_ADDR: "${PAM_SSH_PROXY_DIAL_ADDR:-127.0.0.1:2222}"
       # true = always guacd→ssh-proxy (PuTTY path). false = try privileged direct, else ssh-proxy.
       PAM_BROWSER_SSH_VIA_PROXY: "${PAM_BROWSER_SSH_VIA_PROXY:-true}"
       # true = never fall back to ssh-proxy (requires privileged account on every target).
