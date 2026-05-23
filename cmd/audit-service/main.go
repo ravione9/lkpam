@@ -334,8 +334,10 @@ func main() {
 				w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(file)+`"`)
 			}
 		default:
-			httpx.Error(w, http.StatusNotFound, errStr("unsupported recording format"))
-			return
+			// Guacd writes SSH/RDP recordings without a file extension (filename = sessionID).
+			// Treat as a binary Guacamole recording.
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(file)+`.guac"`)
 		}
 		http.ServeFile(w, r, file)
 	})
@@ -432,7 +434,8 @@ func resolveRecordingFile(recPath string) (string, error) {
 	}
 	if !info.IsDir() {
 		ext := filepath.Ext(recPath)
-		if ext == ".log" || ext == ".guac" {
+		// Accept .log, .guac, and no-extension (guacd recording without suffix).
+		if ext == ".log" || ext == ".guac" || ext == "" {
 			return recPath, nil
 		}
 		return "", errors.New("unsupported recording format")
@@ -442,8 +445,16 @@ func resolveRecordingFile(recPath string) (string, error) {
 		if e.IsDir() {
 			continue
 		}
-		if ext := filepath.Ext(e.Name()); ext == ".guac" || ext == ".log" {
-			return filepath.Join(recPath, e.Name()), nil
+		ext := filepath.Ext(e.Name())
+		// Accept .guac and .log files.
+		// Also accept files with no extension — guacd writes SSH/RDP recordings
+		// as plain files named after the session ID (no .guac suffix).
+		// Skip .timing files (guacd typescript timing sidecars).
+		if ext == ".guac" || ext == ".log" || (ext == "" && !strings.HasSuffix(e.Name(), ".timing")) {
+			info, err := e.Info()
+			if err == nil && info.Size() > 0 {
+				return filepath.Join(recPath, e.Name()), nil
+			}
 		}
 	}
 	return "", errors.New("recording not ready yet — session may still be active")
