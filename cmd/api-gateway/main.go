@@ -502,7 +502,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	upstream.Header.Del("Authorization")
 	upstream.Header.Del("Cookie")
 	rewriteUpstreamReferer(upstream.Header, targetURL, sessionID)
-	upstream.Host = targetURL.Host
+	tuneUpstreamRequest(upstream, targetURL, rest)
 
 	useBasic := creds.Username != "" && creds.Password != "" && !isPublicWebAsset(rest)
 	if useBasic {
@@ -521,8 +521,8 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	}
 	defer upResp.Body.Close()
 
-	if upResp.StatusCode == http.StatusNotFound && strings.HasPrefix(rest, "/static/") {
-		log.Printf("web-proxy: upstream 404 session=%s url=%s (device cookies=%d)",
+	if upResp.StatusCode == http.StatusNotFound && isPublicWebAsset(rest) {
+		log.Printf("web-proxy: upstream 404 session=%s url=%s authcheck=off cookies=%d",
 			sessionID, upstreamURL, len(httpClient.Jar.Cookies(upstream.URL)))
 	}
 
@@ -838,12 +838,9 @@ func rewriteLocation(loc string, target *url.URL, sessionID, portalToken string)
 
 func rewriteHTML(body []byte, target *url.URL, sessionID, portalToken string) []byte {
 	pfx := "/web/" + sessionID
-	tokQ := ""
-	if portalToken != "" {
-		tokQ = "?" + pamTokenSuffix(portalToken)
-	}
 	// Inject a <base> tag so relative links resolve through the proxy automatically.
-	baseTag := []byte(`<base href="` + pfx + `/` + tokQ + `">`)
+	// Do not embed portal JWT in base — static assets must not require ?token= on every URL.
+	baseTag := []byte(`<base href="` + pfx + `/">`)
 	if idx := bytes.Index(body, []byte("<head>")); idx >= 0 {
 		body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
 	} else if idx := bytes.Index(body, []byte("<HEAD>")); idx >= 0 {

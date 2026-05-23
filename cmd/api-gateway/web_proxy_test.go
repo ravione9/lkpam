@@ -74,6 +74,29 @@ func TestRewriteProxySetCookie(t *testing.T) {
 	}
 }
 
+func TestNeedsPANAuthCheckOff(t *testing.T) {
+	if !needsPANAuthCheckOff("/static/css/legacy-main.css") {
+		t.Fatal("static needs authcheck off")
+	}
+	if !needsPANAuthCheckOff("/login") {
+		t.Fatal("login needs authcheck off")
+	}
+	if needsPANAuthCheckOff("/php/utils/router.php") {
+		t.Fatal("router should not auto-off")
+	}
+}
+
+func TestUpstreamHost(t *testing.T) {
+	u, _ := url.Parse("https://192.168.48.5:443")
+	if upstreamHost(u) != "192.168.48.5" {
+		t.Fatalf("got %q", upstreamHost(u))
+	}
+	u2, _ := url.Parse("https://192.168.48.5:4443")
+	if upstreamHost(u2) != "192.168.48.5:4443" {
+		t.Fatalf("got %q", upstreamHost(u2))
+	}
+}
+
 func TestRewriteUpstreamReferer(t *testing.T) {
 	target, _ := url.Parse("https://192.168.48.5/")
 	h := make(http.Header)

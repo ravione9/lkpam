@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -26,7 +28,10 @@ func upstreamClientForSession(sessionID string) *http.Client {
 		},
 		Jar: jar,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
 		},
 	}
 	actual, _ := webUpstreamClients.LoadOrStore(sessionID, c)
@@ -82,6 +87,54 @@ func rewriteProxySetCookie(cookie, sessionID string) string {
 	return strings.Join(out, "; ")
 }
 
+// upstreamHost returns the Host header value appliances expect (no :443/:80 suffix).
+func upstreamHost(target *url.URL) string {
+	if target == nil {
+		return ""
+	}
+	host := target.Hostname()
+	port := target.Port()
+	if port == "" {
+		return host
+	}
+	if (target.Scheme == "https" && port == "443") || (target.Scheme == "http" && port == "80") {
+		return host
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// needsPANAuthCheckOff is true for PAN-OS nginx routes that serve login UI static files.
+// Without X-PAN-Authcheck: off the front-end nginx returns 404 for /static/* via reverse proxy.
+func needsPANAuthCheckOff(rest string) bool {
+	p := strings.ToLower(strings.Split(rest, "?")[0])
+	if isPublicWebAsset(p) {
+		return true
+	}
+	switch {
+	case p == "/login", strings.HasPrefix(p, "/login/"):
+		return true
+	case strings.HasPrefix(p, "/php/login"):
+		return true
+	case p == "/", p == "/index.html":
+		return true
+	}
+	return false
+}
+
+// tuneUpstreamRequest sets headers required by PAN-OS / FortiGate when proxied.
+func tuneUpstreamRequest(upstream *http.Request, target *url.URL, rest string) {
+	upstream.Host = upstreamHost(target)
+	if needsPANAuthCheckOff(rest) {
+		upstream.Header.Set("X-PAN-Authcheck", "off")
+	}
+	if upstream.Header.Get("X-Forwarded-Proto") == "" {
+		upstream.Header.Set("X-Forwarded-Proto", target.Scheme)
+	}
+	if upstream.Header.Get("X-Forwarded-Host") == "" {
+		upstream.Header.Set("X-Forwarded-Host", upstreamHost(target))
+	}
+}
+
 // primeUpstreamSession fetches the device login/root page once per session so
 // PAN-OS / FortiGate Set-Cookie values exist before /static/ asset requests.
 func primeUpstreamSession(ctx context.Context, client *http.Client, target *url.URL) {
@@ -99,6 +152,7 @@ func primeUpstreamSession(ctx context.Context, client *http.Client, target *url.
 			continue
 		}
 		req.Host = target.Host
+		req.Header.Set("X-PAN-Authcheck", "off")
 		resp, err := client.Do(req)
 		if err != nil {
 			continue
