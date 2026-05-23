@@ -1,4 +1,9 @@
 # Convenience wrapper — runs the stack from repo root:
 #   docker compose up --build -d
+#
+# name: must match deploy/docker/docker-compose.yml so the named containers
+# (pam-gateway, pam-guacd, …) and named volumes (pam-data, pam-rec) belong
+# to the same compose project no matter which directory you run from.
+name: pam
 include:
   - path: deploy/docker/docker-compose.yml
