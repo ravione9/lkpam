@@ -153,6 +153,27 @@ func main() {
 		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 
+	mux.HandleFunc("POST /requests/{id}/renew", func(w http.ResponseWriter, r *http.Request) {
+		_, callerRole, ok := callerIdentity(r)
+		if !ok || callerRole != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin only"))
+			return
+		}
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		var req struct {
+			TTLSeconds int `json:"ttl_seconds"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.TTLSeconds <= 0 {
+			req.TTLSeconds = 28800 // default 8 hours
+		}
+		if err := svc.RenewApproval(r.Context(), id, req.TTLSeconds); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
 	mux.HandleFunc("GET /requests/approved", func(w http.ResponseWriter, r *http.Request) {
 		_, role, ok := callerIdentity(r)
 		if !ok {

@@ -438,9 +438,9 @@ func (s *Service) Revoke(ctx context.Context, requestID, revokerID int64) error 
 	return nil
 }
 
-// ListApprovedEnriched returns all currently approved (non-expired) requests for the admin revoke UI.
-// Includes requests where decided_at is NULL (approved but expiry not yet recorded) so they
-// always appear — better to show them than to silently hide active grants.
+// ListApprovedEnriched returns approved requests for the admin panel.
+// Shows BOTH active (non-expired) and recently-expired (within last 24h) grants
+// so admins can see and renew grants that timed out under the old 30-min TTL.
 func (s *Service) ListApprovedEnriched(ctx context.Context) ([]RequestView, error) {
 	return s.queryEnriched(ctx, `
 		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds, ar.decided_at,
@@ -452,8 +452,28 @@ func (s *Service) ListApprovedEnriched(ctx context.Context) ([]RequestView, erro
 		WHERE ar.status = 'approved'
 		  AND (ar.decided_at IS NULL
 		       OR ar.ttl_seconds IS NULL
-		       OR ar.decided_at + ar.ttl_seconds > strftime('%s','now'))
+		       OR ar.decided_at + ar.ttl_seconds > strftime('%s','now') - 86400)
 		ORDER BY ar.decided_at DESC`)
+}
+
+// RenewApproval resets decided_at to now and extends TTL, reactivating an expired grant.
+func (s *Service) RenewApproval(ctx context.Context, requestID int64, ttlSeconds int) error {
+	if ttlSeconds <= 0 {
+		ttlSeconds = 28800 // 8 hours
+	}
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE access_requests
+		SET decided_at = ?, ttl_seconds = ?
+		WHERE id = ? AND status = 'approved'`,
+		db.Now(), ttlSeconds, requestID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return errors.New("request not found or not approved")
+	}
+	return nil
 }
 
 // GrantSudo marks sudo_granted=1 on an approved request.

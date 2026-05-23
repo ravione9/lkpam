@@ -4927,20 +4927,28 @@ async function loadRequests() {
       } else {
         $("#activeApprovalRows").innerHTML = active.map(r => {
           const now = Math.floor(Date.now() / 1000);
-          const expiresIn = r.decided_at && r.ttl_seconds
+          const isExpired = r.decided_at && r.ttl_seconds
+            ? (r.decided_at + r.ttl_seconds) <= now
+            : false;
+          const expiresIn = (!isExpired && r.decided_at && r.ttl_seconds)
             ? Math.max(0, (r.decided_at + r.ttl_seconds) - now)
             : null;
-          const expiryStr = expiresIn !== null
-            ? (expiresIn > 3600
-                ? Math.floor(expiresIn/3600) + "h " + Math.floor((expiresIn%3600)/60) + "m"
-                : Math.floor(expiresIn/60) + "m " + (expiresIn%60) + "s")
-            : "—";
+          const expiryStr = isExpired
+            ? `<span class="pill err">Expired</span>`
+            : expiresIn !== null
+              ? (expiresIn > 3600
+                  ? Math.floor(expiresIn/3600) + "h " + Math.floor((expiresIn%3600)/60) + "m"
+                  : Math.floor(expiresIn/60) + "m " + (expiresIn%60) + "s")
+              : "—";
           const sudoCell = r.sudo_granted
             ? `<span class="pill ok">sudo ✓</span>`
             : r.sudo_requested
               ? `<span class="pill warn">requested</span>`
               : `<span class="muted">—</span>`;
-          return `<tr>
+          const actions = isExpired
+            ? `<button class="ghost" onclick="renewApproval(${r.id})">Renew 8h</button>`
+            : `<button class="ghost danger" onclick="revokeApproval(${r.id})">Revoke</button>`;
+          return `<tr style="${isExpired ? 'opacity:0.6' : ''}">
             <td>${r.id}</td><td>${esc(r.username)}</td>
             <td>${esc(r.target_name)} <span class="muted">(${esc(r.target_kind)})</span></td>
             <td><span class="pill">T${r.target_tier}</span></td>
@@ -4948,7 +4956,7 @@ async function loadRequests() {
             <td>${sudoCell}</td>
             <td class="muted">${expiryStr}</td>
             <td class="muted">${fmtTime(r.decided_at)}</td>
-            <td class="actions"><button class="ghost danger" onclick="revokeApproval(${r.id})">Revoke</button></td>
+            <td class="actions">${actions}</td>
           </tr>`;
         }).join("");
       }
@@ -5058,6 +5066,14 @@ window.revokeApproval = async (id) => {
   try {
     await api(`/approval/requests/${id}/revoke`, {method:"POST"});
     toast("Access revoked — user will be blocked on next connection attempt", "ok");
+    loadRequests();
+  } catch (e) { toast(e.message, "err"); }
+};
+// Renew an expired approval, extending TTL by 8 hours.
+window.renewApproval = async (id) => {
+  try {
+    await api(`/approval/requests/${id}/renew`, {method:"POST", body: JSON.stringify({ttl_seconds: 28800})});
+    toast("Access renewed for 8 hours — user must reconnect to pick up new session", "ok");
     loadRequests();
   } catch (e) { toast(e.message, "err"); }
 };
