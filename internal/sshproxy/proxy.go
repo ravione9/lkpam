@@ -482,6 +482,15 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 
 	targetID := mustAtoi(sconn.Permissions.Extensions["target-id"])
 	ptPassword := sconn.Permissions.Extensions["pt-password"]
+	// linuxPassword is ptPassword with any appended TOTP code stripped off.
+	// Network devices (Cisco/FortiGate TACACS) need the full password+OTP for
+	// transparent SSO, but Linux local accounts are provisioned with a static
+	// base password — the OTP expires every 30 s and sudo would always fail
+	// after the first half-minute of the session if we injected the stale code.
+	linuxPassword, _ := authclient.SplitAppendedOTP(ptPassword)
+	if linuxPassword == "" {
+		linuxPassword = ptPassword // no OTP suffix — use as-is
+	}
 	privUser, privPassword, hasPriv := s.lookupPrivilegedAccount(targetID)
 
 	linuxPriv := sconn.Permissions.Extensions["linux-privilege"]
@@ -547,7 +556,7 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	dialCh := make(chan dialOutcome, 1)
 	go func() {
 		if linuxPerUser {
-			c, user, mode, err := s.dialLinux(targetAddr, targetKind, portalUsername, ptPassword, privUser, privPassword, linuxPriv, authMethods)
+			c, user, mode, err := s.dialLinux(targetAddr, targetKind, portalUsername, linuxPassword, privUser, privPassword, linuxPriv, authMethods)
 			dialCh <- dialOutcome{client: c, err: err, user: user, authMode: mode}
 			return
 		}
@@ -716,11 +725,18 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 					endNativeSession()
 				}
 			}()
+			// Use the base password (OTP-stripped) for Linux so sudo injection
+			// works throughout the session, not just in the first 30 seconds.
+			// Network device passthrough still needs ptPassword (FortiGate/TACACS).
+			pipePassthrough := ptPassword
+			if policy.IsLinuxKind(targetKind) {
+				pipePassthrough = linuxPassword
+			}
 			s.pipeSession(ch, upClient, rec, sessionID, user, targetName, sessionBannerWithEnableHint(buildSessionBanner(targetName, targetKind, host, port, targetTier, downUser, activeMode), enableSecret),
 				parseCSV(sconn.Permissions.Extensions["allow-csv"]),
 				parseCSV(sconn.Permissions.Extensions["deny-csv"]),
 				enableSecret,
-				ptPassword)
+				pipePassthrough)
 		}(newChan)
 	}
 
