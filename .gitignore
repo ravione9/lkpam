@@ -14,3 +14,4 @@ deploy/docker/secrets.env
 *.db-wal
 *.db-shm
 go.sum
+.git-commit-msg.txt
