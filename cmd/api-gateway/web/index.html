@@ -6289,10 +6289,17 @@ end
 ! PAM returns memberof=PAM-Admins and admin_prof from the user's portal role.` },
       { title: "4. Test",
         code:
-`# From the FortiGate CLI — append MFA code to password if enrolled:
+`# Auth-only test (does NOT prove profile mapping):
 diagnose test authserver tacacs+ PAM-TAC <user> <password><6-digit-MFA>
-# Example (password "Secret1!" + MFA 482913):
-diagnose test authserver tacacs+ PAM-TAC ravi.verma1 Secret1!482913` },
+
+# After a real GUI/SSH login, PAM logs must show BOTH lines:
+#   tacacs: authorization packet from <fortigate-ip>
+#   tacacs author user="..." ... map_role="user" reply="... admin_prof=read_only ..."
+#
+# If you only see "kind":"authen" and never "authorization packet", enable on FortiGate:
+#   config user tacacs+ -> edit PAM-TAC -> set authorization enable
+# And on the remote admin template:
+#   set accprofile-override enable` },
       { title: "5. MFA on FortiGate GUI login",
         code:
 `# FortiGate web admin login uses the same TACACS password field.

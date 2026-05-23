@@ -100,6 +100,7 @@ func (s *Server) serve(ctx context.Context, c net.Conn) {
 		case TypeAuthentication:
 			s.handleAuthen(c, h, body, clientIP)
 		case TypeAuthorization:
+			log.Printf("tacacs: authorization packet from %s", hostPart(clientIP))
 			s.handleAuthor(c, h, body, clientIP)
 		case TypeAccounting:
 			s.handleAcct(c, h, body, clientIP)
@@ -187,6 +188,18 @@ func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP strin
 		Actor: user, Target: clientIP,
 		Detail: map[string]string{"result": msg, "status": fmt.Sprintf("%#x", status)},
 	})
+	if ok {
+		nas := hostPart(clientIP)
+		if s.isFortiGateHost(nas) {
+			if _, role, uid := s.authorizeAdmin(user); uid > 0 {
+				s.refreshFortinetConfig()
+				mapRole := s.fortinetMappingRole(uid, role)
+				prof := s.fortinetAdminProfForRole(mapRole)
+				log.Printf("tacacs authen ok user=%q role=%q map_role=%q admin_prof=%s nas=%q — if FortiGate still shows wrong profile, enable TACACS authorization on the firewall and accprofile-override on the remote admin template",
+					user, role, mapRole, prof, nas)
+			}
+		}
+	}
 	if !ok && status == AuthenStatusError && s.UnknownUserDefer == DeferUnknownDrop {
 		log.Printf("tacacs authen: closing session (no REPLY) for unknown user=%q from %s", user, clientIP)
 		return
@@ -292,18 +305,21 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	svc := serviceFromAuthorRequest(req.Args)
 	fullCmd := policy.FullCommand(cmd, args)
 	deviceIP := deviceIPFromAuthor(req, clientIP)
+	fgNAS := s.isFortiGateHost(deviceIP)
 	var allow bool
 	var role string
 	var mapRole string
 	var userID int64
 	var replyArgs []string
-	fortinet := isFortinetService(svc)
+	fortinet := isFortinetService(svc) || fgNAS || isFortinetAdminService(svc)
 
 	if fortinet {
 		s.refreshFortinetConfig()
 	}
 
-	if fullCmd == "" && isAdminAuthService(svc) {
+	// FortiGate admin login: empty cmd + (service=fortigate|administration|…) or NAS is a registered FortiGate.
+	adminLogin := fullCmd == "" && (isAdminAuthService(svc) || fgNAS)
+	if adminLogin {
 		// FortiGate / PAN-OS admin login — not per-command authorization.
 		allow, role, userID = s.authorizeAdmin(req.User)
 		if allow {
@@ -475,6 +491,15 @@ func isFortinetService(svc string) bool {
 	return strings.Contains(svc, "forti")
 }
 
+// isFortinetAdminService covers FortiOS admin authorization when service= is not "fortigate".
+func isFortinetAdminService(svc string) bool {
+	switch strings.ToLower(strings.TrimSpace(svc)) {
+	case "administration", "admin":
+		return true
+	}
+	return false
+}
+
 func isAdminAuthService(svc string) bool {
 	svc = strings.ToLower(strings.TrimSpace(svc))
 	switch svc {
@@ -482,6 +507,26 @@ func isAdminAuthService(svc string) bool {
 		return true
 	}
 	return isFortinetService(svc)
+}
+
+// isFortiGateHost reports whether the NAS IP is a FortiGate registered in PAM inventory.
+// Used when FortiOS sends an authorization request without service=fortigate.
+func (s *Server) isFortiGateHost(host string) bool {
+	if s.DB == nil {
+		return false
+	}
+	host = hostPart(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	var kind string
+	err := s.DB.QueryRow(`
+		SELECT kind FROM targets WHERE host = ? LIMIT 1`, host).Scan(&kind)
+	if err != nil {
+		return false
+	}
+	k := strings.ToLower(kind)
+	return strings.Contains(k, "forti")
 }
 
 // fortinetAuthorArgs builds VSAs FortiOS expects (admin_prof, memberof, service).
@@ -662,6 +707,11 @@ func (s *Server) portalUserExists(user string) bool {
 	var id int64
 	err := s.DB.QueryRow(`
 		SELECT id FROM users WHERE lower(username)=lower(?) AND disabled=0`, user).Scan(&id)
+	if err == nil && id > 0 {
+		return true
+	}
+	err = s.DB.QueryRow(`
+		SELECT id FROM users WHERE lower(email)=lower(?) AND disabled=0`, user).Scan(&id)
 	return err == nil && id > 0
 }
 
