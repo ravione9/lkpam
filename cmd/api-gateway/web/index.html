@@ -2216,6 +2216,30 @@
   </div>
 </div>
 
+<!-- SSH MFA gate modal — shown when ssh-launch returns mfa_required -->
+<div class="modal-backdrop" id="sshMfaModal">
+  <div class="modal" style="max-width:400px">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">
+      <div>
+        <h3 style="margin:0;font-size:15px;font-weight:600;color:var(--fg)">MFA verification required</h3>
+        <p class="muted" style="margin:4px 0 0;font-size:12px">Enter the 6-digit code from your authenticator app to continue the SSH session.</p>
+      </div>
+      <button id="sshMfaCloseBtn" style="background:none;border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 9px;cursor:pointer;color:var(--muted);font-size:16px;line-height:1;display:flex;align-items:center;flex-shrink:0;margin-left:12px" title="Cancel">&#x2715;</button>
+    </div>
+    <div style="background:var(--info-soft);border:1px solid var(--info-border);border-radius:var(--r);padding:10px 12px;margin-bottom:16px;display:flex;gap:10px;align-items:flex-start">
+      <span style="font-size:18px;flex-shrink:0">🔐</span>
+      <p style="margin:0;font-size:12px;color:var(--info);line-height:1.5">Your account has MFA enabled. A one-time code is required before PAM opens the recorded session.</p>
+    </div>
+    <input id="sshMfaCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000"
+      style="width:100%;font-size:24px;letter-spacing:0.25em;text-align:center;font-family:ui-monospace,monospace;padding:12px 14px;border-radius:var(--r);border:1px solid var(--border);margin-bottom:6px"/>
+    <p id="sshMfaErr" style="font-size:12px;color:var(--err);min-height:18px;margin:0 0 14px;text-align:center"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="ghost" id="sshMfaCancelBtn">Cancel</button>
+      <button class="primary" id="sshMfaVerifyBtn">Verify &amp; launch</button>
+    </div>
+  </div>
+</div>
+
 <!-- AD User & Group sync modal (opened from Users tab) -->
 <div class="modal-backdrop" id="adSyncModal">
   <div class="modal modal-lg" style="max-width:760px">
@@ -3983,15 +4007,19 @@ function showSshLaunchModal(target) {
   modal.querySelector("#sshBrowserBtn").onclick = async () => {
     const reason = prompt("Reason for recorded browser session:", "Approved access");
     if (reason === null) return;
-    // The server caches the AD/portal password in the vault at sign-in and
-    // automatically uses it when portal_password is empty. Only fall back to
-    // an inline prompt if the server rejects the launch as needing one.
     const portalPassword = getCachedPortalPassword();
-    async function tryLaunch(pw) {
+    async function tryLaunch(pw, mfaCode) {
       const res = await api(`/auth/targets/${target.id}/ssh-launch`, {
         method: "POST",
-        body: JSON.stringify({ reason, portal_password: pw || "" }),
+        body: JSON.stringify({ reason, portal_password: pw || "", mfa_code: mfaCode || "" }),
       });
+      // 202 → server needs MFA before it will create the session
+      if (res && res._accepted && res._accepted.mfa_required) {
+        window._sshMfaTargetId = target.id;
+        window._sshMfaReason = reason;
+        showSshMfaPrompt(pw, reason);
+        return;
+      }
       if (openPamViewer("ssh-viewer.html", res.session_id)) {
         toast("Recorded SSH session opened in browser", "ok");
       }
@@ -4008,7 +4036,6 @@ function showSshLaunchModal(target) {
         toast(e.message, "err");
         return;
       }
-      // Server didn't have a usable cached password — ask once and retry.
       rememberPortalPassword("");
       const pw = prompt("Enter your PAM password to enable browser SSH (cached for this tab):", "");
       if (!pw) return;
@@ -7314,6 +7341,48 @@ $("#mfaVerifyBtn").onclick = async () => {
     $("#mfaQrImg").removeAttribute("src");
   } catch (e) { toast(e.message, "err"); }
 };
+// SSH MFA gate — shown when ssh-launch returns mfa_required: true
+function showSshMfaPrompt(cachedPw, reason) {
+  const modal = $("#sshMfaModal");
+  const codeInput = $("#sshMfaCode");
+  const errEl = $("#sshMfaErr");
+  codeInput.value = "";
+  errEl.textContent = "";
+  modal.classList.add("show");
+  setTimeout(() => codeInput.focus(), 120);
+
+  async function doVerify() {
+    const code = codeInput.value.trim().replace(/\s+/g, "");
+    if (code.length !== 6) { errEl.textContent = "Enter the full 6-digit code."; return; }
+    errEl.textContent = "";
+    $("#sshMfaVerifyBtn").disabled = true;
+    $("#sshMfaVerifyBtn").textContent = "Verifying…";
+    try {
+      const res = await api(`/auth/targets/${window._sshMfaTargetId}/ssh-launch`, {
+        method: "POST",
+        body: JSON.stringify({ reason: window._sshMfaReason, portal_password: cachedPw || "", mfa_code: code }),
+      });
+      modal.classList.remove("show");
+      if (openPamViewer("ssh-viewer.html", res.session_id)) {
+        toast("Recorded SSH session opened in browser", "ok");
+      }
+    } catch (e) {
+      errEl.textContent = e.message || "Verification failed — try again.";
+    } finally {
+      $("#sshMfaVerifyBtn").disabled = false;
+      $("#sshMfaVerifyBtn").textContent = "Verify & launch";
+    }
+  }
+
+  codeInput.oninput = () => { if (codeInput.value.replace(/\s/g, "").length === 6) doVerify(); };
+  codeInput.onkeydown = e => { if (e.key === "Enter") doVerify(); };
+  $("#sshMfaVerifyBtn").onclick = doVerify;
+  const closeModal = () => { modal.classList.remove("show"); codeInput.value = ""; errEl.textContent = ""; };
+  $("#sshMfaCloseBtn").onclick = closeModal;
+  $("#sshMfaCancelBtn").onclick = closeModal;
+  modal.onclick = e => { if (e.target === modal) closeModal(); };
+}
+
 const closeMfaModal = () => {
   $("#mfaModal").classList.remove("show");
   $("#mfaQrImg").removeAttribute("src");

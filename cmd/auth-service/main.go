@@ -966,6 +966,7 @@ func main() {
 		var in struct {
 			Reason         string `json:"reason"`
 			PortalPassword string `json:"portal_password"`
+			MFACode        string `json:"mfa_code"`
 		}
 		_ = httpx.ReadJSON(r, &in)
 		// Fall back to the cached portal password stored at login. The browser
@@ -974,6 +975,31 @@ func main() {
 		if in.PortalPassword == "" && uid > 0 {
 			if pw, err := v.GetSecret(r.Context(), vaultUserPassthroughKey(uid)); err == nil && len(pw) > 0 {
 				in.PortalPassword = string(pw)
+			}
+		}
+		// MFA gate: if the user has MFA enabled they must supply a valid TOTP
+		// code with every browser SSH launch. If no code was sent, return 202
+		// so the portal can show the MFA prompt and retry.
+		if uid > 0 {
+			u, err := svc.GetUserByID(r.Context(), uid)
+			if err != nil {
+				httpx.Error(w, http.StatusInternalServerError, err)
+				return
+			}
+			if u.MFAEnabled && !u.MFAExempt {
+				if in.MFACode == "" {
+					httpx.JSON(w, http.StatusAccepted, map[string]any{"mfa_required": true})
+					return
+				}
+				secret, err := svc.GetMFASecret(r.Context(), uid)
+				if err != nil || secret == "" {
+					httpx.Error(w, http.StatusUnauthorized, errors.New("MFA secret not found — re-enroll MFA"))
+					return
+				}
+				if !mfa.Verify(secret, mfa.NormalizeOTP(in.MFACode)) {
+					httpx.Error(w, http.StatusUnauthorized, errors.New("invalid MFA code — check your authenticator app"))
+					return
+				}
 			}
 		}
 		clientIP := r.Header.Get("X-Forwarded-For")
