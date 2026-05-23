@@ -423,6 +423,8 @@ func (s *Service) Revoke(ctx context.Context, requestID, revokerID int64) error 
 }
 
 // ListApprovedEnriched returns all currently approved (non-expired) requests for the admin revoke UI.
+// Includes requests where decided_at is NULL (approved but expiry not yet recorded) so they
+// always appear — better to show them than to silently hide active grants.
 func (s *Service) ListApprovedEnriched(ctx context.Context) ([]RequestView, error) {
 	return s.queryEnriched(ctx, `
 		SELECT ar.id, ar.user_id, ar.target_id, ar.reason, ar.status, ar.created_at, ar.ttl_seconds, ar.decided_at,
@@ -432,7 +434,7 @@ func (s *Service) ListApprovedEnriched(ctx context.Context) ([]RequestView, erro
 		JOIN users u ON u.id = ar.user_id
 		JOIN targets t ON t.id = ar.target_id
 		WHERE ar.status = 'approved'
-		  AND ar.decided_at + ar.ttl_seconds > strftime('%s','now')
+		  AND (ar.decided_at IS NULL OR ar.decided_at + ar.ttl_seconds > strftime('%s','now'))
 		ORDER BY ar.decided_at DESC`)
 }
 

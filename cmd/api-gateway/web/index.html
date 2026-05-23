@@ -5284,9 +5284,11 @@ window.terminateSession = async sid => {
       method: "POST",
       body: JSON.stringify({reason: reason || "Admin terminate"}),
     });
-    toast("Session terminated", "ok");
+    toast("Termination sent — session will close within 1–2 seconds", "ok");
+    // Refresh immediately then again after 2s to catch the proxy-side close
     await loadSessions();
-    setTimeout(loadSessions, 3000);
+    setTimeout(loadSessions, 2000);
+    setTimeout(loadSessions, 4000);
   } catch (e) {
     if (e.message && e.message.includes("already ended")) {
       toast("Session already ended", "ok");

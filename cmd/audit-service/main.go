@@ -207,12 +207,13 @@ func main() {
 			}
 		}
 		if _, err := d.ExecContext(r.Context(), `
-			INSERT INTO session_terminations(session_id, requested_by, requested_at, reason)
-			VALUES(?,?,?,?)
+			INSERT INTO session_terminations(session_id, requested_by, requested_at, reason, acknowledged_at)
+			VALUES(?,?,?,?,NULL)
 			ON CONFLICT(session_id) DO UPDATE SET
 			  requested_by=excluded.requested_by,
 			  requested_at=excluded.requested_at,
-			  reason=excluded.reason`,
+			  reason=excluded.reason,
+			  acknowledged_at=NULL`,
 			sid, uid, db.Now(), req.Reason); err != nil {
 			httpx.Error(w, http.StatusInternalServerError, err)
 			return

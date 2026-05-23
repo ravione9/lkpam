@@ -384,28 +384,17 @@ func (s *Server) evaluateAccess(ctx context.Context, userID int64, primaryRole s
 			dec.LinuxPrivilege = "sudo"
 		}
 	}
-	// When the user has sudo/root privilege, remove any sudo-blocking entries from
-	// the command deny list. The policy may have "sudo" in denied_commands to prevent
-	// regular SSH users from running it, but that must not apply when elevation is granted.
-	if (dec.LinuxPrivilege == "sudo" || dec.LinuxPrivilege == "root") && policy.IsLinuxKind(kind) {
-		dec.DeniedCmds = filterSudoDenyEntries(dec.DeniedCmds)
+	// Linux targets run a full interactive shell — cmdGate command filtering was
+	// designed for network device CLIs (Cisco IOS, FortiOS, etc.) where blocking
+	// "reload" or "erase startup-config" makes sense. Applying allow/deny lists to
+	// Linux means basic commands like "cd", "ls", "cat" get blocked, which is wrong.
+	// Clear the command lists entirely for Linux; privilege control (sudo/root) via
+	// the provisioning path is how PAM controls Linux elevation, not cmdGate.
+	if policy.IsLinuxKind(kind) {
+		dec.AllowedCmds = nil
+		dec.DeniedCmds = nil
 	}
 	return dec, nil
-}
-
-// filterSudoDenyEntries removes entries whose first token is "sudo" or "su"
-// from the command deny list. Called when the user has been granted sudo/root.
-func filterSudoDenyEntries(cmds []string) []string {
-	out := cmds[:0:len(cmds)]
-	for _, c := range cmds {
-		norm := strings.ToLower(strings.TrimSpace(c))
-		first := strings.Fields(norm)
-		if len(first) > 0 && (first[0] == "sudo" || first[0] == "su") {
-			continue
-		}
-		out = append(out, c)
-	}
-	return out
 }
 
 // authorizeAndStash looks up the target, evaluates policy with the user's
@@ -737,36 +726,47 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 
 // watchTermination polls the session_terminations table for a kill order
 // against this session and, on hit, closes the user-side connection.
+// Polls every second and checks immediately on start so the session is
+// killed within ~1s of the admin clicking Terminate.
 func (s *Server) watchTermination(ctx context.Context, sessionID string,
 	sconn *ssh.ServerConn, upClient *ssh.Client) {
-	t := time.NewTicker(5 * time.Second)
+	killSession := func() bool {
+		var ack sql.NullInt64
+		var reason string
+		err := s.DB.QueryRow(
+			`SELECT acknowledged_at, COALESCE(reason,'') FROM session_terminations WHERE session_id = ?`,
+			sessionID).Scan(&ack, &reason)
+		if err != nil || ack.Valid {
+			return false // no row or already acknowledged
+		}
+		log.Printf("ssh-proxy: terminating session %s by admin order (%s)", sessionID, reason)
+		_, _ = s.DB.Exec(
+			`UPDATE sessions SET ended_at=?, ended_reason='terminated' WHERE id=?`,
+			time.Now().Unix(), sessionID)
+		_, _ = s.DB.Exec(
+			`UPDATE session_terminations SET acknowledged_at=? WHERE session_id=?`,
+			time.Now().Unix(), sessionID)
+		_ = upClient.Close()
+		_ = sconn.Close()
+		return true
+	}
+
+	// Immediate check — handles the case where Terminate was clicked before
+	// this goroutine started (e.g. very fast admin action or reconnect).
+	if killSession() {
+		return
+	}
+
+	t := time.NewTicker(time.Second)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			var ack sql.NullInt64
-			var reason string
-			err := s.DB.QueryRow(
-				`SELECT acknowledged_at, COALESCE(reason,'') FROM session_terminations WHERE session_id = ?`,
-				sessionID).Scan(&ack, &reason)
-			if err != nil {
-				continue
+			if killSession() {
+				return
 			}
-			if ack.Valid {
-				continue
-			}
-			log.Printf("ssh-proxy: terminating session %s by admin order (%s)", sessionID, reason)
-			_, _ = s.DB.Exec(
-				`UPDATE sessions SET ended_at=?, ended_reason='terminated' WHERE id=?`,
-				time.Now().Unix(), sessionID)
-			_, _ = s.DB.Exec(
-				`UPDATE session_terminations SET acknowledged_at=? WHERE session_id=?`,
-				time.Now().Unix(), sessionID)
-			_ = upClient.Close()
-			_ = sconn.Close()
-			return
 		}
 	}
 }
