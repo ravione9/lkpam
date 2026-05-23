@@ -1754,6 +1754,7 @@
               <option value="ssh-proxy">ssh-proxy</option>
               <option value="rdp-proxy">rdp-proxy</option>
               <option value="tacacs">tacacs</option>
+              <option value="radius">radius</option>
               <option value="auth">auth</option>
             </select>
             <select id="proxyKind">
@@ -5444,7 +5445,7 @@ async function loadProxy() {
     const params = new URLSearchParams();
     params.set("limit", "500");
     if (src) params.set("source", src);
-    else params.set("source", "ssh-proxy,rdp-proxy,tacacs,auth");
+    else params.set("source", "ssh-proxy,rdp-proxy,tacacs,radius,auth");
     if (sev) params.set("severity", sev);
     if (rangeSec > 0) params.set("since", Math.floor(Date.now()/1000 - rangeSec).toString());
     const rows = await api("/audit/events?" + params.toString());

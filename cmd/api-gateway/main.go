@@ -263,7 +263,11 @@ func webSessionActive(ctx context.Context, vaultBase *url.URL, sessionID string)
 }
 
 func serveAuthed(w http.ResponseWriter, r *http.Request, next http.Handler, authBase *url.URL, tok, webSessionID string, setWebCookie bool) {
-	c, status, err := verifyToken(r.Context(), authBase, tok)
+	// verifyTokenCached short-circuits to a 60-second cache for the same
+	// token, and falls back to a 5-minute stale-cache window when auth-service
+	// is unreachable. This keeps Proxy Log / Session History / every other
+	// dashboard usable across transient auth-service restarts.
+	c, status, err := verifyTokenCached(r.Context(), authBase, tok)
 	if err != nil {
 		httpx.Error(w, status, err)
 		return
