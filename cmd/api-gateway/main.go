@@ -217,14 +217,22 @@ func gated(next http.Handler, authBase *url.URL) http.Handler {
 func webGated(next http.Handler, authBase, vaultBase *url.URL) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sessionID := webSessionIDFromPath(r.URL.Path)
+		// FortiGate and similar SPAs load dozens of /static/* assets right after the
+		// login HTML. Those requests often omit ?token= and may not include cookies
+		// inside the iframe yet — an active vault session is enough to proxy them.
+		if sessionID != "" && webSessionActive(r.Context(), vaultBase, sessionID) {
+			if tok, err := httpx.BearerTokenFromRequest(r); err == nil {
+				setCookie := r.URL.Query().Get("token") != "" || r.Header.Get("Authorization") != ""
+				serveAuthed(w, r, next, authBase, tok, sessionID, setCookie)
+				return
+			}
+			serveWebSession(w, r, next, sessionID)
+			return
+		}
 		tok, err := httpx.BearerTokenFromRequest(r)
 		if err == nil {
 			setCookie := sessionID != "" && (r.URL.Query().Get("token") != "" || r.Header.Get("Authorization") != "")
 			serveAuthed(w, r, next, authBase, tok, sessionID, setCookie)
-			return
-		}
-		if sessionID != "" && webSessionActive(r.Context(), vaultBase, sessionID) {
-			serveWebSession(w, r, next, sessionID)
 			return
 		}
 		httpx.Error(w, http.StatusUnauthorized, err)
@@ -260,14 +268,25 @@ func serveAuthed(w http.ResponseWriter, r *http.Request, next http.Handler, auth
 		return
 	}
 	if setWebCookie && webSessionID != "" {
+		cookiePath := "/web/" + webSessionID + "/"
 		http.SetCookie(w, &http.Cookie{
 			Name:     "pam_web_tok",
 			Value:    tok,
-			Path:     "/",
+			Path:     cookiePath,
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   7200,
 		})
+		http.SetCookie(w, &http.Cookie{
+			Name:     "pam_web_sid",
+			Value:    webSessionID,
+			Path:     cookiePath,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   7200,
+		})
+		// Also scope to / so webBridgeMiddleware can route root-absolute /static/…
+		// requests when the Referer is missing (some browsers on favicon/manifest).
 		http.SetCookie(w, &http.Cookie{
 			Name:     "pam_web_sid",
 			Value:    webSessionID,
@@ -381,10 +400,20 @@ func mimeForWebPath(path string) string {
 	switch {
 	case strings.HasSuffix(path, ".html"):
 		return "text/html; charset=utf-8"
-	case strings.HasSuffix(path, ".js"):
+	case strings.HasSuffix(path, ".js"), strings.HasSuffix(path, ".mjs"):
 		return "application/javascript; charset=utf-8"
 	case strings.HasSuffix(path, ".css"):
 		return "text/css; charset=utf-8"
+	case strings.HasSuffix(path, ".webmanifest"):
+		return "application/manifest+json; charset=utf-8"
+	case strings.HasSuffix(path, ".json"):
+		return "application/json; charset=utf-8"
+	case strings.HasSuffix(path, ".svg"):
+		return "image/svg+xml"
+	case strings.HasSuffix(path, ".png"):
+		return "image/png"
+	case strings.HasSuffix(path, ".ico"):
+		return "image/x-icon"
 	default:
 		return ""
 	}
@@ -524,7 +553,9 @@ func shouldRewriteWebBody(ct string) bool {
 	ct = strings.ToLower(ct)
 	return strings.Contains(ct, "text/html") ||
 		strings.Contains(ct, "javascript") ||
-		strings.Contains(ct, "text/css")
+		strings.Contains(ct, "text/css") ||
+		strings.Contains(ct, "json") ||
+		strings.Contains(ct, "application/manifest")
 }
 
 func serveStaticUI(w http.ResponseWriter, r *http.Request) {
@@ -683,6 +714,8 @@ func rewriteRootPaths(body []byte, pfx string) []byte {
 		{`'/static/`, `'` + pfx + `/static/`},
 		{`"/assets/`, `"` + pfx + `/assets/`},
 		{`'/assets/`, `'` + pfx + `/assets/`},
+		{`"/favicon/`, `"` + pfx + `/favicon/`},
+		{`'/favicon/`, `'` + pfx + `/favicon/`},
 		{`"/ng/`, `"` + pfx + `/ng/`},
 		{`'/ng/`, `'` + pfx + `/ng/`},
 		{`"/login`, `"` + pfx + `/login`},
