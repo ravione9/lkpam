@@ -581,16 +581,21 @@
   .modal.modal-lg { max-width: 640px; }
   .modal.modal-lg .form-grid input, .modal.modal-lg .form-grid select { max-width: none; }
   .modal h3 { margin-top: 0; font-size: 15px; font-weight: 600; }
-  .modal-mfa { max-width: 440px; }
+  .modal-mfa { max-width: 580px; }
   .mfa-qr-wrap {
     display: flex; justify-content: center; align-items: center;
-    margin: 12px 0 14px; padding: 14px;
+    padding: 12px; flex-shrink: 0;
     background: #fff; border: 1px solid var(--border); border-radius: var(--r);
   }
   .mfa-qr-wrap img {
-    display: block; width: 200px; height: 200px;
+    display: block; width: 156px; height: 156px;
     image-rendering: pixelated; image-rendering: crisp-edges;
   }
+  .mfa-body {
+    display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: start;
+    margin: 14px 0 16px;
+  }
+  .mfa-manual { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 
   /* ===== Sparkline charts ===== */
   .chart { display: block; width: 100%; height: 90px; }
@@ -2165,23 +2170,49 @@
 <!-- MFA enrollment modal -->
 <div class="modal-backdrop" id="mfaModal">
   <div class="modal modal-mfa">
-    <h3>Set up Multi-Factor Authentication</h3>
-    <p class="muted">Scan this QR code with Google Authenticator, Microsoft Authenticator, 1Password, or Authy:</p>
-    <div class="mfa-qr-wrap">
-      <img id="mfaQrImg" alt="MFA QR code" width="200" height="200"/>
+
+    <!-- Header -->
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px">
+      <div>
+        <h3 style="margin:0;font-size:15px;font-weight:600;color:var(--fg)">Set up Multi-Factor Authentication</h3>
+        <p class="muted" style="margin:4px 0 0;font-size:12px">Scan with Google Authenticator, Microsoft Authenticator, 1Password, or Authy.</p>
+      </div>
+      <button id="mfaCancelBtn" style="background:none;border:1px solid var(--border);border-radius:var(--r-sm);padding:5px 9px;cursor:pointer;color:var(--muted);font-size:16px;line-height:1;display:flex;align-items:center;flex-shrink:0;margin-left:12px" title="Close">&#x2715;</button>
     </div>
-    <p class="muted" style="font-size:12px;margin-bottom:6px">Can't scan? Paste this URL into your app:</p>
-    <div id="mfaUriBox" style="background:#fafaf8;padding:10px;border:1px solid var(--border);border-radius:6px;font-family:ui-monospace,monospace;font-size:11px;word-break:break-all;margin-bottom:10px">—</div>
-    <p class="muted" style="font-size:12px;margin-bottom:6px">Or enter this secret manually:</p>
-    <div id="mfaSecretBox" style="font-family:ui-monospace,monospace;font-size:16px;letter-spacing:0.1em;background:#fafaf8;padding:10px;border:1px solid var(--border);border-radius:6px;text-align:center;margin-bottom:14px">—</div>
-    <div class="form-grid">
-      <label>Enter 6-digit code</label>
-      <input id="mfaCode" placeholder="000000" maxlength="6"/>
+
+    <!-- QR + manual entry side by side -->
+    <div class="mfa-body">
+      <div class="mfa-qr-wrap">
+        <img id="mfaQrImg" alt="MFA QR code" width="156" height="156"/>
+      </div>
+      <div class="mfa-manual">
+        <div>
+          <p style="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-2);margin:0 0 5px">Can't scan? Paste URL into your app</p>
+          <div id="mfaUriBox" style="background:var(--surface-2);padding:8px 10px;border:1px solid var(--border);border-radius:var(--r-sm);font-family:ui-monospace,monospace;font-size:10.5px;word-break:break-all;color:var(--fg-soft);line-height:1.5">—</div>
+        </div>
+        <div>
+          <p style="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-2);margin:0 0 5px">Or enter secret manually</p>
+          <div id="mfaSecretBox" style="font-family:ui-monospace,monospace;font-size:13px;letter-spacing:0.12em;background:var(--surface-2);padding:10px;border:1px solid var(--border);border-radius:var(--r-sm);text-align:center;color:var(--fg);font-weight:500;word-break:break-all">—</div>
+        </div>
+      </div>
     </div>
-    <div class="row" style="margin-top:14px">
+
+    <!-- Divider -->
+    <div style="border-top:1px solid var(--border);margin-bottom:14px"></div>
+
+    <!-- Verify code -->
+    <div style="margin-bottom:16px">
+      <p style="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--muted-2);margin:0 0 8px">Confirm setup — enter the 6-digit code from your app</p>
+      <input id="mfaCode" placeholder="000000" maxlength="6" inputmode="numeric"
+        style="width:100%;font-size:22px;letter-spacing:0.2em;text-align:center;font-family:ui-monospace,monospace;padding:10px 14px;border-radius:var(--r);border:1px solid var(--border)"/>
+    </div>
+
+    <!-- Footer -->
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:8px">
+      <button class="ghost" id="mfaCancelBtnFooter">Cancel</button>
       <button class="primary" id="mfaVerifyBtn">Verify &amp; enable</button>
-      <button class="ghost" id="mfaCancelBtn" style="margin-left:auto">Cancel</button>
     </div>
+
   </div>
 </div>
 
@@ -7283,10 +7314,12 @@ $("#mfaVerifyBtn").onclick = async () => {
     $("#mfaQrImg").removeAttribute("src");
   } catch (e) { toast(e.message, "err"); }
 };
-$("#mfaCancelBtn").onclick = () => {
+const closeMfaModal = () => {
   $("#mfaModal").classList.remove("show");
   $("#mfaQrImg").removeAttribute("src");
 };
+$("#mfaCancelBtn").onclick = closeMfaModal;
+$("#mfaCancelBtnFooter").onclick = closeMfaModal;
 
 // --- SSO / SAML ---
 async function discoverSSO() {
