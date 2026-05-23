@@ -2083,6 +2083,44 @@
           </select>
         </div>
         <div class="row" style="margin-top:10px"><button class="primary" id="mfaPolicySaveBtn">Save</button></div>
+
+        <!-- TACACS+ FortiGate role profile mapping -->
+        <h4 style="margin-top:28px">TACACS+ FortiGate Role Profiles</h4>
+        <p class="desc" style="margin-bottom:10px">
+          Map each PAM role to a FortiGate admin profile. The profile name must exactly match
+          a profile in <b>System → Admin Profiles</b> on your FortiGate (built-in:
+          <code>super_admin</code>, <code>read_write</code>, <code>prof_admin</code>, <code>no_access</code>;
+          or any custom profile you created). Changes take effect after
+          <code>docker restart pam-tacacs</code>.
+        </p>
+        <div class="form-grid" style="margin-bottom:8px">
+          <label>Default memberof group</label>
+          <div class="row" style="gap:8px">
+            <input id="fortiDefaultMemberof" placeholder="PAM-Admins" style="width:220px"/>
+            <span class="muted" style="font-size:12px;align-self:center">Returned as <code>memberof=</code> when no per-role group is set</span>
+          </div>
+        </div>
+        <table id="fortiRoleTable" style="margin-bottom:12px">
+          <thead>
+            <tr>
+              <th style="width:140px">PAM Role</th>
+              <th style="width:200px">FortiGate Admin Profile</th>
+              <th style="width:180px">Custom profile name</th>
+              <th>memberof group</th>
+            </tr>
+          </thead>
+          <tbody id="fortiRoleRows">
+            <tr><td colspan="4" class="muted">Loading…</td></tr>
+          </tbody>
+        </table>
+        <div class="row" style="gap:8px;margin-bottom:6px">
+          <button class="primary" id="fortiSaveBtn">Save FortiGate profile mappings</button>
+          <span id="fortiStatus" class="muted"></span>
+        </div>
+        <p class="desc" style="font-size:11px;margin:0">
+          After saving, restart the TACACS service for changes to take effect:
+          <code>docker compose -f deploy/docker/docker-compose.yml restart tacacs</code>
+        </p>
       </section>
 
     </div>
@@ -7798,7 +7836,99 @@ $("#samlSaveBtn").onclick = async () => {
 
 // Hook SAML settings load into the Settings tab loader.
 const _origLoadSettings = loadSettings;
-loadSettings = async function() { await _origLoadSettings(); await loadSAMLSettings(); };
+loadSettings = async function() { await _origLoadSettings(); await loadSAMLSettings(); await loadFortiSettings(); };
+
+// ---- TACACS+ FortiGate role profile mapping UI ----
+// Built-in FortiGate admin profiles (shown in dropdown).
+const FORTI_BUILTIN_PROFILES = ["super_admin", "read_write", "prof_admin", "no_access"];
+
+// Default built-in mapping (mirrors fortinetAdminProf in server.go).
+const FORTI_DEFAULT_PROF = { admin: "super_admin", secops: "super_admin" };
+
+// Renders one table row per PAM role.
+function renderFortiRoleRows(roles, saved) {
+  const rp = (saved && saved.role_profiles) || {};
+  const rm = (saved && saved.role_memberof) || {};
+  return roles.map(role => {
+    const savedProf = rp[role] || FORTI_DEFAULT_PROF[role] || "prof_admin";
+    const isBuiltin = FORTI_BUILTIN_PROFILES.includes(savedProf);
+    const selectVal = isBuiltin ? savedProf : "custom";
+    const customVal = isBuiltin ? "" : savedProf;
+    const memberof = rm[role] || "";
+    return `<tr data-role="${esc(role)}">
+      <td><code>${esc(role)}</code></td>
+      <td>
+        <select class="forti-prof-sel" data-role="${esc(role)}" onchange="fortiProfSelChange(this)">
+          <option value="super_admin"${selectVal==="super_admin"?" selected":""}>super_admin (full access)</option>
+          <option value="read_write"${selectVal==="read_write"?" selected":""}>read_write</option>
+          <option value="prof_admin"${selectVal==="prof_admin"?" selected":""}>prof_admin (restricted)</option>
+          <option value="no_access"${selectVal==="no_access"?" selected":""}>no_access (deny login)</option>
+          <option value="custom"${selectVal==="custom"?" selected":""}>Custom profile…</option>
+        </select>
+      </td>
+      <td>
+        <input class="forti-prof-custom" data-role="${esc(role)}" placeholder="e.g. my_custom_profile"
+          value="${esc(customVal)}" style="width:170px;display:${selectVal==="custom"?"":"none"}"/>
+      </td>
+      <td>
+        <input class="forti-memberof" data-role="${esc(role)}" placeholder="(use default)"
+          value="${esc(memberof)}" style="width:200px"/>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+window.fortiProfSelChange = function(sel) {
+  const row = sel.closest("tr");
+  const custom = row.querySelector(".forti-prof-custom");
+  custom.style.display = sel.value === "custom" ? "" : "none";
+  if (sel.value !== "custom") custom.value = "";
+};
+
+async function loadFortiSettings() {
+  try {
+    // Load all roles (built-in + custom from DB).
+    const [savedRaw, rolesData] = await Promise.all([
+      api("/auth/settings/tacacs").catch(() => ({})),
+      api("/auth/roles").catch(() => []),
+    ]);
+    // Collect unique role names; always include the core built-in roles.
+    const builtinRoles = ["admin", "secops", "netops", "sysadmin", "user", "viewer"];
+    const dbRoles = (rolesData || []).map(r => r.name || r).filter(Boolean);
+    const allRoles = [...new Set([...builtinRoles, ...dbRoles])];
+
+    $("#fortiDefaultMemberof").value = (savedRaw && savedRaw.default_memberof) || "PAM-Admins";
+    $("#fortiRoleRows").innerHTML = renderFortiRoleRows(allRoles, savedRaw);
+  } catch (e) {
+    $("#fortiRoleRows").innerHTML = `<tr><td colspan="4" class="muted">${esc(e.message)}</td></tr>`;
+  }
+}
+
+$("#fortiSaveBtn").onclick = async () => {
+  const roleProfiles = {};
+  const roleMemberof = {};
+  document.querySelectorAll("#fortiRoleTable tbody tr[data-role]").forEach(row => {
+    const role = row.dataset.role;
+    const sel = row.querySelector(".forti-prof-sel");
+    const custom = row.querySelector(".forti-prof-custom");
+    const memberofEl = row.querySelector(".forti-memberof");
+    const prof = sel.value === "custom" ? custom.value.trim() : sel.value;
+    if (prof) roleProfiles[role] = prof;
+    const mo = (memberofEl.value || "").trim();
+    if (mo) roleMemberof[role] = mo;
+  });
+  const defaultMemberof = $("#fortiDefaultMemberof").value.trim() || "PAM-Admins";
+  try {
+    await api("/auth/settings/tacacs", {method:"PUT", body: JSON.stringify({
+      role_profiles: roleProfiles,
+      role_memberof: roleMemberof,
+      default_memberof: defaultMemberof,
+    })});
+    toast("FortiGate profile mappings saved — restart pam-tacacs to apply", "ok");
+    $("#fortiStatus").innerHTML = '<span class="pill ok">Saved</span>';
+    setTimeout(() => { $("#fortiStatus").innerHTML = ""; }, 4000);
+  } catch (e) { toast(e.message, "err"); }
+};
 
 // Boot
 (async () => {

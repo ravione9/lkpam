@@ -45,6 +45,7 @@ const (
 	settingsKeyLDAPSync   = "ldap_sync"
 	settingsKeySAML       = "saml"
 	settingsKeyMFAPolicy  = "mfa_policy"
+	settingsKeyTACACS     = "tacacs_fortinet"
 	vaultLDAPBindPassword = "_ldap_bind_password"
 	vaultSAMLCert         = "_saml_sp_cert"
 	vaultSAMLKey          = "_saml_sp_key"
@@ -721,6 +722,44 @@ func main() {
 			"saml_login_url": "/api/auth/saml/login",
 		})
 	})
+	// --- TACACS+ FortiGate settings ---
+	// TacacsFortinetConfig is the shape stored under settingsKeyTACACS.
+	type TacacsFortinetConfig struct {
+		// RoleProfiles maps PAM role → FortiGate admin_prof (e.g. "admin" → "super_admin").
+		RoleProfiles map[string]string `json:"role_profiles"`
+		// RoleMemberof maps PAM role → FortiGate memberof group name.
+		RoleMemberof map[string]string `json:"role_memberof"`
+		// DefaultMemberof is used for roles not in RoleMemberof.
+		DefaultMemberof string `json:"default_memberof"`
+	}
+	mux.HandleFunc("GET /settings/tacacs", func(w http.ResponseWriter, r *http.Request) {
+		var cfg TacacsFortinetConfig
+		if err := settingsStore.GetJSON(r.Context(), settingsKeyTACACS, &cfg); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		httpx.JSON(w, http.StatusOK, cfg)
+	})
+	mux.HandleFunc("PUT /settings/tacacs", func(w http.ResponseWriter, r *http.Request) {
+		_, role, ok := callerIdentity(r)
+		if !ok || role != "admin" {
+			httpx.Error(w, http.StatusForbidden, errors.New("admin role required"))
+			return
+		}
+		var cfg TacacsFortinetConfig
+		if err := httpx.ReadJSON(r, &cfg); err != nil {
+			httpx.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := settingsStore.SetJSON(r.Context(), settingsKeyTACACS, cfg); err != nil {
+			httpx.Error(w, http.StatusInternalServerError, err)
+			return
+		}
+		bus.Publish(events.Event{Source: "auth", Kind: "tacacs.config.updated", Severity: "info",
+			Detail: map[string]string{"roles": fmt.Sprintf("%d mapped", len(cfg.RoleProfiles))}})
+		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
 	mux.HandleFunc("GET /settings", func(w http.ResponseWriter, r *http.Request) {
 		all, err := settingsStore.All(r.Context())
 		if err != nil {
