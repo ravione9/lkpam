@@ -7368,10 +7368,14 @@ function showSshMfaPrompt(cachedPw, reason) {
         method: "POST",
         body: JSON.stringify({ code }),
       });
-      // Step 2: code is valid — proceed with the SSH launch
+      // Step 2: code is valid — proceed with the SSH launch.
+      // Append the verified OTP to the portal password so the SSH proxy's
+      // cmdGate can auto-inject "password+OTP" when the device prompts for
+      // enable password (Cisco TACACS+ / enable-secret pattern).
+      const passthroughPw = (cachedPw || "") + code;
       const res = await api(`/auth/targets/${window._sshMfaTargetId}/ssh-launch`, {
         method: "POST",
-        body: JSON.stringify({ reason: window._sshMfaReason, portal_password: cachedPw || "" }),
+        body: JSON.stringify({ reason: window._sshMfaReason, portal_password: passthroughPw }),
       });
       modal.classList.remove("show");
       if (openPamViewer("ssh-viewer.html", res.session_id)) {
