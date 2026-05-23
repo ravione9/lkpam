@@ -39,13 +39,12 @@
   </div>
 </header>
 <div id="credBar" class="cred-box" style="margin:0 16px 6px"></div>
-<!-- sandbox prevents the embedded device GUI (FortiOS ships a top.location
-     frame-buster) from navigating the viewer tab and triggering pagehide.
-     allow-same-origin is required so the bridge cookie reaches /api/* and
-     /static/* requests issued by the appliance JS. -->
-<iframe id="frame"
-        sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads"
-        allow="fullscreen" allowfullscreen></iframe>
+<!-- No sandbox: FortiOS-style appliances ship a top.location frame-buster
+     and stall (SecurityError + blank /logout) when top-navigation is denied.
+     Letting the bust-out succeed is now safe because pagehide no longer ends
+     the session, so the navigated top-frame at /web/{sid}/login still has a
+     live vault session and valid pam_web_tok cookie for every sub-request. -->
+<iframe id="frame" allow="fullscreen" allowfullscreen></iframe>
 <div id="no-frame" style="display:none">
   <p id="noFrameMsg">The web console could not be loaded in the proxy. This happens with applications that block embedding. Use the <b>Open directly</b> button above to open the target in a new tab — your credentials have been shown in the panel below.</p>
   <button class="btn ghost" id="openDirectBtn2">Open in new tab</button>

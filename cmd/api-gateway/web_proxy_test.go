@@ -159,6 +159,30 @@ func TestUpstreamHost(t *testing.T) {
 	}
 }
 
+func TestRewriteLocationNoDoublePrefix(t *testing.T) {
+	target, _ := url.Parse("https://192.168.24.253/")
+	cases := []struct {
+		loc  string
+		want string
+	}{
+		// Plain relative redirect — gets prefixed.
+		{"/login", "/web/web-1-7/login"},
+		// Absolute device URL — also prefixed.
+		{"https://192.168.24.253/login?redir=/", "/web/web-1-7/login?redir=/"},
+		// Already-prefixed (FortiOS echoes our redir param back as Location after
+		// successful login) — must not become /web/web-1-7/web/web-1-7/…
+		{"/web/web-1-7/?token=X", "/web/web-1-7/?token=X"},
+		{"/web/web-1-7", "/web/web-1-7"},
+		{"https://192.168.24.253/web/web-1-7/?token=X", "/web/web-1-7/?token=X"},
+	}
+	for _, tc := range cases {
+		got := rewriteLocation(tc.loc, target, "web-1-7", "")
+		if got != tc.want {
+			t.Errorf("rewriteLocation(%q)=%q want %q", tc.loc, got, tc.want)
+		}
+	}
+}
+
 func TestRewriteUpstreamReferer(t *testing.T) {
 	target, _ := url.Parse("https://192.168.48.5/")
 	h := make(http.Header)

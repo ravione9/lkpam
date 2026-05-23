@@ -913,15 +913,25 @@ func isReservedPAMPath(path string) bool {
 }
 
 func rewriteLocation(loc string, target *url.URL, sessionID, portalToken string) string {
+	sessionPfx := "/web/" + sessionID
 	if strings.HasPrefix(loc, "http://"+target.Host) ||
 		strings.HasPrefix(loc, "https://"+target.Host) {
 		u, err := url.Parse(loc)
 		if err == nil {
-			return appendPortalToken("/web/"+sessionID+u.RequestURI(), portalToken)
+			ru := u.RequestURI()
+			// Avoid /web/{sid}/web/{sid}/… when the device echoes a redir param
+			// containing our own proxy path (FortiOS does this after login).
+			if strings.HasPrefix(ru, sessionPfx+"/") || ru == sessionPfx {
+				return appendPortalToken(ru, portalToken)
+			}
+			return appendPortalToken(sessionPfx+ru, portalToken)
 		}
 	}
 	if strings.HasPrefix(loc, "/") {
-		return appendPortalToken("/web/"+sessionID+loc, portalToken)
+		if strings.HasPrefix(loc, sessionPfx+"/") || loc == sessionPfx {
+			return appendPortalToken(loc, portalToken)
+		}
+		return appendPortalToken(sessionPfx+loc, portalToken)
 	}
 	return loc
 }
