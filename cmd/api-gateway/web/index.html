@@ -2089,9 +2089,9 @@
         <p class="desc" style="margin-bottom:10px">
           Map each PAM role to a FortiGate admin profile. The profile name must exactly match
           a profile in <b>System → Admin Profiles</b> on your FortiGate (built-in:
-          <code>super_admin</code>, <code>read_write</code>, <code>prof_admin</code>, <code>no_access</code>;
-          or any custom profile you created). Changes take effect after
-          <code>docker restart pam-tacacs</code>.
+          <code>super_admin</code>, <code>prof_admin</code>,           <code>read_only</code>;
+          or any custom profile you created). Portal changes apply on the next FortiGate login
+          (no TACACS restart needed).
         </p>
         <div class="form-grid" style="margin-bottom:8px">
           <label>Default memberof group</label>
@@ -2118,8 +2118,8 @@
           <span id="fortiStatus" class="muted"></span>
         </div>
         <p class="desc" style="font-size:11px;margin:0">
-          After saving, restart the TACACS service for changes to take effect:
-          <code>docker compose -f deploy/docker/docker-compose.yml restart tacacs</code>
+          After saving, log out and back in on the FortiGate to pick up the new profile.
+          Restart TACACS only if you change env vars in docker-compose instead of this form.
         </p>
       </section>
 
@@ -7840,7 +7840,8 @@ loadSettings = async function() { await _origLoadSettings(); await loadSAMLSetti
 
 // ---- TACACS+ FortiGate role profile mapping UI ----
 // Built-in FortiGate admin profiles (shown in dropdown).
-const FORTI_BUILTIN_PROFILES = ["super_admin", "read_write", "prof_admin", "no_access"];
+// Matches the standard profiles present on FortiGate: super_admin, prof_admin, read_only.
+const FORTI_BUILTIN_PROFILES = ["super_admin", "prof_admin", "read_only"];
 
 // Default built-in mapping (mirrors fortinetAdminProf in server.go).
 const FORTI_DEFAULT_PROF = { admin: "super_admin", secops: "super_admin" };
@@ -7859,10 +7860,9 @@ function renderFortiRoleRows(roles, saved) {
       <td><code>${esc(role)}</code></td>
       <td>
         <select class="forti-prof-sel" data-role="${esc(role)}" onchange="fortiProfSelChange(this)">
-          <option value="super_admin"${selectVal==="super_admin"?" selected":""}>super_admin (full access)</option>
-          <option value="read_write"${selectVal==="read_write"?" selected":""}>read_write</option>
-          <option value="prof_admin"${selectVal==="prof_admin"?" selected":""}>prof_admin (restricted)</option>
-          <option value="no_access"${selectVal==="no_access"?" selected":""}>no_access (deny login)</option>
+          <option value="super_admin"${selectVal==="super_admin"?" selected":""}>super_admin — full access</option>
+          <option value="prof_admin"${selectVal==="prof_admin"?" selected":""}>prof_admin — restricted</option>
+          <option value="read_only"${selectVal==="read_only"?" selected":""}>read_only — view only</option>
           <option value="custom"${selectVal==="custom"?" selected":""}>Custom profile…</option>
         </select>
       </td>
@@ -7924,7 +7924,7 @@ $("#fortiSaveBtn").onclick = async () => {
       role_memberof: roleMemberof,
       default_memberof: defaultMemberof,
     })});
-    toast("FortiGate profile mappings saved — restart pam-tacacs to apply", "ok");
+    toast("FortiGate profile mappings saved — effective on next FortiGate login", "ok");
     $("#fortiStatus").innerHTML = '<span class="pill ok">Saved</span>';
     setTimeout(() => { $("#fortiStatus").innerHTML = ""; }, 4000);
   } catch (e) { toast(e.message, "err"); }

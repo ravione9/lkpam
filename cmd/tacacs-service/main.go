@@ -13,7 +13,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
@@ -25,17 +24,9 @@ import (
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/groups"
 	"github.com/example/pam-platform/internal/policy"
-	"github.com/example/pam-platform/internal/settings"
 	"github.com/example/pam-platform/internal/tacacs"
 	"github.com/example/pam-platform/internal/vault"
 )
-
-// tacacsFortinetConfig mirrors the struct in auth-service for reading from the DB.
-type tacacsFortinetConfig struct {
-	RoleProfiles    map[string]string `json:"role_profiles"`
-	RoleMemberof    map[string]string `json:"role_memberof"`
-	DefaultMemberof string            `json:"default_memberof"`
-}
 
 func main() {
 	dsn := config.Get("PAM_DB", "file:./data/pam.db?cache=shared&_pragma=foreign_keys(1)")
@@ -56,9 +47,11 @@ func main() {
 	}
 
 	// Load FortiGate role mappings from the DB (configured via UI).
-	// Fall back to env vars when the DB entry is absent (upgrade path / headless deploys).
-	store := &settings.Store{DB: d}
-	forti := loadFortinetConfig(store, d)
+	// Also reloaded on each FortiGate authorization request.
+	forti := tacacs.LoadFortinetConfigFromDB(d)
+	if len(forti.RoleProfiles) > 0 {
+		log.Printf("tacacs: loaded FortiGate profile map (%d roles)", len(forti.RoleProfiles))
+	}
 
 	srv := &tacacs.Server{
 		Addr:             config.Get("PAM_TACACS_ADDR", ":49"),
@@ -84,38 +77,4 @@ func main() {
 	if err := srv.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
-}
-
-// loadFortinetConfig reads the FortiGate TACACS+ profile map from the DB settings.
-// When the DB entry is absent or empty, it falls back to the legacy env vars so
-// existing deployments keep working without any UI changes.
-func loadFortinetConfig(store *settings.Store, d *db.DB) tacacsFortinetConfig {
-	ctx := context.Background()
-
-	// Try DB first (set via Settings → TACACS+ in the portal).
-	var raw string
-	_ = d.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'tacacs_fortinet'`).Scan(&raw)
-	if raw != "" {
-		var cfg tacacsFortinetConfig
-		if err := json.Unmarshal([]byte(raw), &cfg); err == nil {
-			// Ensure DefaultMemberof has a sensible value.
-			if cfg.DefaultMemberof == "" {
-				cfg.DefaultMemberof = config.Get("PAM_TACACS_FORTINET_MEMBEROF", "PAM-Admins")
-			}
-			log.Printf("tacacs: loaded FortiGate profile map from DB (%d roles)", len(cfg.RoleProfiles))
-			return cfg
-		}
-		log.Printf("tacacs: could not parse tacacs_fortinet settings from DB: falling back to env vars")
-	}
-
-	// Fallback: build from env vars (legacy behaviour).
-	cfg := tacacsFortinetConfig{
-		DefaultMemberof: config.Get("PAM_TACACS_FORTINET_MEMBEROF", "PAM-Admins"),
-		RoleProfiles:    tacacs.ParseRoleMap(config.Get("PAM_TACACS_FORTINET_PROFILES", "")),
-		RoleMemberof:    tacacs.ParseRoleMap(config.Get("PAM_TACACS_FORTINET_MEMBEROF_MAP", "")),
-	}
-	if len(cfg.RoleProfiles) > 0 {
-		log.Printf("tacacs: loaded FortiGate profile map from env vars (%d roles)", len(cfg.RoleProfiles))
-	}
-	return cfg
 }

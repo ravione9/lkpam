@@ -20,14 +20,30 @@ func TestFortinetAuthorArgs(t *testing.T) {
 	}
 }
 
-func TestFortinetAuthorArgsEchoMemberof(t *testing.T) {
-	s := &Server{FortinetMemberOf: "PAM-Admins"}
-	args := s.fortinetAuthorArgs("user", "FortiGate", "group3")
-	if !slices.Contains(args, "memberof=group3") {
-		t.Fatalf("args=%v, want memberof=group3 from FortiGate request", args)
+func TestFortinetAuthorArgsRequestMemberofFallback(t *testing.T) {
+	s := &Server{
+		FortinetMemberOf: "PAM-Admins",
+		FortinetRoleMemberofMap: map[string]string{
+			"user": "PAM-Users",
+		},
 	}
-	if !slices.Contains(args, "admin_prof=prof_admin") {
-		t.Fatalf("args=%v, want prof_admin for user role", args)
+	args := s.fortinetAuthorArgs("user", "FortiGate", "group3")
+	if !slices.Contains(args, "memberof=PAM-Users") {
+		t.Fatalf("args=%v, want per-role memberof=PAM-Users (not FortiGate request group3)", args)
+	}
+	s2 := &Server{} // no default, no map
+	args2 := s2.fortinetMemberofForRole("user", "group3")
+	if args2 != "group3" {
+		t.Fatalf("got %q, want group3 when no map/default configured", args2)
+	}
+}
+
+func TestFortinetProfRank(t *testing.T) {
+	if fortinetProfRank("read_only") >= fortinetProfRank("super_admin") {
+		t.Fatal("read_only should rank lower than super_admin")
+	}
+	if fortinetProfRank("no_access") >= fortinetProfRank("prof_admin") {
+		t.Fatal("no_access should rank lower than prof_admin")
 	}
 }
 

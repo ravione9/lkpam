@@ -289,19 +289,27 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	}
 
 	cmd, args := extractCommand(req.Args)
-	svc := extractArg(req.Args, "service")
+	svc := serviceFromAuthorRequest(req.Args)
 	fullCmd := policy.FullCommand(cmd, args)
 	deviceIP := deviceIPFromAuthor(req, clientIP)
 	var allow bool
 	var role string
+	var mapRole string
+	var userID int64
 	var replyArgs []string
+	fortinet := isFortinetService(svc)
+
+	if fortinet {
+		s.refreshFortinetConfig()
+	}
 
 	if fullCmd == "" && isAdminAuthService(svc) {
 		// FortiGate / PAN-OS admin login — not per-command authorization.
-		allow, role = s.authorizeAdmin(req.User)
+		allow, role, userID = s.authorizeAdmin(req.User)
 		if allow {
-			if isFortinetService(svc) {
-				replyArgs = s.fortinetAuthorArgs(role, svc, extractArg(req.Args, "memberof"))
+			if fortinet {
+				mapRole = s.fortinetMappingRole(userID, role)
+				replyArgs = s.fortinetAuthorArgs(mapRole, svc, extractArg(req.Args, "memberof"))
 			} else {
 				replyArgs = []string{"priv-lvl=15", "service=" + svc}
 			}
@@ -312,10 +320,18 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 
 	status := AuthorStatusFail
 	if allow {
-		status = AuthorStatusPassAdd
+		if fortinet && len(replyArgs) > 0 {
+			status = AuthorStatusPassRepl
+		} else {
+			status = AuthorStatusPassAdd
+		}
 	}
-	log.Printf("tacacs author user=%q nas=%q rem_addr=%q svc=%q cmd=%q allow=%v role=%q",
-		req.User, deviceIP, strings.TrimSpace(req.RemAddr), svc, fullCmd, allow, role)
+	logArgs := ""
+	if len(replyArgs) > 0 {
+		logArgs = strings.Join(replyArgs, " ")
+	}
+	log.Printf("tacacs author user=%q nas=%q rem_addr=%q svc=%q cmd=%q allow=%v role=%q map_role=%q reply=%q",
+		req.User, deviceIP, strings.TrimSpace(req.RemAddr), svc, fullCmd, allow, role, mapRole, logArgs)
 	s.Bus.Publish(events.Event{
 		Source: "tacacs", Kind: "authorize", Severity: severity(allow),
 		Actor: req.User, Target: deviceIP,
@@ -336,16 +352,26 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	_ = WritePacket(c, h, rep.Bytes(), s.Secret)
 }
 
-func (s *Server) authorizeAdmin(user string) (bool, string) {
-	var role string
-	var disabled int
+func (s *Server) authorizeAdmin(user string) (bool, string, int64) {
+	var (
+		userID   int64
+		role     string
+		disabled int
+	)
 	err := s.DB.QueryRow(`
-		SELECT role, disabled FROM users WHERE lower(username)=lower(?)`, user).
-		Scan(&role, &disabled)
-	if err != nil || disabled != 0 {
-		return false, ""
+		SELECT id, role, disabled FROM users WHERE lower(username)=lower(?)`, user).
+		Scan(&userID, &role, &disabled)
+	if err == nil && disabled == 0 {
+		return true, role, userID
 	}
-	return true, role
+	// FortiGate may send email/UPN while the portal stores sAMAccountName.
+	err = s.DB.QueryRow(`
+		SELECT id, role, disabled FROM users WHERE lower(email)=lower(?) AND disabled=0`, user).
+		Scan(&userID, &role, &disabled)
+	if err != nil {
+		return false, "", 0
+	}
+	return true, role, userID
 }
 
 func (s *Server) authorize(user, deviceIP, fullCmd string) (bool, string) {
@@ -484,11 +510,8 @@ func (s *Server) fortinetAdminProfForRole(role string) string {
 }
 
 // fortinetMemberofForRole returns the memberof= group for a PAM role.
-// Priority: FortiGate-requested memberof > FortinetRoleMemberofMap > FortinetMemberOf > "PAM-Admins".
+// Priority: FortinetRoleMemberofMap > FortinetMemberOf > FortiGate request > "PAM-Admins".
 func (s *Server) fortinetMemberofForRole(role, reqMemberof string) string {
-	if strings.TrimSpace(reqMemberof) != "" {
-		return strings.TrimSpace(reqMemberof)
-	}
 	r := strings.ToLower(strings.TrimSpace(role))
 	if s.FortinetRoleMemberofMap != nil {
 		if m, ok := s.FortinetRoleMemberofMap[r]; ok && m != "" {
@@ -498,7 +521,65 @@ func (s *Server) fortinetMemberofForRole(role, reqMemberof string) string {
 	if m := strings.TrimSpace(s.FortinetMemberOf); m != "" {
 		return m
 	}
+	if strings.TrimSpace(reqMemberof) != "" {
+		return strings.TrimSpace(reqMemberof)
+	}
 	return "PAM-Admins"
+}
+
+// fortinetMappingRole picks the PAM role with the least-privileged FortiGate profile
+// when the user has multiple effective roles (primary + group grants).
+func (s *Server) fortinetMappingRole(userID int64, primaryRole string) string {
+	roles := []string{strings.TrimSpace(primaryRole)}
+	if s.Groups != nil && userID > 0 {
+		if eff, err := s.Groups.EffectiveRoles(context.Background(), userID, primaryRole); err == nil && len(eff) > 0 {
+			roles = eff
+		}
+	}
+	bestRole := primaryRole
+	bestRank := 999
+	for _, r := range roles {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		rank := fortinetProfRank(s.fortinetAdminProfForRole(r))
+		if rank < bestRank {
+			bestRank = rank
+			bestRole = r
+		}
+	}
+	return bestRole
+}
+
+func fortinetProfRank(prof string) int {
+	switch strings.ToLower(strings.TrimSpace(prof)) {
+	case "no_access", "noaccess":
+		return 0
+	case "read_only", "readonly", "read-only":
+		return 1
+	case "prof_admin":
+		return 2
+	case "read_write":
+		return 3
+	case "super_admin":
+		return 4
+	default:
+		return 2
+	}
+}
+
+func serviceFromAuthorRequest(args []string) string {
+	if s := extractArg(args, "service"); s != "" {
+		return s
+	}
+	for _, a := range args {
+		lower := strings.ToLower(strings.TrimSpace(a))
+		if strings.HasPrefix(lower, "service=") {
+			return strings.TrimSpace(a[strings.Index(a, "=")+1:])
+		}
+	}
+	return ""
 }
 
 // fortinetAdminProf is the built-in default role → admin_prof mapping.
