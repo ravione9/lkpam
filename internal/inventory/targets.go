@@ -154,13 +154,32 @@ func (s *Service) Update(ctx context.Context, t Target) error {
 
 // Delete removes a target by ID.
 func (s *Service) Delete(ctx context.Context, id int64) error {
-	res, err := s.DB.ExecContext(ctx, `DELETE FROM targets WHERE id = ?`, id)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Targets can be referenced by historical access_requests and linked
+	// privileged_accounts. Clear those relations first so device deletion works
+	// for Linux/Cisco/Web targets uniformly.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM access_requests WHERE target_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE privileged_accounts SET target_id = NULL WHERE target_id = ?`, id); err != nil {
+		return err
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM targets WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return errors.New("target not found")
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }
