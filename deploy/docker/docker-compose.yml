@@ -217,6 +217,16 @@ services:
       <<: *common-env
       PAM_TACACS_ADDR: ":49"
       PAM_AUTH_URL: "http://auth:8081"
+      # FortiGate role → admin_prof mapping.
+      # Format: "pam_role=fortinet_profile,..." (comma-separated, no spaces)
+      # Built-in defaults: admin=super_admin, secops=super_admin, everything else=prof_admin
+      # Common FortiGate profiles: super_admin  read_write  prof_admin  no_access
+      # Uncomment and customize to assign different profiles per PAM role:
+      #PAM_TACACS_FORTINET_PROFILES: "admin=super_admin,secops=read_write,netops=prof_admin,user=no_access,viewer=no_access"
+      # FortiGate role → memberof group mapping (for group-based profile assignment on the firewall).
+      # Format: "pam_role=FG-GroupName,..."
+      # Falls back to PAM_TACACS_FORTINET_MEMBEROF for roles not listed.
+      #PAM_TACACS_FORTINET_MEMBEROF_MAP: "admin=PAM-SuperAdmins,secops=PAM-SecOps,netops=PAM-NetAdmins,user=PAM-ReadOnly"
     depends_on:
       auth:
         condition: service_healthy

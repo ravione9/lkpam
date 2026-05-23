@@ -46,9 +46,20 @@ type Server struct {
 	Auth *authclient.Client
 	// Vault resolves privileged-account passwords for enable / device-level TACACS auth.
 	Vault *vault.Vault
-	// FortinetMemberOf is returned as memberof= on FortiGate authorization (must match
-	// config user group name or config user group match group-name on the firewall).
+	// FortinetMemberOf is the default memberof= value returned on FortiGate authorization
+	// (must match a config user group name on the firewall). Per-role overrides take
+	// precedence when FortinetRoleMemberofMap is set.
 	FortinetMemberOf string
+	// FortinetRoleProfileMap maps PAM role names (lower-cased) to FortiGate admin_prof
+	// values. Example: {"admin":"super_admin","netops":"prof_admin","viewer":"no_access"}
+	// Falls back to the built-in defaults when a role is absent.
+	// Populate from PAM_TACACS_FORTINET_PROFILES ("admin=super_admin,netops=prof_admin,...").
+	FortinetRoleProfileMap map[string]string
+	// FortinetRoleMemberofMap maps PAM role names (lower-cased) to FortiGate memberof
+	// group names. Example: {"admin":"PAM-SuperAdmins","netops":"PAM-NetAdmins"}
+	// Falls back to FortinetMemberOf when absent.
+	// Populate from PAM_TACACS_FORTINET_MEMBEROF_MAP ("admin=PAM-SuperAdmins,netops=PAM-NetAdmins,...").
+	FortinetRoleMemberofMap map[string]string
 }
 
 // Run starts the TCP listener and blocks until ctx is done.
@@ -453,20 +464,45 @@ func (s *Server) fortinetAuthorArgs(role, svc, reqMemberof string) []string {
 	if strings.TrimSpace(svc) == "" {
 		svc = "fortigate"
 	}
-	memberof := strings.TrimSpace(s.FortinetMemberOf)
-	if memberof == "" {
-		memberof = "PAM-Admins"
-	}
-	if strings.TrimSpace(reqMemberof) != "" {
-		memberof = strings.TrimSpace(reqMemberof)
-	}
 	return []string{
 		"service=" + svc,
-		"admin_prof=" + fortinetAdminProf(role),
-		"memberof=" + memberof,
+		"admin_prof=" + s.fortinetAdminProfForRole(role),
+		"memberof=" + s.fortinetMemberofForRole(role, reqMemberof),
 	}
 }
 
+// fortinetAdminProfForRole returns the FortiGate admin_prof for a PAM role.
+// Checks FortinetRoleProfileMap first; falls back to built-in defaults.
+func (s *Server) fortinetAdminProfForRole(role string) string {
+	r := strings.ToLower(strings.TrimSpace(role))
+	if s.FortinetRoleProfileMap != nil {
+		if p, ok := s.FortinetRoleProfileMap[r]; ok && p != "" {
+			return p
+		}
+	}
+	return fortinetAdminProf(r)
+}
+
+// fortinetMemberofForRole returns the memberof= group for a PAM role.
+// Priority: FortiGate-requested memberof > FortinetRoleMemberofMap > FortinetMemberOf > "PAM-Admins".
+func (s *Server) fortinetMemberofForRole(role, reqMemberof string) string {
+	if strings.TrimSpace(reqMemberof) != "" {
+		return strings.TrimSpace(reqMemberof)
+	}
+	r := strings.ToLower(strings.TrimSpace(role))
+	if s.FortinetRoleMemberofMap != nil {
+		if m, ok := s.FortinetRoleMemberofMap[r]; ok && m != "" {
+			return m
+		}
+	}
+	if m := strings.TrimSpace(s.FortinetMemberOf); m != "" {
+		return m
+	}
+	return "PAM-Admins"
+}
+
+// fortinetAdminProf is the built-in default role → admin_prof mapping.
+// Override per-role at runtime via Server.FortinetRoleProfileMap.
 func fortinetAdminProf(role string) string {
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case "admin":
@@ -476,6 +512,31 @@ func fortinetAdminProf(role string) string {
 	default:
 		return "prof_admin"
 	}
+}
+
+// ParseRoleMap parses a comma-separated "role=value,role2=value2" string into a map.
+// Used for PAM_TACACS_FORTINET_PROFILES and PAM_TACACS_FORTINET_MEMBEROF_MAP env vars.
+func ParseRoleMap(s string) map[string]string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	m := make(map[string]string)
+	for _, pair := range strings.Split(s, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(pair, "=")
+		if !ok || strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+			continue
+		}
+		m[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 func deviceIPFromAuthor(req *AuthorRequest, clientIP string) string {

@@ -39,3 +39,62 @@ func TestFortinetAdminProf(t *testing.T) {
 		t.Fatal("user -> prof_admin")
 	}
 }
+
+// TestFortinetRoleProfileMap verifies the configurable role→profile map.
+func TestFortinetRoleProfileMap(t *testing.T) {
+	s := &Server{
+		FortinetMemberOf: "PAM-Admins",
+		FortinetRoleProfileMap: map[string]string{
+			"admin":  "super_admin",
+			"secops": "read_write",   // overridden from built-in super_admin
+			"netops": "prof_admin",
+			"viewer": "no_access",
+		},
+		FortinetRoleMemberofMap: map[string]string{
+			"admin":  "PAM-SuperAdmins",
+			"netops": "PAM-NetAdmins",
+		},
+	}
+
+	cases := []struct {
+		role        string
+		wantProfile string
+		wantMemberof string
+	}{
+		{"admin", "super_admin", "PAM-SuperAdmins"},
+		{"secops", "read_write", "PAM-Admins"}, // memberof falls back to default
+		{"netops", "prof_admin", "PAM-NetAdmins"},
+		{"viewer", "no_access", "PAM-Admins"},
+		{"user", "prof_admin", "PAM-Admins"}, // not in map → built-in default
+	}
+	for _, tc := range cases {
+		args := s.fortinetAuthorArgs(tc.role, "fortigate", "")
+		if !slices.Contains(args, "admin_prof="+tc.wantProfile) {
+			t.Errorf("role=%q: args=%v, want admin_prof=%s", tc.role, args, tc.wantProfile)
+		}
+		if !slices.Contains(args, "memberof="+tc.wantMemberof) {
+			t.Errorf("role=%q: args=%v, want memberof=%s", tc.role, args, tc.wantMemberof)
+		}
+	}
+}
+
+// TestParseRoleMap verifies the env-var parser.
+func TestParseRoleMap(t *testing.T) {
+	m := ParseRoleMap("admin=super_admin,netops=prof_admin, viewer=no_access ,user=")
+	if m["admin"] != "super_admin" {
+		t.Errorf("admin: got %q", m["admin"])
+	}
+	if m["netops"] != "prof_admin" {
+		t.Errorf("netops: got %q", m["netops"])
+	}
+	if m["viewer"] != "no_access" {
+		t.Errorf("viewer: got %q", m["viewer"])
+	}
+	// Empty value should be skipped
+	if _, ok := m["user"]; ok {
+		t.Error("user with empty value should not be in map")
+	}
+	if ParseRoleMap("") != nil {
+		t.Error("empty string should return nil")
+	}
+}

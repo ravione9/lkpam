@@ -55,8 +55,18 @@ func main() {
 		Bus:              events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085")),
 		Auth:             authclient.New(config.Get("PAM_AUTH_URL", "http://auth:8081")),
 		Vault:            v,
-		UnknownUserDefer:   tacacs.ParseUnknownUserDefer(config.Get("PAM_TACACS_UNKNOWN_USER", "error")),
-		FortinetMemberOf:   config.Get("PAM_TACACS_FORTINET_MEMBEROF", "PAM-Admins"),
+		UnknownUserDefer:        tacacs.ParseUnknownUserDefer(config.Get("PAM_TACACS_UNKNOWN_USER", "error")),
+		FortinetMemberOf:        config.Get("PAM_TACACS_FORTINET_MEMBEROF", "PAM-Admins"),
+		// Per-role FortiGate admin profile mapping.
+		// Format: "pam_role=fortinet_profile,pam_role2=profile2"
+		// Example: "admin=super_admin,secops=read_write,netops=prof_admin,user=no_access,viewer=no_access"
+		// Roles not listed fall back to built-in defaults (admin/secops=super_admin, else=prof_admin).
+		FortinetRoleProfileMap:  tacacs.ParseRoleMap(config.Get("PAM_TACACS_FORTINET_PROFILES", "")),
+		// Per-role FortiGate memberof group mapping.
+		// Format: "pam_role=FortiGate-Group-Name,..."
+		// Example: "admin=PAM-SuperAdmins,secops=PAM-SecOps,netops=PAM-NetAdmins,user=PAM-ReadOnly"
+		// Falls back to PAM_TACACS_FORTINET_MEMBEROF when a role is not listed.
+		FortinetRoleMemberofMap: tacacs.ParseRoleMap(config.Get("PAM_TACACS_FORTINET_MEMBEROF_MAP", "")),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
