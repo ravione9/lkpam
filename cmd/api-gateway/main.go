@@ -587,6 +587,23 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 			upstreamURL = altURL
 		}
 	}
+
+	// MIME-mismatch fallback: FortiOS (and other SPA appliances) often return
+	// HTTP 200 with the login HTML body for ANY unknown path under /login/.
+	// That breaks the browser because <script src=login.js> ends up parsing
+	// HTML as JavaScript ("Unexpected token '<'"). Detect this — an asset
+	// request whose response Content-Type is text/html — and retry with the
+	// fallback prefixes so we can find the file under /login/static/ etc.
+	if upResp.StatusCode < 400 && isPublicWebAsset(rest) && r.Method == http.MethodGet {
+		if assetExpectsScriptStyle(rest) && responseIsHTML(upResp) {
+			log.Printf("web-proxy: mime mismatch session=%s url=%s ct=%q — appliance returned HTML for asset request, retrying fallback prefixes (skip=%q)",
+				sessionID, upstreamURL, upResp.Header.Get("Content-Type"), triedPrefix)
+			if alt, altURL, ok := retryAssetWithFallback(r, state, targetURL, rest, upQ, sessionID, creds, upResp, triedPrefix); ok {
+				upResp = alt
+				upstreamURL = altURL
+			}
+		}
+	}
 	defer upResp.Body.Close()
 
 	if upResp.StatusCode == http.StatusNotFound && isPublicWebAsset(rest) {
@@ -655,8 +672,27 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	rewriteBody := shouldRewriteWebBody(ct) || shouldRewriteWebPath(rest)
 	if rewriteBody {
 		body, _ := io.ReadAll(upResp.Body)
+		// Asset path (.js/.css/.json/.woff…) with HTML body = appliance SPA
+		// fallback (FortiOS returns its login page for any unknown asset).
+		// Returning that HTML to the browser causes "Unexpected token '<'"
+		// when it parses JS, "Failed to parse JSON" when it parses JSON, etc.
+		// Serve an empty stub with the correct MIME and 404 status instead —
+		// the page may render with reduced styling but won't hard-crash on
+		// undefined globals (`try_login is not defined`).
+		if assetExpectsScriptStyle(rest) && (responseIsHTML(upResp) || looksLikeHTMLBody(body)) {
+			log.Printf("web-proxy: returning empty stub for asset session=%s url=%s (upstream sent HTML for asset path)",
+				sessionID, upstreamURL)
+			if mimeByPath != "" {
+				w.Header().Set("Content-Type", mimeByPath)
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		body = rewriteHTML(body, targetURL, sessionID, portalTok, creds)
-		if isHTMLWebResponse(rest, ct) {
+		// Only inject the FortiGate login bridge into actual HTML documents.
+		// Path-based check guards against upstreams that mis-label JS as HTML.
+		if isHTMLDocumentResponse(rest, ct) {
 			body = injectFortinetLoginAssist(body, creds, sessionID)
 		}
 		if mimeByPath != "" {
@@ -703,23 +739,53 @@ func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, u
 	return upstream, upstreamURL, nil
 }
 
-// retryAssetWithFallback closes prevResp and tries the request with each
-// candidate URL prefix from assetFallbackPrefixes until one returns < 400.
-// The discovered prefix is cached on the session so subsequent assets skip
+// retryAssetWithFallback closes prevResp and tries the request under candidate
+// URL paths until one returns a non-HTML, < 400 response. Strategies tried:
+//
+//  1. each prefix from assetFallbackPrefixes prepended to rest
+//     (e.g. "/login/login.js" -> "/login/login/login.js" — skipped if it
+//     would double an existing prefix)
+//  2. stripping a leading prefix from rest (so "/login/login.js" is tried
+//     as "/login.js" — covers FortiOS firmwares that serve login assets at
+//     root instead of under /login/)
+//  3. the original path (so the caller gets a real Response to render the
+//     final 404 with)
+//
+// A successful prefix is cached on the session so subsequent assets skip
 // the probing dance. skipPrefix is the prefix already attempted by the
 // caller (the session's cached prefix, if any) so we don't retry it.
 func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *url.URL, rest string, upQ url.Values, sessionID string, creds weblaunch.SessionCreds, prevResp *http.Response, skipPrefix string) (*http.Response, string, bool) {
 	httpClient := state.client
-	// Drain and close the original 404 so the connection can be reused.
 	io.Copy(io.Discard, prevResp.Body)
 	prevResp.Body.Close()
 
+	type candidate struct {
+		path   string
+		prefix string // "" means no prefix to cache
+	}
+	var tries []candidate
 	for _, prefix := range assetFallbackPrefixes {
 		if prefix == skipPrefix {
 			continue
 		}
-		altRest := prefix + rest
-		altReq, altURL, err := buildWebUpstreamRequest(r, targetURL, altRest, upQ, sessionID, creds, httpClient.Jar)
+		if strings.HasPrefix(rest, prefix+"/") || rest == prefix {
+			continue // would double the prefix
+		}
+		tries = append(tries, candidate{path: prefix + rest, prefix: prefix})
+	}
+	for _, prefix := range assetFallbackPrefixes {
+		if !strings.HasPrefix(rest, prefix+"/") {
+			continue
+		}
+		stripped := strings.TrimPrefix(rest, prefix)
+		if stripped != rest && stripped != "" && stripped != "/" {
+			tries = append(tries, candidate{path: stripped, prefix: ""})
+		}
+	}
+
+	wantNonHTML := assetExpectsScriptStyle(rest)
+	for _, c := range tries {
+		altReq, altURL, err := buildWebUpstreamRequest(r, targetURL, c.path, upQ, sessionID, creds, httpClient.Jar)
 		if err != nil {
 			continue
 		}
@@ -728,18 +794,18 @@ func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *
 		if err != nil {
 			continue
 		}
-		if altResp.StatusCode < 400 {
-			log.Printf("web-proxy: fallback success session=%s prefix=%s url=%s", sessionID, prefix, altURL)
-			state.mu.Lock()
-			state.assetPrefix = prefix
-			state.mu.Unlock()
+		if altResp.StatusCode < 400 && (!wantNonHTML || !responseIsHTML(altResp)) {
+			log.Printf("web-proxy: fallback success session=%s path=%s url=%s", sessionID, c.path, altURL)
+			if c.prefix != "" {
+				state.mu.Lock()
+				state.assetPrefix = c.prefix
+				state.mu.Unlock()
+			}
 			return altResp, altURL, true
 		}
 		io.Copy(io.Discard, altResp.Body)
 		altResp.Body.Close()
 	}
-	// All fallbacks failed — fetch the original path once more so the caller
-	// gets a real Response object to render the 404 with.
 	finalReq, finalURL, err := buildWebUpstreamRequest(r, targetURL, rest, upQ, sessionID, creds, httpClient.Jar)
 	if err != nil {
 		return nil, "", false
@@ -749,6 +815,40 @@ func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *
 		return nil, finalURL, false
 	}
 	return finalResp, finalURL, true
+}
+
+// assetExpectsScriptStyle reports whether the request path is for a JS, CSS,
+// JSON, font, or similar non-HTML asset that the browser will try to parse
+// as a specific MIME type. Used to detect appliances that return their
+// login HTML as a SPA fallback for unknown asset paths.
+func assetExpectsScriptStyle(path string) bool {
+	p := strings.ToLower(webPathOnly(path))
+	switch {
+	case strings.HasSuffix(p, ".js"),
+		strings.HasSuffix(p, ".mjs"),
+		strings.HasSuffix(p, ".css"),
+		strings.HasSuffix(p, ".json"),
+		strings.HasSuffix(p, ".map"),
+		strings.HasSuffix(p, ".woff"),
+		strings.HasSuffix(p, ".woff2"),
+		strings.HasSuffix(p, ".ttf"),
+		strings.HasSuffix(p, ".otf"):
+		return true
+	}
+	return false
+}
+
+// responseIsHTML reports whether the upstream response Content-Type advertises
+// an HTML document (so we can flag MIME mismatches for asset requests).
+func responseIsHTML(resp *http.Response) bool {
+	if resp == nil {
+		return false
+	}
+	ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	return ct == "text/html" || ct == "application/xhtml+xml"
 }
 
 func mimeNeedsFix(ct string) bool {
@@ -783,6 +883,66 @@ func isHTMLWebResponse(path, ct string) bool {
 	return strings.HasSuffix(p, ".html") || strings.HasSuffix(p, ".htm")
 }
 
+// isHTMLDocumentResponse reports true only when the response truly contains
+// HTML (path is an HTML document OR path is non-asset AND CT is text/html).
+// Unlike isHTMLWebResponse this returns FALSE for JS/CSS/JSON paths even when
+// the upstream mislabels them as text/html — preventing us from injecting
+// <script> tags into JS bundles and corrupting them.
+func isHTMLDocumentResponse(path, ct string) bool {
+	p := strings.ToLower(webPathOnly(path))
+	switch {
+	case strings.HasSuffix(p, ".html"), strings.HasSuffix(p, ".htm"):
+		return true
+	}
+	if assetExpectsScriptStyle(p) {
+		return false
+	}
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	return strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml+xml")
+}
+
+// looksLikeHTMLBody returns true when the response payload starts with a tag
+// that browsers treat as HTML. Used as a backup signal when the upstream
+// Content-Type is missing or wrong (FortiOS sometimes serves login HTML as
+// application/octet-stream).
+func looksLikeHTMLBody(body []byte) bool {
+	trim := bytes.TrimLeft(body, " \t\r\n\xef\xbb\xbf")
+	if len(trim) < 5 {
+		return false
+	}
+	prefix := strings.ToLower(string(trim[:min(64, len(trim))]))
+	for _, p := range []string{"<!doctype html", "<html", "<head", "<body", "<meta", "<script"} {
+		if strings.HasPrefix(prefix, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// isApplianceEntryPath reports whether the path stored in target.Path is a
+// well-known appliance LANDING page (FortiOS /login, PAN-OS /php/login.php,
+// SSL-VPN portals) and should NOT be treated as a URL mount-point that gets
+// auto-prepended to every proxied request.
+func isApplianceEntryPath(p string) bool {
+	p = strings.ToLower(strings.TrimSpace(p))
+	switch p {
+	case "", "/", "/login", "/logon", "/p", "/php/login.php",
+		"/sslvpn", "/sslvpn/portal", "/remote", "/remote/login":
+		return true
+	}
+	return false
+}
+
 // buildUpstreamURL joins the target base URL (including any path prefix in web_url)
 // with the proxied request path and query string.
 func buildUpstreamURL(target *url.URL, rest string, query url.Values) string {
@@ -803,7 +963,18 @@ func buildUpstreamURL(target *url.URL, rest string, query url.Values) string {
 	// requests for "/static/x" reach "/ui/static/x" on the device instead of
 	// the host root (which 404s on every appliance that runs its admin UI
 	// behind a mount point).
+	//
+	// EXCEPTION: well-known appliance entry paths (FortiOS /login, PAN-OS
+	// /php/login.php, SSL-VPN /sslvpn) are LANDING pages, not URL prefixes
+	// the rest of the appliance lives under. Prepending /login to every
+	// request like /api/v2/cmdb breaks the admin UI. Treat these like an
+	// empty base — the request path is used as-is. Apps that legitimately
+	// run behind a mount point (target_url like https://fw/ui) still get
+	// the prefix applied.
 	base := strings.TrimSuffix(target.Path, "/")
+	if isApplianceEntryPath(base) {
+		base = ""
+	}
 	if base != "" && !strings.HasPrefix(rest, base+"/") && rest != base {
 		rest = base + rest
 	}
