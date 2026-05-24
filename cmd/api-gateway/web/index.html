@@ -2510,15 +2510,10 @@ async function api(path, opts = {}) {
     if (!r.ok) {
       let msg = await r.text();
       try { msg = JSON.parse(msg).error || msg; } catch {}
-      // After a container rebuild the JWT secret may change — the browser still
-      // shows the shell UI but every gated API returns 401 until re-login.
-      if (r.status === 401 && !path.startsWith("/auth/login") && !path.startsWith("/auth/verify")) {
-        await persistToken(null);
-        currentUser = null;
-        $("#app").style.display = "none";
-        $("#login-wrap").style.display = "flex";
-        throw new Error("Session expired or invalid — please sign in again");
-      }
+      // 401s are surfaced as errors but the session is NOT auto-killed here.
+      // restoreSession() on boot/refresh handles definitive token-invalid; a
+      // mid-session 401 from one endpoint should not eject the user from
+      // every other tab that still works.
       throw new Error(msg);
     }
     const ct = r.headers.get("content-type") || "";

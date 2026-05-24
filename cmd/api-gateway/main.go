@@ -46,6 +46,10 @@ type claims struct {
 
 type ctxKey struct{}
 
+// authHTTPClient verifies JWTs against auth-service. A timeout prevents one
+// stuck /verify from blocking every gated API call (dashboard, sessions, etc.).
+var authHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 // adminWriteMatchers gates write methods on admin-only resources. Each entry
 // matches by method + path prefix. Add new admin routes here and they'll be
 // automatically protected for non-admins.
@@ -357,10 +361,13 @@ func requiresAdmin(method, path string) bool {
 }
 
 func verifyToken(ctx context.Context, authBase *url.URL, tok string) (*claims, int, error) {
-	body := strings.NewReader(`{"Token":"` + tok + `"}`)
-	req, _ := http.NewRequestWithContext(ctx, "POST", authBase.String()+"/verify", body)
+	body, err := json.Marshal(map[string]string{"Token": tok})
+	if err != nil {
+		return nil, http.StatusBadGateway, err
+	}
+	req, _ := http.NewRequestWithContext(ctx, "POST", authBase.String()+"/verify", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := authHTTPClient.Do(req)
 	if err != nil {
 		return nil, http.StatusBadGateway, err
 	}
@@ -399,6 +406,9 @@ func serveWebPath(w http.ResponseWriter, r *http.Request, fsPath string) {
 	}
 	if ct := mimeForWebPath(fsPath); ct != "" {
 		w.Header().Set("Content-Type", ct)
+	}
+	if strings.HasSuffix(fsPath, "index.html") {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	}
 	w.Write(b)
 }
