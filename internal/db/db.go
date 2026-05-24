@@ -127,7 +127,7 @@ func (d *DB) migrate() error {
 			approver_id INTEGER,
 			created_at INTEGER NOT NULL,
 			decided_at INTEGER,
-			ttl_seconds INTEGER NOT NULL DEFAULT 1800
+			ttl_seconds INTEGER DEFAULT 1800
 		)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,           -- uuid-ish
