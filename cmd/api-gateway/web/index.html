@@ -7998,4 +7998,38 @@ async function loadFortiSettings() {
     // Collect unique role names; always include the core built-in roles.
     const builtinRoles = ["admin", "secops", "netops", "sysadmin", "user", "viewer"];
     const dbRoles = (rolesData || []).map(r => r.name || r).filter(Boolean);
-    const allRoles = [...new Set([...builtinRoles, ...dbRoles])]
+    const allRoles = [...new Set([...builtinRoles, ...dbRoles])];
+    $("#fortiRoleRows").innerHTML = renderFortiRoleRows(allRoles, savedRaw);
+    $("#fortiDefaultMemberof").value = (savedRaw && savedRaw.default_memberof) || "";
+  } catch (e) {
+    console.error("loadFortiSettings:", e);
+  }
+}
+
+$("#fortiSaveBtn").onclick = async function() {
+  const rp = {}, rm = {};
+  document.querySelectorAll("#fortiRoleTable tbody tr[data-role]").forEach(row => {
+    const role = row.dataset.role;
+    const sel = row.querySelector(".forti-prof-sel");
+    const custom = row.querySelector(".forti-prof-custom");
+    const memberof = row.querySelector(".forti-memberof");
+    const prof = sel.value === "custom" ? custom.value.trim() : sel.value;
+    if (prof) rp[role] = prof;
+    if (memberof && memberof.value.trim()) rm[role] = memberof.value.trim();
+  });
+  const defaultMemberof = $("#fortiDefaultMemberof").value.trim();
+  const body = { role_profiles: rp, role_memberof: rm, default_memberof: defaultMemberof };
+  try {
+    await api("/auth/settings/tacacs", { method: "PUT", body: JSON.stringify(body) });
+    $("#fortiStatus").textContent = "Saved ✓";
+    setTimeout(() => { $("#fortiStatus").textContent = ""; }, 3000);
+    cache.fortiCfg = body;
+  } catch (e) {
+    $("#fortiStatus").textContent = "Error: " + e.message;
+  }
+};
+
+
+</script>
+</body>
+</html>
