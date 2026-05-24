@@ -461,6 +461,13 @@ func resolveRecordingFile(recPath string) (string, error) {
 		ext := filepath.Ext(recPath)
 		// Accept .log, .guac, and no-extension (guacd recording without suffix).
 		if ext == ".log" || ext == ".guac" || ext == "" {
+			// 0-byte recordings come from sessions that failed before any
+			// I/O reached the recorder. Treating these as "no recording"
+			// surfaces a clear error in the player instead of serving an
+			// empty file that the playback library spins on forever.
+			if info.Size() == 0 {
+				return "", errors.New("recording is empty — session ended before any data was captured")
+			}
 			return recPath, nil
 		}
 		return "", errors.New("unsupported recording format")

@@ -123,11 +123,14 @@
     const downloadBtn = document.getElementById("downloadBtn");
     const errPanel    = document.getElementById("errPanel");
 
-    let recording = null;
-    let duration  = 0;
-    let seeking   = false;
-    let blobUrl   = null;
-    let rawBlob   = null;
+    let recording   = null;
+    let duration    = 0;
+    let seeking     = false;
+    let blobUrl     = null;
+    let rawBlob     = null;
+    let controlsReady = false;
+    let parseTimer  = null;
+    const PARSE_TIMEOUT_MS = 20000; // surface "try playing anyway" after this
 
     function fmtMs(ms) {
       if (!ms || ms < 0) return "0:00";
@@ -154,9 +157,12 @@
     }
 
     function enableControls() {
+      if (controlsReady) return;
+      controlsReady = true;
       playBtn.disabled  = false;
       rewindBtn.disabled = false;
       seekBar.disabled  = false;
+      loadOverlay.classList.add("hidden");
     }
 
     function updateSeek(ms) {
@@ -258,24 +264,44 @@
       displayEl.appendChild(canvas);
       disp.onresize = scaleDisplay;
 
+      // First-progress is the moment the recording header parses. Many guacd
+      // recordings never fire oncomplete (missing end-of-stream marker), so we
+      // unlock the controls here instead of waiting forever.
+      let firstProgress = true;
       recording.onprogress = (ms, loaded) => {
-        updateSeek(ms);
-        if (!loaded) {
-          // Still indexing keyframes — keep loading bar partial
-          loadFill.style.width = "99%";
+        if (firstProgress) {
+          firstProgress = false;
+          enableControls();
+          if (parseTimer) { clearTimeout(parseTimer); parseTimer = null; }
+          duration = recording.getDuration();
+          updateSeek(0);
+          setStatus("Recording loaded (" + fmtMs(duration) + "). Click \u25b6 Play.");
+          // Seek to start so the first frame paints immediately.
+          try { recording.seek(0, () => { scaleDisplay(); }); } catch (_) {}
+        } else {
+          updateSeek(ms);
+          duration = recording.getDuration();
         }
+        loadFill.style.width = loaded ? "100%" : "99%";
       };
 
       recording.oncomplete = () => {
         loadFill.style.width = "100%";
-        setTimeout(() => loadOverlay.classList.add("hidden"), 300);
         duration = recording.getDuration();
-        updateSeek(0);
         enableControls();
-        setStatus("Recording loaded — " + fmtMs(duration) + " duration. Click ▶ Play to start.");
-        // Seek to start to render first frame
-        recording.seek(0, () => { scaleDisplay(); });
+        setStatus("Recording loaded \u2014 " + fmtMs(duration) + " duration. Click \u25b6 Play.");
       };
+
+      // Hard timeout: if neither onprogress nor oncomplete fires within
+      // PARSE_TIMEOUT_MS, the recording is most likely missing a stream header.
+      // Surface a useful message and an "Open anyway" button instead of
+      // spinning forever.
+      parseTimer = setTimeout(() => {
+        if (controlsReady) return;
+        loadOverlay.classList.add("hidden");
+        setStatus("Recording parsed without progress callbacks \u2014 use Download to save the .guac file. (File size: " + (rawBlob ? (rawBlob.size / 1024).toFixed(1) + " KB" : "?") + ")", true);
+        downloadBtn.disabled = false;
+      }, PARSE_TIMEOUT_MS);
 
       recording.onplay = () => {
         playBtn.textContent = "⏸ Pause";
