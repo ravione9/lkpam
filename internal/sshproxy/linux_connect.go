@@ -28,11 +28,12 @@ func (s *Server) dialLinux(
 		if err := s.syncLinuxAccount(targetAddr, portalUser, ptPassword, privUser, privPassword, linuxPriv, authMethods); err != nil {
 			log.Printf("ssh-proxy: linux privilege sync for %q: %v", linuxUser, err)
 			if linuxPriv == "sudo" || linuxPriv == "root" {
-				// Block connection — elevation failed
 				return nil, linuxUser, "provision", fmt.Errorf(
 					"could not apply Linux sudo policy for %q (check pam-svc bootstrap account): %w", linuxUser, err)
 			}
-			// Revocation failed — log and continue.
+			// Policy requires no elevation — block if we could not remove stale sudoers.
+			return nil, linuxUser, "provision", fmt.Errorf(
+				"could not revoke Linux sudo for %q (check pam-svc bootstrap account): %w", linuxUser, err)
 		}
 	} else if (linuxPriv == "sudo" || linuxPriv == "root") {
 		// Sudo was granted in PAM but there is no bootstrap (privileged) account

@@ -188,3 +188,79 @@ func TestMatrixDenialFinalizes(t *testing.T) {
 		t.Fatalf("expected denied, got %s", res.Status)
 	}
 }
+
+func TestApproveAutoGrantsSudoWhenRequested(t *testing.T) {
+	d := setupTestDB(t)
+	svc := &Service{DB: d}
+	ctx := context.Background()
+
+	id, err := svc.Create(ctx, 1, 1, "need sudo", 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := svc.Decide(ctx, id, 2, "admin", true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "approved" {
+		t.Fatalf("expected approved, got %s", res.Status)
+	}
+	req, err := svc.Get(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.SudoRequested != 1 || req.SudoGranted != 1 {
+		t.Fatalf("expected sudo_requested=1 and sudo_granted=1, got %+v", req)
+	}
+}
+
+func TestActiveSudoGrantedHonorsTTL(t *testing.T) {
+	d := setupTestDB(t)
+	svc := &Service{DB: d}
+	ctx := context.Background()
+	now := db.Now()
+
+	id, err := svc.Create(ctx, 1, 1, "sudo", time.Hour, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Decide(ctx, id, 2, "admin", true, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := svc.ActiveSudoGranted(ctx, 1, 1)
+	if err != nil || !ok {
+		t.Fatalf("expected active sudo grant, ok=%v err=%v", ok, err)
+	}
+
+	_, err = d.Exec(`UPDATE access_requests SET decided_at=? WHERE id=?`, now-7200, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err = svc.ActiveSudoGranted(ctx, 1, 1)
+	if err != nil || ok {
+		t.Fatalf("expected expired sudo grant, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestActiveSudoGrantedNullTTLNeverExpires(t *testing.T) {
+	d := setupTestDB(t)
+	svc := &Service{DB: d}
+	ctx := context.Background()
+
+	id, err := svc.Create(ctx, 1, 1, "sudo", time.Hour, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Decide(ctx, id, 2, "admin", true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE access_requests SET ttl_seconds=NULL WHERE id=?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := svc.ActiveSudoGranted(ctx, 1, 1)
+	if err != nil || !ok {
+		t.Fatalf("NULL ttl should mean active grant, ok=%v err=%v", ok, err)
+	}
+}

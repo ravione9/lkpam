@@ -262,7 +262,12 @@
       const canvas = disp.getElement();
       canvas.style.display = "block";
       displayEl.appendChild(canvas);
-      disp.onresize = scaleDisplay;
+      console.log("guac-player: display element appended, initial size",
+        disp.getWidth(), "x", disp.getHeight());
+      disp.onresize = (w, h) => {
+        console.log("guac-player: display resize", w, "x", h);
+        scaleDisplay();
+      };
 
       // First-progress is the moment the recording header parses. Many guacd
       // recordings never fire oncomplete (missing end-of-stream marker), so we
@@ -271,6 +276,7 @@
       recording.onprogress = (ms, loaded) => {
         if (firstProgress) {
           firstProgress = false;
+          console.log("guac-player: first onprogress fired, ms=", ms, "loaded=", loaded);
           enableControls();
           if (parseTimer) { clearTimeout(parseTimer); parseTimer = null; }
           duration = recording.getDuration();

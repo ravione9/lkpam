@@ -340,6 +340,37 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// requestGrantActive reports whether an approved access request is still within TTL.
+// NULL decided_at or NULL ttl_seconds means the grant does not expire.
+func requestGrantActive(decided, ttl sql.NullInt64) bool {
+	if !decided.Valid || !ttl.Valid {
+		return true
+	}
+	return time.Now().Unix() < decided.Int64+ttl.Int64
+}
+
+// ActiveSudoGranted returns true when the user has a non-expired approved request
+// with sudo_granted=1 for the target. Used by the SSH proxy to override policy
+// linux_privilege=none and provision /etc/sudoers.d on connect.
+func (s *Service) ActiveSudoGranted(ctx context.Context, userID, targetID int64) (bool, error) {
+	row := s.DB.QueryRowContext(ctx, `
+		SELECT COALESCE(sudo_granted,0), decided_at, ttl_seconds FROM access_requests
+		WHERE user_id=? AND target_id=? AND status='approved' AND COALESCE(sudo_granted,0)=1
+		ORDER BY decided_at DESC LIMIT 1`, userID, targetID)
+	var sudoGranted int
+	var decided, ttl sql.NullInt64
+	if err := row.Scan(&sudoGranted, &decided, &ttl); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if sudoGranted != 1 {
+		return false, nil
+	}
+	return requestGrantActive(decided, ttl), nil
+}
+
 // IsApproved returns true if there is a non-expired approved request for the
 // (user, target) pair.
 func (s *Service) IsApproved(ctx context.Context, userID, targetID int64) (bool, error) {
@@ -352,11 +383,7 @@ func (s *Service) IsApproved(ctx context.Context, userID, targetID int64) (bool,
 	if err := row.Scan(&id, &decided, &ttl); err != nil {
 		return false, nil
 	}
-	// NULL decided_at or NULL ttl → treat as never-expired (permanent grant).
-	if !decided.Valid || !ttl.Valid {
-		return true, nil
-	}
-	return time.Now().Unix() < decided.Int64+ttl.Int64, nil
+	return requestGrantActive(decided, ttl), nil
 }
 
 // ListPending lists open requests.
@@ -505,13 +532,20 @@ func (s *Service) RenewApproval(ctx context.Context, requestID int64, ttlSeconds
 	return nil
 }
 
-// GrantSudo marks sudo_granted=1 on an approved request.
+// GrantSudo marks sudo_granted on an approved request (admin override).
 func (s *Service) GrantSudo(ctx context.Context, requestID int64, grant bool) error {
+	req, err := s.Get(ctx, requestID)
+	if err != nil {
+		return err
+	}
+	if req.Status != "approved" {
+		return errors.New("request must be approved before sudo can be granted")
+	}
 	v := 0
 	if grant {
 		v = 1
 	}
-	_, err := s.DB.ExecContext(ctx, `UPDATE access_requests SET sudo_granted=? WHERE id=?`, v, requestID)
+	_, err = s.DB.ExecContext(ctx, `UPDATE access_requests SET sudo_granted=? WHERE id=?`, v, requestID)
 	return err
 }
 

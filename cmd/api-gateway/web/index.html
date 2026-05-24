@@ -5194,7 +5194,7 @@ window.decide = async (id, approve) => {
       // Find the request row in the table to check sudo_requested
       const row = document.querySelector(`#reqRows tr td:first-child`);
       // Simpler: just show a toast with grant option
-      toast(`Approved — if sudo was requested, use "Grant sudo" button`, "ok");
+      toast(`Approved${status === "approved" ? " — user must reconnect for sudo to take effect" : ""}`, "ok");
     } else {
       const msg = res && res.status ? `Vote recorded — request ${res.status} (${res.approvals_have||0}/${res.approvals_need||1})` : "Vote recorded";
       toast(msg, "ok");
@@ -5246,7 +5246,7 @@ $("#reqSubmitBtn").onclick = async () => {
       ttl_seconds: parseInt($("#reqTTL").value,10)||1800,
       sudo_requested: sudoReq,
     })});
-    const msg = sudoReq ? "Request submitted — admin must also grant sudo" : "Request submitted — waiting for admin approval";
+    const msg = sudoReq ? "Request submitted — sudo will be granted automatically when approved" : "Request submitted — waiting for admin approval";
     toast(msg, "ok");
     $("#reqReason").value = ""; $("#reqSudo").checked = false; loadRequests();
   } catch (e) { toast(e.message, "err"); }
@@ -5413,10 +5413,12 @@ window.downloadRecording = async sid => {
 
 window.playGuacRecording = sid => {
   const playerUrl = `/guac-player.html?session=${encodeURIComponent(sid)}&token=${encodeURIComponent(token)}`;
-  const w = window.open(playerUrl, "_blank", "width=1200,height=760,noopener,noreferrer");
-  if (!w) {
-    // Pop-up blocked — navigate in current tab as fallback
-    location.href = playerUrl;
+  // Always open in a NEW tab/window. Never fall back to location.href — that
+  // path used to double-open (popup + current-tab navigation) when a browser
+  // briefly returned null then opened the popup anyway.
+  const w = window.open(playerUrl, "_blank", "noopener,width=1200,height=760");
+  if (!w || w.closed || typeof w.closed === "undefined") {
+    toast("Pop-up blocked — allow pop-ups for this site, then click \u25b6 Play again.", "err");
   }
 };
 

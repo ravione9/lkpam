@@ -378,17 +378,15 @@ func (s *Server) evaluateAccess(ctx context.Context, userID int64, primaryRole s
 			}
 		}
 	}
-	// Check for an active sudo elevation grant from the JIT approval system.
-	// This lets users with linux_privilege=none request temporary sudo via the Requests tab.
-	if dec.LinuxPrivilege == "none" && policy.IsLinuxKind(kind) {
-		var sudoGranted int
-		_ = s.DB.QueryRowContext(ctx, `
-			SELECT COALESCE(sudo_granted,0) FROM access_requests
-			WHERE user_id=? AND target_id=? AND status='approved' AND COALESCE(sudo_granted,0)=1
-			AND (decided_at IS NULL OR decided_at + ttl_seconds > strftime('%s','now'))
-			ORDER BY decided_at DESC LIMIT 1`, userID, targetID).Scan(&sudoGranted)
-		if sudoGranted == 1 {
-			dec.LinuxPrivilege = "sudo"
+	// JIT-approved sudo overrides policy linux_privilege=none. Reconnect after approval
+	// so dialLinux provisions /etc/sudoers.d via the bootstrap account.
+	if policy.IsLinuxKind(kind) && s.Approval != nil {
+		sudoOK, err := s.Approval.ActiveSudoGranted(ctx, userID, targetID)
+		if err != nil {
+			return dec, err
+		}
+		if sudoOK {
+			dec.LinuxPrivilege = policy.MergeLinuxPrivilege(dec.LinuxPrivilege, "sudo")
 		}
 	}
 	// Linux targets run a full interactive shell — cmdGate command filtering was
