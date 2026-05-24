@@ -28,6 +28,8 @@ type webSessionState struct {
 	assetPrefix string
 	// fortiLoginDone tracks server-side FortiGate form login for this session.
 	fortiLoginDone bool
+	// detectedFortinet is set when upstream Server header contains FortiOS.
+	detectedFortinet bool
 }
 
 // webUpstreamClients holds one *webSessionState per web-console session so device

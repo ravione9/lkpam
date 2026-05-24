@@ -414,6 +414,7 @@ func serveWebPath(w http.ResponseWriter, r *http.Request, fsPath string) {
 }
 
 func mimeForWebPath(path string) string {
+	path = strings.ToLower(webPathOnly(path))
 	switch {
 	case strings.HasSuffix(path, ".html"):
 		return "text/html; charset=utf-8"
@@ -496,6 +497,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		http.Error(w, "session has no target URL", http.StatusBadRequest)
 		return
 	}
+	creds.TargetKind = inferTargetKind(creds)
 
 	targetURL, err := url.Parse(creds.TargetURL)
 	if err != nil {
@@ -508,14 +510,31 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	upQ.Del("token")
 	state := upstreamSessionState(sessionID)
 	httpClient := state.client
+	if ap := loginAssetPrefixFromTarget(creds.TargetURL); ap != "" {
+		state.mu.Lock()
+		if state.assetPrefix == "" {
+			state.assetPrefix = ap
+		}
+		state.mu.Unlock()
+	}
+
+	// FortiGate manifest is cosmetic; skip upstream fetch to avoid parse errors in DevTools.
+	if r.Method == http.MethodGet && isWebManifestPath(rest) {
+		w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(minimalWebManifest)
+		return
+	}
 
 	// FortiGate: server-side form login (never Basic auth — shows "Authentication failure").
-	if r.Method == http.MethodGet && isFortinetKind(creds.TargetKind) && creds.Username != "" && creds.Password != "" {
+	if r.Method == http.MethodGet && isFortinetSession(creds, state) && creds.Username != "" && creds.Password != "" {
 		state.mu.Lock()
 		tryLogin := !state.fortiLoginDone && !isPublicWebAsset(rest)
+		assetPrefix := state.assetPrefix
 		state.mu.Unlock()
 		if tryLogin {
-			if fortigateFormLogin(r.Context(), httpClient, targetURL, creds.Username, creds.Password) {
+			if fortigateFormLogin(r.Context(), httpClient, targetURL, creds.Username, creds.Password, assetPrefix) {
 				state.mu.Lock()
 				state.fortiLoginDone = true
 				state.mu.Unlock()
@@ -539,7 +558,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		primeUpstreamSession(r.Context(), httpClient, targetURL)
 	}
 
-	upstream, upstreamURL, err := buildWebUpstreamRequest(r, targetURL, effectiveRest, upQ, sessionID, creds)
+	upstream, upstreamURL, err := buildWebUpstreamRequest(r, targetURL, effectiveRest, upQ, sessionID, creds, httpClient.Jar)
 	if err != nil {
 		writeWebProxyError(w, rest, "proxy build error: "+err.Error(), http.StatusBadGateway)
 		return
@@ -547,6 +566,10 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 
 	debugf("upstream req session=%s method=%s url=%s asset=%v basic=%v",
 		sessionID, upstream.Method, upstreamURL, isPublicWebAsset(rest), upstream.Header.Get("Authorization") != "")
+
+	if r.Method == http.MethodPost && strings.Contains(strings.ToLower(rest), "logincheck") {
+		log.Printf("web-proxy: logincheck POST session=%s url=%s", sessionID, upstreamURL)
+	}
 
 	upResp, err := httpClient.Do(upstream)
 	if err != nil {
@@ -571,6 +594,14 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 			sessionID, upstreamURL, len(httpClient.Jar.Cookies(upstream.URL)))
 	} else {
 		debugf("upstream resp session=%s url=%s status=%d", sessionID, upstreamURL, upResp.StatusCode)
+	}
+
+	// FortiGate: auto-detect from Server header (works when web_url is an IP).
+	if srv := strings.ToLower(upResp.Header.Get("Server")); strings.Contains(srv, "forti") {
+		state.mu.Lock()
+		state.detectedFortinet = true
+		state.mu.Unlock()
+		creds.TargetKind = "fortinet-fortigate"
 	}
 
 	portalTok := strings.TrimSpace(r.URL.Query().Get("token"))
@@ -612,11 +643,22 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	// Rewrite HTML/JS/CSS bodies so root-absolute SPA paths go through the proxy.
 	ct := upResp.Header.Get("Content-Type")
 	mimeByPath := mimeForWebPath(rest)
+	if isWebManifestPath(rest) {
+		body, _ := io.ReadAll(upResp.Body)
+		body = coerceWebManifestBody(body, upResp.StatusCode)
+		w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(body)
+		return
+	}
 	rewriteBody := shouldRewriteWebBody(ct) || shouldRewriteWebPath(rest)
 	if rewriteBody {
 		body, _ := io.ReadAll(upResp.Body)
 		body = rewriteHTML(body, targetURL, sessionID, portalTok, creds)
-		body = injectFortinetLoginAssist(body, creds)
+		if isHTMLWebResponse(rest, ct) {
+			body = injectFortinetLoginAssist(body, creds, sessionID)
+		}
 		if mimeByPath != "" {
 			w.Header().Set("Content-Type", mimeByPath)
 		} else if ct != "" {
@@ -638,7 +680,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 
 // buildWebUpstreamRequest constructs the outbound request to the device,
 // stripping internal PAM headers/cookies and conditionally attaching Basic Auth.
-func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, upQ url.Values, sessionID string, creds weblaunch.SessionCreds) (*http.Request, string, error) {
+func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, upQ url.Values, sessionID string, creds weblaunch.SessionCreds, jar http.CookieJar) (*http.Request, string, error) {
 	upstreamURL := buildUpstreamURL(targetURL, rest, upQ)
 	upstream, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, r.Body)
 	if err != nil {
@@ -650,9 +692,9 @@ func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, u
 	upstream.Header.Del("X-PAM-User")
 	upstream.Header.Del("X-PAM-Web-Session")
 	upstream.Header.Del("Authorization")
-	upstream.Header.Del("Cookie")
 	rewriteUpstreamReferer(upstream.Header, targetURL, sessionID)
 	tuneUpstreamRequest(upstream, targetURL, rest)
+	mergeUpstreamCookies(upstream, r, jar, targetURL)
 
 	// FortiGate/PAN-OS use form POST /logincheck — never attach Basic Auth on GET login paths.
 	if shouldUseBasicAuth(r, rest, creds) {
@@ -677,7 +719,7 @@ func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *
 			continue
 		}
 		altRest := prefix + rest
-		altReq, altURL, err := buildWebUpstreamRequest(r, targetURL, altRest, upQ, sessionID, creds)
+		altReq, altURL, err := buildWebUpstreamRequest(r, targetURL, altRest, upQ, sessionID, creds, httpClient.Jar)
 		if err != nil {
 			continue
 		}
@@ -698,7 +740,7 @@ func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *
 	}
 	// All fallbacks failed — fetch the original path once more so the caller
 	// gets a real Response object to render the 404 with.
-	finalReq, finalURL, err := buildWebUpstreamRequest(r, targetURL, rest, upQ, sessionID, creds)
+	finalReq, finalURL, err := buildWebUpstreamRequest(r, targetURL, rest, upQ, sessionID, creds, httpClient.Jar)
 	if err != nil {
 		return nil, "", false
 	}
@@ -715,6 +757,7 @@ func mimeNeedsFix(ct string) bool {
 }
 
 func shouldRewriteWebPath(path string) bool {
+	path = strings.ToLower(webPathOnly(path))
 	switch {
 	case strings.HasSuffix(path, ".html"), strings.HasSuffix(path, ".htm"):
 		return true
@@ -722,10 +765,22 @@ func shouldRewriteWebPath(path string) bool {
 		return true
 	case strings.HasSuffix(path, ".css"):
 		return true
-	case strings.HasSuffix(path, ".json"), strings.HasSuffix(path, ".webmanifest"):
-		return true
 	}
 	return false
+}
+
+// isHTMLWebResponse reports whether the upstream response is an HTML document
+// (FortiGate login assist must not be injected into JSON/manifest bodies).
+func isHTMLWebResponse(path, ct string) bool {
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	if strings.Contains(ct, "text/html") {
+		return true
+	}
+	p := strings.ToLower(strings.Split(path, "?")[0])
+	return strings.HasSuffix(p, ".html") || strings.HasSuffix(p, ".htm")
 }
 
 // buildUpstreamURL joins the target base URL (including any path prefix in web_url)
@@ -802,6 +857,12 @@ func rewriteUpstreamReferer(h http.Header, target *url.URL, sessionID string) {
 // writeWebProxyError returns an error body with the correct MIME type for static
 // assets so browsers do not reject CSS/JS with "text/plain" on proxy failures.
 func writeWebProxyError(w http.ResponseWriter, rest, msg string, code int) {
+	if isWebManifestPath(rest) {
+		w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(minimalWebManifest)
+		return
+	}
 	if m := mimeForWebPath(rest); m != "" {
 		w.Header().Set("Content-Type", m)
 		w.WriteHeader(code)
@@ -837,12 +898,16 @@ func appendPortalToken(uri, tok string) string {
 }
 
 func shouldRewriteWebBody(ct string) bool {
-	ct = strings.ToLower(ct)
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	if strings.Contains(ct, "manifest") || strings.HasSuffix(ct, "+json") || ct == "application/json" {
+		return false
+	}
 	return strings.Contains(ct, "text/html") ||
 		strings.Contains(ct, "javascript") ||
-		strings.Contains(ct, "text/css") ||
-		strings.Contains(ct, "json") ||
-		strings.Contains(ct, "application/manifest")
+		strings.Contains(ct, "text/css")
 }
 
 func serveStaticUI(w http.ResponseWriter, r *http.Request) {
@@ -968,13 +1033,17 @@ func isReservedPAMPath(path string) bool {
 
 func rewriteLocation(loc string, target *url.URL, sessionID, portalToken string) string {
 	sessionPfx := "/web/" + sessionID
-	if strings.HasPrefix(loc, "http://"+target.Host) ||
-		strings.HasPrefix(loc, "https://"+target.Host) {
-		u, err := url.Parse(loc)
-		if err == nil {
+	for _, host := range targetHostVariants(target) {
+		for _, scheme := range []string{"http://", "https://"} {
+			pref := scheme + host
+			if !strings.HasPrefix(loc, pref) {
+				continue
+			}
+			u, err := url.Parse(loc)
+			if err != nil {
+				break
+			}
 			ru := u.RequestURI()
-			// Avoid /web/{sid}/web/{sid}/… when the device echoes a redir param
-			// containing our own proxy path (FortiOS does this after login).
 			if strings.HasPrefix(ru, sessionPfx+"/") || ru == sessionPfx {
 				return appendPortalToken(ru, portalToken)
 			}
@@ -1005,11 +1074,8 @@ func rewriteHTML(body []byte, target *url.URL, sessionID, portalToken string, cr
 			body = append(body[:idx+6], append(baseTag, body[idx+6:]...)...)
 		}
 	}
-	// Rewrite absolute target host URLs.
-	for _, scheme := range []string{"https://", "http://"} {
-		old := []byte(scheme + target.Host)
-		body = bytes.ReplaceAll(body, old, []byte(pfx))
-	}
+	// Rewrite absolute target host URLs (with and without :443/:80).
+	body = rewriteAbsoluteTargetHosts(body, target, pfx)
 	// Root-absolute paths (/static/, /api/v2/, …) ignore <base> — prefix them.
 	return rewriteRootPaths(body, pfx, portalToken)
 }

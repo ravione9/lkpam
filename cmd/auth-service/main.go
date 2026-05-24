@@ -1244,13 +1244,14 @@ func main() {
 			targetID int64
 			tName    string
 			webURL   string
+			tKind    string
 			ended    interface{}
 		)
 		err := d.QueryRowContext(r.Context(), `
-			SELECT s.user_id, s.target_id, t.name, COALESCE(t.web_url,''), s.ended_at
+			SELECT s.user_id, s.target_id, t.name, COALESCE(t.web_url,''), COALESCE(t.kind,''), s.ended_at
 			FROM sessions s JOIN targets t ON t.id = s.target_id
 			WHERE s.id = ?`, sessionID).
-			Scan(&userID, &targetID, &tName, &webURL, &ended)
+			Scan(&userID, &targetID, &tName, &webURL, &tKind, &ended)
 		if err != nil {
 			httpx.Error(w, http.StatusNotFound, errors.New("session not found"))
 			return
@@ -1260,11 +1261,15 @@ func main() {
 			return
 		}
 		creds, _ := weblaunch.LoadSessionCreds(r.Context(), v, sessionID)
+		targetKind := creds.TargetKind
+		if strings.TrimSpace(targetKind) == "" {
+			targetKind = tKind
+		}
 		httpx.JSON(w, http.StatusOK, map[string]interface{}{
 			"session_id":       sessionID,
 			"target_name":      tName,
 			"web_url":          webURL,
-			"target_kind":      creds.TargetKind,
+			"target_kind":      targetKind,
 			"username":         creds.Username,
 			"password":         creds.Password,
 			"portal_username":  creds.PortalUsername,

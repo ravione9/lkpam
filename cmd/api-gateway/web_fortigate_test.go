@@ -28,6 +28,16 @@ func TestShouldUseBasicAuthLinuxWeb(t *testing.T) {
 	}
 }
 
+func TestShouldUseBasicAuthFortiGateInferredKind(t *testing.T) {
+	creds := weblaunch.SessionCreds{
+		Username: "admin", Password: "secret", TargetURL: "https://fortigate01.corp.local/",
+	}
+	r, _ := http.NewRequest(http.MethodGet, "http://x/", nil)
+	if shouldUseBasicAuth(r, "/", creds) {
+		t.Fatal("FortiGate inferred from URL must not use Basic auth")
+	}
+}
+
 func TestFortigateLoginOKJSON(t *testing.T) {
 	body := []byte(`{"retcode":0,"message":"ok"}`)
 	if !fortigateLoginOK(&http.Response{StatusCode: 200}, body) {

@@ -180,7 +180,9 @@ func (s *Server) verifyAndReply(c net.Conn, h Header, user, pass, clientIP strin
 		if status == AuthenStatusError {
 			log.Printf("tacacs authen defer to device local for unknown user=%q from %s", user, clientIP)
 		} else {
-			log.Printf("tacacs authen failed user=%q from %s", user, clientIP)
+		} else {
+			log.Printf("tacacs authen failed user=%q from %s — check portal password and MFA (FortiGate: append 6-digit code to password, no space)", user, clientIP)
+		}
 		}
 	}
 	s.Bus.Publish(events.Event{

@@ -51,6 +51,14 @@
 </div>
 
 <script>
+  function isFortiWebTarget(t) {
+    if (!t) return false;
+    const blob = [t.target_kind, t.kind, t.vendor, t.name, t.web_url].map(x => String(x || "").toLowerCase()).join(" ");
+    if (blob.includes("forti")) return true;
+    if (String(t.web_url || "").replace(/\/+$/, "").endsWith("/login")) return true;
+    return false;
+  }
+
   const params = new URLSearchParams(location.search);
   const sessionId = params.get("session");
   const token     = params.get("token") || localStorage.getItem("pam_token");
@@ -84,7 +92,10 @@
       .then(info => {
         nameEl.textContent   = info.target_name || sessionId;
         targetURL            = info.web_url     || "";
-        const proxyURL       = "/web/" + encodeURIComponent(sessionId) + "/?token=" + encodeURIComponent(token);
+        const proxyPath = isFortiWebTarget({ target_kind: info.target_kind, web_url: info.web_url, name: info.target_name })
+          ? "/login/"
+          : "/";
+        const proxyURL = "/web/" + encodeURIComponent(sessionId) + proxyPath + "?token=" + encodeURIComponent(token);
 
         openDirect.onclick  = () => window.open(targetURL, "_blank", "noopener");
         openDirect2.onclick = () => window.open(targetURL, "_blank", "noopener");
@@ -113,6 +124,30 @@
         showCreds.onclick = () => {
           credBar.style.display = credBar.style.display === "none" ? "block" : "none";
         };
+
+        const isForti = isFortiWebTarget({ target_kind: info.target_kind, web_url: info.web_url, name: info.target_name });
+
+        // FortiOS breaks out of iframes (top.location) which causes a reload storm,
+        // FortiGate 502s on login.js, and login never POSTs logincheck. Use full-page proxy.
+        if (isForti) {
+          frame.style.display = "none";
+          const guardKey = "pam_forti_redirect_" + sessionId;
+          if (sessionStorage.getItem(guardKey)) {
+            labelEl.textContent = "FortiGate proxy — paste URL from clipboard if this page keeps reloading.";
+            noFrame.style.display = "flex";
+            document.getElementById("noFrameMsg").innerHTML =
+              "Open the <b>proxy URL</b> in a normal browser tab (not this viewer). " +
+              "The URL was copied when you launched Web. Press <b>F12</b> there to inspect. " +
+              "Log in with your <b>portal username</b> and <b>password + MFA</b> (no space).";
+            openDirect.onclick = () => window.open(proxyURL, "_blank");
+            openDirect2.onclick = () => window.open(proxyURL, "_blank");
+            return;
+          }
+          sessionStorage.setItem(guardKey, "1");
+          labelEl.textContent = "Opening FortiGate via proxy…";
+          location.replace(proxyURL);
+          return;
+        }
 
         // Try loading in proxy iframe first.
         frame.src = proxyURL;

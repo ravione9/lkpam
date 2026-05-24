@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/example/pam-platform/internal/weblaunch"
 )
 
 func TestBuildUpstreamURL(t *testing.T) {
@@ -44,6 +46,24 @@ func TestShouldRewriteWebPath(t *testing.T) {
 	}
 	if shouldRewriteWebPath("/favicon.ico") {
 		t.Fatal("ico should not rewrite body")
+	}
+	if shouldRewriteWebPath("/favicon/site.webmanifest") {
+		t.Fatal("webmanifest must not be rewritten as HTML")
+	}
+	if shouldRewriteWebPath("/api/v2/cmdb/system.json") {
+		t.Fatal("json API responses must not be rewritten as HTML")
+	}
+}
+
+func TestShouldRewriteWebBody(t *testing.T) {
+	if !shouldRewriteWebBody("text/html; charset=utf-8") {
+		t.Fatal("expected html rewrite")
+	}
+	if shouldRewriteWebBody("application/manifest+json") {
+		t.Fatal("manifest+json must pass through unchanged")
+	}
+	if shouldRewriteWebBody("application/json") {
+		t.Fatal("json must pass through unchanged")
 	}
 }
 
@@ -91,7 +111,7 @@ func TestIsPublicWebAssetBareLoginAssets(t *testing.T) {
 func TestRewriteHTMLPreservesUpstreamBase(t *testing.T) {
 	target, _ := url.Parse("https://192.168.24.253/")
 	upstream := []byte(`<!doctype html><html><head><base href="/login/"><link rel="stylesheet" href="styles.css"><script src="login.js"></script></head><body></body></html>`)
-	out := rewriteHTML(upstream, target, "web-123", "")
+	out := rewriteHTML(upstream, target, "web-123", "", weblaunch.SessionCreds{})
 	if !bytes.Contains(out, []byte(`<base href="/web/web-123/login/">`)) {
 		t.Fatalf("upstream <base href=\"/login/\"> should be prefixed with /web/web-123/; got: %s", out)
 	}
@@ -103,7 +123,7 @@ func TestRewriteHTMLPreservesUpstreamBase(t *testing.T) {
 func TestRewriteHTMLInjectsBaseWhenAbsent(t *testing.T) {
 	target, _ := url.Parse("https://example.com/")
 	upstream := []byte(`<!doctype html><html><head><link href="/static/a.css"></head><body></body></html>`)
-	out := rewriteHTML(upstream, target, "web-123", "")
+	out := rewriteHTML(upstream, target, "web-123", "", weblaunch.SessionCreds{})
 	if !bytes.Contains(out, []byte(`<base href="/web/web-123/">`)) {
 		t.Fatalf("expected injected base, got: %s", out)
 	}

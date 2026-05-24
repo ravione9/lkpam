@@ -4066,6 +4066,14 @@ async function loadTargets() {
 
 // launchTarget dispatches the right action per connection type. The user must
 // have an approved access request; this is a UX helper, not policy.
+function isFortiWebTarget(t) {
+  if (!t) return false;
+  const blob = [t.kind, t.vendor, t.name, t.web_url].map(x => String(x || "").toLowerCase()).join(" ");
+  if (blob.includes("forti")) return true;
+  if (String(t.web_url || "").replace(/\/+$/, "").endsWith("/login")) return true;
+  return false;
+}
+
 window.launchTarget = async id => {
   const t = cache.targets.find(x => x.id === id); if (!t) { toast("Target not found", "err"); return; }
   const ct = t.connection_type || "ssh";
@@ -4089,6 +4097,19 @@ window.launchTarget = async id => {
         method: "POST",
         body: JSON.stringify({ reason: "Web console session via PAM" }),
       });
+      const tok = token || localStorage.getItem("pam_token") || "";
+      if (isFortiWebTarget(t)) {
+        let proxyURL = location.origin + "/web/" + encodeURIComponent(res.session_id) + "/login/";
+        if (tok) proxyURL += "?token=" + encodeURIComponent(tok);
+        try { await copyToClipboard(proxyURL); } catch {}
+        const win = window.open(proxyURL, "_blank", "width=1280,height=820");
+        if (!win) {
+          toast("Pop-up blocked — proxy URL copied. Paste it in a normal browser tab (F12 works there). Password + MFA, no space.", "err");
+        } else {
+          toast((res.instructions || "FortiGate via PAM proxy") + " — URL copied. If page reloads, paste URL in a new tab and use F12.", "ok");
+        }
+        return;
+      }
       const viewerU = new URL(res.viewer_url || "/web-viewer.html", location.origin);
       viewerU.searchParams.set("session", res.session_id);
       if (token) viewerU.searchParams.set("token", token);
