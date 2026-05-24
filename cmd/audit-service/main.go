@@ -330,6 +330,19 @@ func main() {
 			httpx.Error(w, http.StatusNotFound, errStr(err.Error()))
 			return
 		}
+		// Audit runs as the unprivileged 'pam' user; guacd writes recordings
+		// as root. If umask on the guacd side ever drops back to 0022, the
+		// audit reader hits EACCES inside http.ServeFile which surfaces as a
+		// bare HTTP 403 in the player. Probe with os.Open up-front so we can
+		// log the path and return a useful message instead.
+		if f, oerr := os.Open(file); oerr != nil {
+			log.Printf("audit: cannot open recording %q for session %s: %v", file, sid, oerr)
+			httpx.Error(w, http.StatusInternalServerError,
+				errStr("recording exists but is not readable on disk: "+oerr.Error()))
+			return
+		} else {
+			f.Close()
+		}
 		ext := filepath.Ext(file)
 		switch ext {
 		case ".guac":
