@@ -216,6 +216,7 @@ func (d *DB) migrate() error {
 			UNIQUE(user_id, target_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, started_at)`,
 		`CREATE TABLE IF NOT EXISTS safes (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -346,6 +347,18 @@ func (d *DB) migrate() error {
 		`ALTER TABLE targets ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`,
 	} {
 		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
+	}
+	// Composite indexes that depend on columns added by the ALTER block above
+	// (source on audit_events, protocol on sessions). Created best-effort here
+	// so they always exist on the live columns; speed up Proxy Log / Sessions
+	// list, which previously scanned ~100k rows and exceeded the 30s browser
+	// timeout.
+	for _, idx := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_audit_source_ts ON audit_events(source, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_severity_ts ON audit_events(severity, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_ended_protocol ON sessions(ended_at, protocol)`,
+	} {
+		_, _ = d.Exec(idx)
 	}
 	return nil
 }

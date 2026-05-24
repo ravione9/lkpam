@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/example/pam-platform/internal/audit"
 	"github.com/example/pam-platform/internal/config"
@@ -126,7 +127,7 @@ func main() {
 			where = "WHERE " + strings.Join(conds, " AND ")
 		}
 		args = append(args, limit)
-		rows, err := d.QueryContext(context.Background(), `
+		rows, err := d.QueryContext(r.Context(), `
 			SELECT ts, actor, kind, COALESCE(target,''), COALESCE(detail,''), severity, COALESCE(source,'')
 			FROM audit_events `+where+` ORDER BY id DESC LIMIT ?`, args...)
 		if err != nil {
@@ -271,13 +272,18 @@ func main() {
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
+	// Run session cleanup in the background instead of on every /sessions
+	// request — with hundreds of historical sessions the per-row vault and
+	// recording-stat work was making the dashboard list call exceed the
+	// browser's 30s API timeout.
+	startSessionCleanupWorker(d, v)
+
 	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, r *http.Request) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		if limit <= 0 || limit > 500 {
 			limit = 100
 		}
-		cleanupPendingSessions(r.Context(), d, v)
-		rows, err := d.QueryContext(context.Background(), `
+		rows, err := d.QueryContext(r.Context(), `
 			SELECT id, user_id, target_id, started_at, ended_at,
 			       COALESCE(recording_path,''), COALESCE(client_ip,''), COALESCE(ended_reason,''),
 			       COALESCE(protocol,'ssh')
@@ -348,6 +354,24 @@ func main() {
 	if err := http.ListenAndServe(addr, httpx.LoggingMiddleware(mux)); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// startSessionCleanupWorker runs cleanupPendingSessions on a timer in the
+// background so the /sessions list endpoint stays fast (was the cause of the
+// dashboard "API request timed out after 30s" — cleanup was synchronous and
+// did one vault decrypt per orphaned web session).
+func startSessionCleanupWorker(d *db.DB, v *vault.Vault) {
+	go func() {
+		// One eager run after startup to clear stale rows from a prior crash,
+		// then every 60 seconds. 5s grace lets dependencies (vault) come up.
+		time.Sleep(5 * time.Second)
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			cleanupPendingSessions(ctx, d, v)
+			cancel()
+			time.Sleep(60 * time.Second)
+		}
+	}()
 }
 
 // cleanupPendingSessions marks browser-launched sessions as failed when the
