@@ -550,9 +550,15 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	if isPublicWebAsset(rest) {
 		state.mu.Lock()
 		ap := state.assetPrefix
+		strip := state.assetStrip
 		state.mu.Unlock()
-		if ap != "" && !strings.HasPrefix(rest, ap+"/") && rest != ap {
-			effectiveRest = ap + rest
+		// Strip first (the appliance referenced this prefix in its HTML but
+		// doesn't actually serve assets there).
+		if strip != "" && strings.HasPrefix(effectiveRest, strip+"/") {
+			effectiveRest = strings.TrimPrefix(effectiveRest, strip)
+		}
+		if ap != "" && !strings.HasPrefix(effectiveRest, ap+"/") && effectiveRest != ap {
+			effectiveRest = ap + effectiveRest
 			triedPrefix = ap
 		}
 		primeUpstreamSession(r.Context(), httpClient, targetURL)
@@ -567,7 +573,8 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	debugf("upstream req session=%s method=%s url=%s asset=%v basic=%v",
 		sessionID, upstream.Method, upstreamURL, isPublicWebAsset(rest), upstream.Header.Get("Authorization") != "")
 
-	if r.Method == http.MethodPost && strings.Contains(strings.ToLower(rest), "logincheck") {
+	isLogincheck := r.Method == http.MethodPost && strings.Contains(strings.ToLower(rest), "logincheck")
+	if isLogincheck {
 		log.Printf("web-proxy: logincheck POST session=%s url=%s", sessionID, upstreamURL)
 	}
 
@@ -575,6 +582,17 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	if err != nil {
 		writeWebProxyError(w, rest, "proxy error: "+err.Error(), http.StatusBadGateway)
 		return
+	}
+
+	if isLogincheck {
+		// FortiOS encodes the auth result in the body (small JS payload or
+		// "retcode=0/1" message). Sniff it so the operator can see why a
+		// login failed without having to capture the network tab.
+		body, _ := io.ReadAll(upResp.Body)
+		upResp.Body.Close()
+		upResp.Body = io.NopCloser(bytes.NewReader(body))
+		log.Printf("web-proxy: logincheck result session=%s status=%d ct=%q body=%q",
+			sessionID, upResp.StatusCode, upResp.Header.Get("Content-Type"), truncate(string(body), 240))
 	}
 
 	// On 404 for a static asset, try common appliance asset prefixes until one
@@ -760,10 +778,25 @@ func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *
 	prevResp.Body.Close()
 
 	type candidate struct {
-		path   string
-		prefix string // "" means no prefix to cache
+		path        string
+		addPrefix   string // cache this as state.assetPrefix on success
+		stripPrefix string // cache this as state.assetStrip on success
 	}
 	var tries []candidate
+	// Strategy 1: try stripping known leading prefixes from `rest` FIRST.
+	// FortiOS 7.x firmwares reference assets at /static/<path> in HTML but
+	// actually serve them at /<path>. Stripping is more likely to succeed
+	// than blindly prepending another wrong prefix.
+	for _, prefix := range assetFallbackPrefixes {
+		if !strings.HasPrefix(rest, prefix+"/") {
+			continue
+		}
+		stripped := strings.TrimPrefix(rest, prefix)
+		if stripped != rest && stripped != "" && stripped != "/" {
+			tries = append(tries, candidate{path: stripped, stripPrefix: prefix})
+		}
+	}
+	// Strategy 2: try prepending known appliance prefixes.
 	for _, prefix := range assetFallbackPrefixes {
 		if prefix == skipPrefix {
 			continue
@@ -771,16 +804,7 @@ func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *
 		if strings.HasPrefix(rest, prefix+"/") || rest == prefix {
 			continue // would double the prefix
 		}
-		tries = append(tries, candidate{path: prefix + rest, prefix: prefix})
-	}
-	for _, prefix := range assetFallbackPrefixes {
-		if !strings.HasPrefix(rest, prefix+"/") {
-			continue
-		}
-		stripped := strings.TrimPrefix(rest, prefix)
-		if stripped != rest && stripped != "" && stripped != "/" {
-			tries = append(tries, candidate{path: stripped, prefix: ""})
-		}
+		tries = append(tries, candidate{path: prefix + rest, addPrefix: prefix})
 	}
 
 	wantNonHTML := assetExpectsScriptStyle(rest)
@@ -795,12 +819,16 @@ func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *
 			continue
 		}
 		if altResp.StatusCode < 400 && (!wantNonHTML || !responseIsHTML(altResp)) {
-			log.Printf("web-proxy: fallback success session=%s path=%s url=%s", sessionID, c.path, altURL)
-			if c.prefix != "" {
-				state.mu.Lock()
-				state.assetPrefix = c.prefix
-				state.mu.Unlock()
+			log.Printf("web-proxy: fallback success session=%s path=%s url=%s add=%q strip=%q",
+				sessionID, c.path, altURL, c.addPrefix, c.stripPrefix)
+			state.mu.Lock()
+			if c.addPrefix != "" {
+				state.assetPrefix = c.addPrefix
 			}
+			if c.stripPrefix != "" {
+				state.assetStrip = c.stripPrefix
+			}
+			state.mu.Unlock()
 			return altResp, altURL, true
 		}
 		io.Copy(io.Discard, altResp.Body)

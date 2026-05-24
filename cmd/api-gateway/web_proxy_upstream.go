@@ -26,6 +26,13 @@ type webSessionState struct {
 	// static assets under (e.g. "/login" on FortiOS, "" on PAN-OS/root). Empty
 	// until probed; populated the first time a fallback retry returns < 400.
 	assetPrefix string
+	// assetStrip is a leading path the appliance does NOT use for its assets,
+	// even though the login HTML references them under it. FortiOS firmwares
+	// (7.x+) emit <link href="/static/css/..."> but actually serve the file
+	// at "/css/...". Once we learn this via fallback retry we strip the
+	// prefix from every subsequent asset path so we don't pay the 5-retry
+	// cost per asset.
+	assetStrip string
 	// fortiLoginDone tracks server-side FortiGate form login for this session.
 	fortiLoginDone bool
 	// detectedFortinet is set when upstream Server header contains FortiOS.
