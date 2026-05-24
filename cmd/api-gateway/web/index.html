@@ -4098,26 +4098,18 @@ window.launchTarget = async id => {
         body: JSON.stringify({ reason: "Web console session via PAM" }),
       });
       const tok = token || localStorage.getItem("pam_token") || "";
-      if (isFortiWebTarget(t)) {
-        let proxyURL = location.origin + "/web/" + encodeURIComponent(res.session_id) + "/login/";
-        if (tok) proxyURL += "?token=" + encodeURIComponent(tok);
-        try { await copyToClipboard(proxyURL); } catch {}
-        const win = window.open(proxyURL, "_blank", "width=1280,height=820");
-        if (!win) {
-          toast("Pop-up blocked — proxy URL copied. Paste it in a normal browser tab (F12 works there). Password + MFA, no space.", "err");
-        } else {
-          toast((res.instructions || "FortiGate via PAM proxy") + " — URL copied. If page reloads, paste URL in a new tab and use F12.", "ok");
-        }
-        return;
-      }
       const viewerU = new URL(res.viewer_url || "/web-viewer.html", location.origin);
       viewerU.searchParams.set("session", res.session_id);
-      if (token) viewerU.searchParams.set("token", token);
-      const win = window.open(viewerU.toString(), "_blank",
-        "noopener,width=1280,height=820");
+      if (tok) viewerU.searchParams.set("token", tok);
+      const isForti = isFortiWebTarget(t);
+      try { await copyToClipboard(viewerU.toString()); } catch {}
+      // Drop `noopener` so DevTools (F12) can attach to the popup; we want
+      // operators to be able to inspect Network/Console on the proxy tab.
+      const win = window.open(viewerU.toString(), "_blank", "width=1280,height=820");
       if (!win) {
-        copyToClipboard(viewerU.toString());
-        toast("Pop-up blocked — viewer URL copied to clipboard", "err");
+        toast("Pop-up blocked — viewer URL copied to clipboard. Paste it in a new browser tab.", "err");
+      } else if (isForti) {
+        toast((res.instructions || "FortiGate via PAM proxy") + " — keep using the viewer tab; never the firewall IP directly. URL is also on your clipboard.", "ok");
       } else {
         toast(res.instructions || `Web console opening (${res.has_account ? "auto-login" : "manual/TACACS login"})`, "ok");
       }
@@ -4126,11 +4118,10 @@ window.launchTarget = async id => {
       if (m.includes("approved") || m.includes("approval")) {
         toast("Access approval expired or not yet granted — go to Requests tab and submit a new request", "err");
       } else {
-        // Fallback: open directly if launch API fails (e.g. no policy yet)
-        let url = t.web_url;
-        if (!/^https?:\/\//i.test(url)) url = "https://" + url;
-        window.open(url, "_blank", "noopener");
-        toast("Opened directly (PAM web-launch failed: " + e.message + ")", "err");
+        // Never silently open the raw device URL — that skips recording,
+        // credential injection, and TACACS authorization. Surface the
+        // underlying error so the operator can fix policy/approval/vault.
+        toast("Web launch failed: " + e.message + " — fix the underlying error (policy, approval, vault) and retry. Do NOT log into the firewall IP directly.", "err");
       }
     }
     return;

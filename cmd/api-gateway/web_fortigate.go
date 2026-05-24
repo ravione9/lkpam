@@ -290,14 +290,45 @@ func injectFortinetLoginAssist(body []byte, creds weblaunch.SessionCreds, sessio
 			return body
 		}
 	}
-	script := fortinetProxyBridgeScript(sessionID, creds.PortalUsername)
-	if i := bytes.Index(body, []byte("</body>")); i >= 0 {
-		return append(append(body[:i], script...), body[i:]...)
+	body = neutralizeFortinetFrameBusters(body)
+	targetURL, _ := url.Parse(creds.TargetURL)
+	script := fortinetProxyBridgeScript(sessionID, creds.PortalUsername, targetURL)
+	// Inject as EARLY as possible (right after <head>) so subsequent inline
+	// scripts cannot navigate away before our location-setter override loads.
+	if i := bytes.Index(bytes.ToLower(body), []byte("<head>")); i >= 0 {
+		insert := i + len("<head>")
+		out := make([]byte, 0, len(body)+len(script))
+		out = append(out, body[:insert]...)
+		out = append(out, script...)
+		out = append(out, body[insert:]...)
+		return out
 	}
-	if i := bytes.Index(body, []byte("</head>")); i >= 0 {
-		return append(append(body[:i], script...), body[i:]...)
+	if i := bytes.Index(body, []byte("<html>")); i >= 0 {
+		insert := i + len("<html>")
+		out := make([]byte, 0, len(body)+len(script))
+		out = append(out, body[:insert]...)
+		out = append(out, script...)
+		out = append(out, body[insert:]...)
+		return out
 	}
-	return append(body, script...)
+	return append(script, body...)
+}
+
+// neutralizeFortinetFrameBusters rewrites the common FortiOS top-window escape
+// patterns so they don't navigate the browser away from the PAM proxy origin.
+// The bridge script also intercepts location.href setters; this is defence
+// in depth in case the script tag executes before our injection.
+func neutralizeFortinetFrameBusters(body []byte) []byte {
+	patterns := []struct{ from, to string }{
+		{"top.location", "window.location /*pam:topnav*/"},
+		{"window.top.location", "window.location /*pam:topnav*/"},
+		{"parent.location", "window.location /*pam:topnav*/"},
+		{"self.parent.location", "window.location /*pam:topnav*/"},
+	}
+	for _, p := range patterns {
+		body = bytes.ReplaceAll(body, []byte(p.from), []byte(p.to))
+	}
+	return body
 }
 
 func loginAssetPrefixFromTarget(rawURL string) string {
@@ -312,25 +343,114 @@ func loginAssetPrefixFromTarget(rawURL string) string {
 	return p
 }
 
-func fortinetProxyBridgeScript(sessionID string, portalUser string) []byte {
+// fortinetProxyBridgeScript builds a tiny in-page bridge that keeps the FortiGate
+// UI inside the PAM proxy origin. It rewrites any URL that points to the
+// upstream firewall (absolute https://<host>/…) or root-absolute appliance
+// paths (/login/, /logincheck, /logout, /api/v2/, /static/, /favicon/, /assets/)
+// back to /web/{sessionID}/… and intercepts every common navigation primitive:
+//
+//   • location.assign(u), location.replace(u)
+//   • location.href = u, location = u, document.location = u
+//   • window.open(u, …)
+//   • <meta http-equiv="refresh" content="0;url=…">
+//   • fetch / XMLHttpRequest absolute upstream URLs (so logincheck POST hits the proxy)
+//
+// Critically it overrides the `href` setter via Object.defineProperty on
+// Location.prototype, which is what FortiOS uses to "frame-bust" out of any
+// embedded viewer. Without this hook, FortiOS does `top.location.href = "https://192.168.48.5/login"`
+// and the browser navigates straight to the firewall, bypassing PAM.
+func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []byte {
 	pfx := "/web/" + sessionID
+	hosts := []string{}
+	if target != nil {
+		hosts = targetHostVariants(target)
+	}
+	hostsJSON, _ := json.Marshal(hosts)
 	pfxJSON, _ := json.Marshal(pfx)
 	userJSON, _ := json.Marshal(portalUser)
-	return []byte(`<script>(function(){` +
-		`var pfx=` + string(pfxJSON) + `;` +
-		`function fix(u){if(typeof u!=="string")return u;` +
-		`if(u.indexOf(pfx)===0)return u;` +
-		`if(u.indexOf("/logincheck")>=0||u.indexOf("/logout")>=0||u.indexOf("/login")===0){` +
-		`if(u.charAt(0)==="/")return pfx+u;` +
-		`if(u.indexOf("://")<0)return pfx+"/"+u.replace(/^\.\//,"");}` +
-		`return u;}` +
-		`["assign","replace"].forEach(function(fn){` +
-		`var o=Location.prototype[fn];if(!o)return;` +
-		`Location.prototype[fn]=function(u){return o.call(this,fix(String(u)));};});` +
-		`if(window.fetch){var f=window.fetch;window.fetch=function(u,o){return f.call(this,fix(u),o);};}` +
-		`var xo=XMLHttpRequest.prototype.open;` +
-		`XMLHttpRequest.prototype.open=function(m,u){arguments[1]=fix(u);return xo.apply(this,arguments);};` +
-		`try{var u=document.querySelector('input[name=username],#username,input[id*=user i]');` +
-		`if(u&&!u.value)u.value=` + string(userJSON) + `;}catch(e){}` +
-		`})();</script>`)
+	return []byte(`<script>(function(){
+try{
+  var pfx=` + string(pfxJSON) + `;
+  var hosts=` + string(hostsJSON) + `;
+  function startsAny(u,arr){for(var i=0;i<arr.length;i++){if(u.indexOf(arr[i])===0)return arr[i];}return "";}
+  function stripHost(u){
+    var schemes=["https://","http://"];
+    for(var i=0;i<schemes.length;i++){
+      for(var j=0;j<hosts.length;j++){
+        var p=schemes[i]+hosts[j];
+        if(u.indexOf(p)===0){return u.substr(p.length)||"/";}
+      }
+    }
+    return "";
+  }
+  var rootPfx=["/logincheck","/logout","/login","/api/v2/","/static/","/favicon/","/assets/","/ng/","/p/","/sslvpn/"];
+  function fix(u){
+    if(typeof u!=="string"||!u)return u;
+    if(u.indexOf(pfx)===0)return u;
+    if(u.charAt(0)==="#"||u.indexOf("javascript:")===0||u.indexOf("data:")===0||u.indexOf("blob:")===0)return u;
+    var rel=stripHost(u);
+    if(rel){return pfx+rel;}
+    if(u.charAt(0)==="/"){
+      if(startsAny(u,rootPfx))return pfx+u;
+      return u;
+    }
+    return u;
+  }
+  // Override location.href setter on Location.prototype so href=/=assign work
+  try{
+    var Lp=Location.prototype;
+    var d=Object.getOwnPropertyDescriptor(Lp,"href");
+    if(d&&d.set){
+      Object.defineProperty(Lp,"href",{configurable:true,enumerable:true,get:d.get,set:function(v){return d.set.call(this,fix(String(v)));}});
+    }
+  }catch(e){}
+  ["assign","replace"].forEach(function(fn){
+    try{
+      var o=Location.prototype[fn];if(!o)return;
+      Location.prototype[fn]=function(u){return o.call(this,fix(String(u)));};
+    }catch(e){}
+  });
+  // window.open
+  try{
+    var wo=window.open;
+    window.open=function(u,n,f){return wo.call(this,fix(String(u||"")),n,f);};
+  }catch(e){}
+  // fetch
+  try{
+    if(window.fetch){var f=window.fetch;window.fetch=function(u,o){
+      if(typeof u==="string"){u=fix(u);}
+      else if(u&&u.url){u=new Request(fix(u.url),u);}
+      return f.call(this,u,o);};}
+  }catch(e){}
+  // XHR
+  try{
+    var xo=XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open=function(m,u){arguments[1]=fix(String(u));return xo.apply(this,arguments);};
+  }catch(e){}
+  // <form action=…> normalize on submit
+  document.addEventListener("submit",function(ev){
+    try{var t=ev.target;if(t&&t.tagName==="FORM"&&t.action){var nu=fix(String(t.action));if(nu!==t.action)t.action=nu;}}catch(e){}
+  },true);
+  // <meta http-equiv="refresh" content="0;url=…">
+  try{
+    var metas=document.querySelectorAll('meta[http-equiv="refresh" i]');
+    for(var i=0;i<metas.length;i++){
+      var c=metas[i].getAttribute("content")||"";
+      var m=c.match(/url\s*=\s*(.+)$/i);
+      if(m){var nu=fix(m[1].trim());metas[i].setAttribute("content",c.replace(m[1],nu));}
+    }
+  }catch(e){}
+  // Pre-fill portal username so user just types password+MFA.
+  try{
+    var pu=` + string(userJSON) + `;
+    if(pu){
+      var sel=["input[name=username]","input[name=ajax_username]","#username","input[id*=user i]","input[type=text]"];
+      for(var i=0;i<sel.length;i++){
+        var el=document.querySelector(sel[i]);
+        if(el&&!el.value){el.value=pu;break;}
+      }
+    }
+  }catch(e){}
+}catch(err){try{console.warn("pam-bridge init failed",err);}catch(e){}}
+})();</script>`)
 }

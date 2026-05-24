@@ -39,11 +39,13 @@
   </div>
 </header>
 <div id="credBar" class="cred-box" style="margin:0 16px 6px"></div>
-<!-- No sandbox: FortiOS-style appliances ship a top.location frame-buster
-     and stall (SecurityError + blank /logout) when top-navigation is denied.
-     Letting the bust-out succeed is now safe because pagehide no longer ends
-     the session, so the navigated top-frame at /web/{sid}/login still has a
-     live vault session and valid pam_web_tok cookie for every sub-request. -->
+<!-- FortiGate (and similar) iframes get a strict sandbox so the appliance's
+     `top.location = ...` frame-buster fails silently instead of redirecting
+     the whole browser tab to the firewall IP. The bridge script we inject
+     server-side intercepts location.assign/replace, the href setter,
+     window.open, fetch, XHR, form actions, and <meta refresh> so login traffic
+     keeps flowing through /web/{sid}/. Other (non-Fortinet) targets keep the
+     un-sandboxed iframe for compatibility. -->
 <iframe id="frame" allow="fullscreen" allowfullscreen></iframe>
 <div id="no-frame" style="display:none">
   <p id="noFrameMsg">The web console could not be loaded in the proxy. This happens with applications that block embedding. Use the <b>Open directly</b> button above to open the target in a new tab — your credentials have been shown in the panel below.</p>
@@ -127,51 +129,39 @@
 
         const isForti = isFortiWebTarget({ target_kind: info.target_kind, web_url: info.web_url, name: info.target_name });
 
-        // FortiOS breaks out of iframes (top.location) which causes a reload storm,
-        // FortiGate 502s on login.js, and login never POSTs logincheck. Use full-page proxy.
+        // FortiGate ships a top.location frame-buster that redirects the
+        // outer tab to the raw firewall URL. Sandbox the iframe (no
+        // allow-top-navigation) so that escape attempt fails silently.
+        // Our bridge script (injected server-side) keeps in-frame URLs on
+        // the PAM origin.
         if (isForti) {
-          frame.style.display = "none";
-          const guardKey = "pam_forti_redirect_" + sessionId;
-          if (sessionStorage.getItem(guardKey)) {
-            labelEl.textContent = "FortiGate proxy — paste URL from clipboard if this page keeps reloading.";
-            noFrame.style.display = "flex";
-            document.getElementById("noFrameMsg").innerHTML =
-              "Open the <b>proxy URL</b> in a normal browser tab (not this viewer). " +
-              "The URL was copied when you launched Web. Press <b>F12</b> there to inspect. " +
-              "Log in with your <b>portal username</b> and <b>password + MFA</b> (no space).";
-            openDirect.onclick = () => window.open(proxyURL, "_blank");
-            openDirect2.onclick = () => window.open(proxyURL, "_blank");
-            return;
-          }
-          sessionStorage.setItem(guardKey, "1");
-          labelEl.textContent = "Opening FortiGate via proxy…";
-          location.replace(proxyURL);
-          return;
+          frame.setAttribute("sandbox", "allow-forms allow-scripts allow-same-origin allow-popups allow-downloads");
         }
 
-        // Try loading in proxy iframe first.
         frame.src = proxyURL;
         frame.onload = () => {
           try {
-            // Check same-origin access — if the page blocked framing we detect a blank doc.
             const doc = frame.contentDocument;
             if (!doc || doc.URL === "about:blank") throw new Error("blank");
           } catch {
-            showFallback();
+            if (!isForti) showFallback();
           }
         };
-        frame.onerror = showFallback;
+        frame.onerror = () => { if (!isForti) showFallback(); };
 
-        // Fallback: some devices send X-Frame-Options: DENY even after we strip headers.
-        // Give the proxy 4s to render; if iframe is still blank switch to fallback.
-        setTimeout(() => {
-          try {
-            const doc = frame.contentDocument;
-            if (!doc || doc.body === null || doc.body.innerHTML.trim() === "") {
-              showFallback();
-            }
-          } catch { showFallback(); }
-        }, 4000);
+        // Non-Forti devices: if iframe is still blank after 4s the device most
+        // likely sent X-Frame-Options DENY despite header strip — show fallback.
+        // FortiGate is allowed extra time because the login bundle is heavy.
+        if (!isForti) {
+          setTimeout(() => {
+            try {
+              const doc = frame.contentDocument;
+              if (!doc || doc.body === null || doc.body.innerHTML.trim() === "") {
+                showFallback();
+              }
+            } catch { showFallback(); }
+          }, 4000);
+        }
       })
       .catch(() => {
         nameEl.textContent = "Session not found or expired.";
