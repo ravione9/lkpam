@@ -1261,12 +1261,15 @@ func main() {
 		}
 		creds, _ := weblaunch.LoadSessionCreds(r.Context(), v, sessionID)
 		httpx.JSON(w, http.StatusOK, map[string]interface{}{
-			"session_id":  sessionID,
-			"target_name": tName,
-			"web_url":     webURL,
-			"username":    creds.Username,
-			"password":    creds.Password,
-			"active":      ended == nil,
+			"session_id":       sessionID,
+			"target_name":      tName,
+			"web_url":          webURL,
+			"target_kind":      creds.TargetKind,
+			"username":         creds.Username,
+			"password":         creds.Password,
+			"portal_username":  creds.PortalUsername,
+			"auth_hint":        weblaunch.AuthHint(creds, creds.Username != "" && creds.Password != ""),
+			"active":           ended == nil,
 		})
 	})
 
@@ -1284,7 +1287,7 @@ func main() {
 		if clientIP == "" {
 			clientIP = r.RemoteAddr
 		}
-		res, err := webLaunchSvc.Launch(r.Context(), targetID, uid, role, in.Reason, clientIP)
+		res, err := webLaunchSvc.Launch(r.Context(), targetID, uid, role, user, in.Reason, clientIP)
 		if err != nil {
 			switch {
 			case errors.Is(err, weblaunch.ErrTargetNotFound):

@@ -89,10 +89,15 @@
         openDirect.onclick  = () => window.open(targetURL, "_blank", "noopener");
         openDirect2.onclick = () => window.open(targetURL, "_blank", "noopener");
 
-        if (info.username) {
+        if (info.auth_hint) {
+          credBar.style.display = "block";
+          credBar.innerHTML = `<b>Login:</b> ${esc(info.auth_hint)}`;
+        }
+        if (info.username && info.password) {
           showCreds.style.display = "";
-          credBar.innerHTML = `
-            <b>Auto-login credentials injected by PAM:</b>
+          const hint = info.auth_hint ? `<p style="margin:0 0 6px">${esc(info.auth_hint)}</p>` : "";
+          credBar.innerHTML = hint + `
+            <b>Privileged account (auto-login):</b>
             Username: <b>${esc(info.username)}</b>
             &nbsp;·&nbsp;
             Password: <span id="pwSpan" style="filter:blur(4px);cursor:pointer" title="click to reveal">${esc(info.password || "••••••••")}</span>

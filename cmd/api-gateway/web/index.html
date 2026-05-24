@@ -4098,7 +4098,7 @@ window.launchTarget = async id => {
         copyToClipboard(viewerU.toString());
         toast("Pop-up blocked — viewer URL copied to clipboard", "err");
       } else {
-        toast(`Web console opening — session recorded (${res.has_account ? "credentials injected" : "no account linked"})`, "ok");
+        toast(res.instructions || `Web console opening (${res.has_account ? "auto-login" : "manual/TACACS login"})`, "ok");
       }
     } catch (e) {
       const m = (e.message || "").toLowerCase();

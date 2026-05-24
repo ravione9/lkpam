@@ -509,7 +509,22 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	state := upstreamSessionState(sessionID)
 	httpClient := state.client
 
-	// Apply a previously-discovered asset prefix (e.g. "/login" on FortiOS) for
+	// FortiGate: server-side form login (never Basic auth — shows "Authentication failure").
+	if r.Method == http.MethodGet && isFortinetKind(creds.TargetKind) && creds.Username != "" && creds.Password != "" {
+		state.mu.Lock()
+		tryLogin := !state.fortiLoginDone && !isPublicWebAsset(rest)
+		state.mu.Unlock()
+		if tryLogin {
+			if fortigateFormLogin(r.Context(), httpClient, targetURL, creds.Username, creds.Password) {
+				state.mu.Lock()
+				state.fortiLoginDone = true
+				state.mu.Unlock()
+				syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
+			}
+		}
+	}
+
+	// Apply a previously-discovered asset prefix
 	// static assets, so we don't repeat the 404+retry for every asset.
 	effectiveRest := rest
 	var triedPrefix string
@@ -600,7 +615,8 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	rewriteBody := shouldRewriteWebBody(ct) || shouldRewriteWebPath(rest)
 	if rewriteBody {
 		body, _ := io.ReadAll(upResp.Body)
-		body = rewriteHTML(body, targetURL, sessionID, portalTok)
+		body = rewriteHTML(body, targetURL, sessionID, portalTok, creds)
+		body = injectFortinetLoginAssist(body, creds)
 		if mimeByPath != "" {
 			w.Header().Set("Content-Type", mimeByPath)
 		} else if ct != "" {
@@ -638,12 +654,8 @@ func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, u
 	rewriteUpstreamReferer(upstream.Header, targetURL, sessionID)
 	tuneUpstreamRequest(upstream, targetURL, rest)
 
-	// Only attach Basic Auth on GETs of non-asset paths. Form-auth appliances
-	// (FortiOS, modern PAN-OS) use POST /logincheck or /api with form bodies;
-	// adding an Authorization header on those requests makes the device 401 the
-	// login attempt and bounce the user back to the login page even when the
-	// form credentials are correct.
-	if creds.Username != "" && creds.Password != "" && r.Method == http.MethodGet && !isPublicWebAsset(rest) {
+	// FortiGate/PAN-OS use form POST /logincheck — never attach Basic Auth on GET login paths.
+	if shouldUseBasicAuth(r, rest, creds) {
 		upstream.SetBasicAuth(creds.Username, creds.Password)
 	}
 	return upstream, upstreamURL, nil
@@ -978,7 +990,7 @@ func rewriteLocation(loc string, target *url.URL, sessionID, portalToken string)
 	return loc
 }
 
-func rewriteHTML(body []byte, target *url.URL, sessionID, portalToken string) []byte {
+func rewriteHTML(body []byte, target *url.URL, sessionID, portalToken string, creds weblaunch.SessionCreds) []byte {
 	pfx := "/web/" + sessionID
 	// Browsers honour only the FIRST <base> tag in document order. Some appliances
 	// (FortiOS uses <base href="/login/">) emit their own — injecting ours would
@@ -1054,6 +1066,8 @@ func rewriteRootPaths(body []byte, pfx, portalToken string) []byte {
 		{`'/favicon/`, `'` + pfx + `/favicon/`},
 		{`"/ng/`, `"` + pfx + `/ng/`},
 		{`'/ng/`, `'` + pfx + `/ng/`},
+		{`"/logincheck`, `"` + pfx + `/logincheck`},
+		{`'/logincheck`, `'` + pfx + `/logincheck`},
 		{`"/login`, `"` + pfx + `/login`},
 		{`'/login`, `'` + pfx + `/login`},
 		{`"/logout`, `"` + pfx + `/logout`},

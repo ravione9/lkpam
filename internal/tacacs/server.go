@@ -250,7 +250,7 @@ func (s *Server) checkPortalPassword(user, pass string) bool {
 			log.Printf("tacacs auth-service login for %q: %v", user, err)
 		}
 		if res != nil && res.MFARequired {
-			log.Printf("tacacs auth-service login for %q: MFA required (append 6-digit code to password)", user)
+			log.Printf("tacacs auth-service login for %q: MFA required — append 6-digit code to password (FortiGate: password+code, no space)", user)
 		}
 		return false
 	}

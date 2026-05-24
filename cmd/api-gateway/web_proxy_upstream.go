@@ -26,6 +26,8 @@ type webSessionState struct {
 	// static assets under (e.g. "/login" on FortiOS, "" on PAN-OS/root). Empty
 	// until probed; populated the first time a fallback retry returns < 400.
 	assetPrefix string
+	// fortiLoginDone tracks server-side FortiGate form login for this session.
+	fortiLoginDone bool
 }
 
 // webUpstreamClients holds one *webSessionState per web-console session so device
