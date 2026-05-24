@@ -2495,20 +2495,41 @@ document.addEventListener("click", e => {
   if (e.target && e.target.id === "formPopupBackdrop") closeOpenPopupForms();
 });
 
+const API_TIMEOUT_MS = 30000;
+
 async function api(path, opts = {}) {
   opts.headers = opts.headers || {};
   if (token) opts.headers.Authorization = "Bearer " + token;
   if (opts.body && !(opts.body instanceof FormData)) opts.headers["Content-Type"] = "application/json";
-  const r = await fetch("/api" + path, opts);
-  if (r.status === 202) return { _accepted: await r.json() };
-  if (!r.ok) {
-    let msg = await r.text();
-    try { msg = JSON.parse(msg).error || msg; } catch {}
-    throw new Error(msg);
+  const ctrl = new AbortController();
+  const ms = opts.timeout || API_TIMEOUT_MS;
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch("/api" + path, {...opts, signal: ctrl.signal});
+    if (r.status === 202) return { _accepted: await r.json() };
+    if (!r.ok) {
+      let msg = await r.text();
+      try { msg = JSON.parse(msg).error || msg; } catch {}
+      // After a container rebuild the JWT secret may change — the browser still
+      // shows the shell UI but every gated API returns 401 until re-login.
+      if (r.status === 401 && !path.startsWith("/auth/login") && !path.startsWith("/auth/verify")) {
+        await persistToken(null);
+        currentUser = null;
+        $("#app").style.display = "none";
+        $("#login-wrap").style.display = "flex";
+        throw new Error("Session expired or invalid — please sign in again");
+      }
+      throw new Error(msg);
+    }
+    const ct = r.headers.get("content-type") || "";
+    if (ct.includes("application/json")) return r.json();
+    return r.text();
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error("API request timed out after " + (ms / 1000) + "s — check gateway/auth containers");
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  const ct = r.headers.get("content-type") || "";
-  if (ct.includes("application/json")) return r.json();
-  return r.text();
 }
 
 function esc(s) {
@@ -2719,31 +2740,34 @@ $$("aside nav button[data-tab]").forEach(b => b.onclick = () => showTab(b.datase
 
 // --- Dashboard ---
 async function loadDashboard() {
-  // Each call is independent — non-admins get 403 on /auth/users and /auth/groups
-  // but should still see their dashboard with target + session info.
-  const safe = p => p.catch(() => null);
+  const errs = [];
+  const safe = p => p.catch(e => { errs.push(e.message || String(e)); return null; });
   try {
-    const [targets, users, groupsList, requests, sessions, audit] = await Promise.all([
+    // Phase 1 — stats cards (never block on audit/events; that query can stall SQLite).
+    const [targets, users, groupsList, requests, sessions] = await Promise.all([
       safe(api("/policy/targets")),
       safe(api("/auth/users")),
       safe(api("/auth/groups")),
       isAdmin() ? safe(api("/approval/requests/pending")) : Promise.resolve([]),
       safe(api("/audit/sessions?limit=200")),
-      safe(api("/audit/events?limit=300")),
     ]);
     cache.targets = targets || [];
     cache.users = users || [];
     cache.groups = groupsList || [];
-    $("#stat-targets").textContent = (targets || []).length;
+    if (targets === null && sessions === null) {
+      toast("Session expired or APIs unreachable — sign out, hard-refresh (Ctrl+Shift+R), sign in again", "err");
+    } else if (errs.length) {
+      toast(errs[0], "err");
+    }
+    $("#stat-targets").textContent = targets === null ? "—" : (targets || []).length;
     $("#stat-users").textContent = users ? users.length : (isAdmin() ? "—" : "n/a");
     $("#stat-users-mfa").textContent = users ? users.filter(u => u.mfa_enabled).length + " with MFA" : "";
     $("#stat-groups").textContent = groupsList ? groupsList.length : (isAdmin() ? "—" : "n/a");
     $("#stat-requests").textContent = requests ? requests.length : "—";
     const weekAgo = Math.floor(Date.now()/1000) - 7*86400;
     const recentSess = (sessions || []).filter(s => s.started_at >= weekAgo);
-    $("#stat-sessions").textContent = recentSess.length;
+    $("#stat-sessions").textContent = sessions === null ? "—" : recentSess.length;
 
-    // LDAP status (admin only)
     if (isAdmin()) {
       try {
         const ldap = await api("/auth/settings/ldap");
@@ -2757,7 +2781,8 @@ async function loadDashboard() {
 
     loadAccessProfileSummary();
 
-    // Login activity chart (24h, hourly buckets)
+    // Phase 2 — charts (best-effort; failure must not blank the dashboard).
+    const audit = await safe(api("/audit/events?limit=300"));
     const now = Math.floor(Date.now()/1000);
     const buckets = new Array(24).fill(0);
     (audit || []).forEach(e => {
@@ -2768,7 +2793,6 @@ async function loadDashboard() {
     $("#loginCount24").textContent = buckets.reduce((a,b) => a+b, 0);
     renderSparkline("#chartLogins", buckets, "var(--accent)");
 
-    // Tier breakdown
     const tierCounts = [0,0,0,0];
     recentSess.forEach(s => {
       const t = (cache.targets.find(x => x.id === s.target_id) || {}).tier ?? 2;
@@ -2807,25 +2831,82 @@ function renderBars(sel, vals, colors) {
 // --- Roles ---
 async function loadRoles() {
   try {
-    const rows = await api("/auth/roles");
+    const [rows, fortiCfg] = await Promise.all([
+      api("/auth/roles"),
+      api("/auth/settings/tacacs").catch(() => ({})),
+    ]);
     cache.roles = rows || [];
+    cache.fortiCfg = fortiCfg || {};
     if (!cache.roles.length) {
-      $("#roleRows").innerHTML = `<tr><td colspan="7" class="muted">No roles found.</td></tr>`;
+      $("#roleRows").innerHTML = `<tr><td colspan="8" class="muted">No roles found.</td></tr>`;
       return;
     }
-    $("#roleRows").innerHTML = cache.roles.map(r => `
-      <tr>
+    const rp = (fortiCfg && fortiCfg.role_profiles) || {};
+    $("#roleRows").innerHTML = cache.roles.map(r => {
+      const savedProf = rp[r.name] || "";
+      const builtinProfs = ["super_admin","prof_admin","read_only"];
+      const isBuiltin = builtinProfs.includes(savedProf);
+      const selVal = savedProf === "" ? "" : (isBuiltin ? savedProf : "custom");
+      const customVal = (savedProf && !isBuiltin) ? savedProf : "";
+      const profCell = `<span style="display:flex;gap:6px;align-items:center">
+        <select style="width:160px;font-size:12px" onchange="fortiRoleChange(this,'${esc(r.name)}')">
+          <option value=""${selVal===""?" selected":""}>— not set —</option>
+          <option value="super_admin"${selVal==="super_admin"?" selected":""}>super_admin</option>
+          <option value="prof_admin"${selVal==="prof_admin"?" selected":""}>prof_admin</option>
+          <option value="read_only"${selVal==="read_only"?" selected":""}>read_only</option>
+          <option value="custom"${selVal==="custom"?" selected":""}>Custom…</option>
+        </select>
+        <input id="forti-custom-${esc(r.name)}" placeholder="profile name"
+          value="${esc(customVal)}"
+          style="width:120px;font-size:12px;display:${selVal==="custom"?"":"none"}"
+          onblur="fortiRoleCustomSave('${esc(r.name)}')" />
+      </span>`;
+      return `<tr>
         <td><b>${esc(r.name)}</b></td>
         <td class="muted">${esc(r.description)}</td>
         <td>${r.builtin ? '<span class="pill">built-in</span>' : '<span class="pill accent">custom</span>'}</td>
         <td>${r.users||0}</td><td>${r.groups||0}</td><td>${r.policies||0}</td>
+        <td>${profCell}</td>
         <td class="actions">
           ${r.builtin ? '<span class="muted">locked</span>' :
             `<button class="ghost" onclick="editRole(${r.id})">Edit</button>
              <button class="ghost danger" onclick="deleteRole(${r.id})">Delete</button>`}
         </td>
-      </tr>`).join("");
-  } catch (e) { $("#roleRows").innerHTML = `<tr><td colspan="7" class="muted">${esc(e.message)}</td></tr>`; }
+      </tr>`;
+    }).join("");
+  } catch (e) { $("#roleRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
+}
+
+// Auto-save FortiGate profile when dropdown changes.
+window.fortiRoleChange = async function(sel, roleName) {
+  const customInp = $(`#forti-custom-${roleName}`);
+  if (sel.value === "custom") {
+    customInp.style.display = "";
+    customInp.focus();
+    return; // wait for blur to save
+  }
+  customInp.style.display = "none";
+  await fortiSaveRoleProfile(roleName, sel.value);
+};
+
+window.fortiRoleCustomSave = async function(roleName) {
+  const inp = $(`#forti-custom-${roleName}`);
+  const prof = inp.value.trim();
+  if (!prof) return;
+  await fortiSaveRoleProfile(roleName, prof);
+};
+
+async function fortiSaveRoleProfile(roleName, profile) {
+  try {
+    const cfg = cache.fortiCfg || {};
+    const rp = Object.assign({}, cfg.role_profiles || {});
+    if (profile) rp[roleName] = profile;
+    else delete rp[roleName];
+    const updated = Object.assign({}, cfg, { role_profiles: rp });
+    await api("/auth/settings/tacacs", {method:"PUT", body: JSON.stringify(updated)});
+    cache.fortiCfg = updated;
+    toast(`FortiGate profile for "${roleName}" saved — takes effect on next login`, "ok");
+  } catch (e) { toast(e.message, "err"); }
 }
 function resetRoleForm() {
   $("#roleId").value = ""; $("#roleName").value = ""; $("#roleDesc").value = "";
@@ -5228,7 +5309,12 @@ function renderSessions() {
     ? sessionCache.filter(s => !s.ended_at)
     : sessionCache.filter(s => s.ended_at);
   if (!rows.length) {
-    $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">${sessionView === "live" ? "No active sessions." : "No session history yet."}</td></tr>`;
+    let msg = sessionView === "live" ? "No active sessions." : "No session history yet.";
+    if (sessionView === "history") {
+      const liveN = sessionCache.filter(s => !s.ended_at).length;
+      if (liveN) msg = `No ended sessions yet — ${liveN} still active. Switch to <b>Live</b>.`;
+    }
+    $("#sessionRows").innerHTML = `<tr><td colspan="8" class="muted">${msg}</td></tr>`;
     return;
   }
   const tbody = $("#sessionRows");
@@ -5555,11 +5641,12 @@ $("#proxyExport").onclick = () => {
 
 // --- CA ---
 async function loadCA() {
+  $("#caPub").textContent = "Loading…";
   try {
-    const r = await fetch("/api/vault/ca/pub", {headers: {Authorization: "Bearer " + token}});
-    if (!r.ok) throw new Error(await r.text());
-    $("#caPub").textContent = await r.text();
-  } catch (e) { $("#caPub").textContent = e.message; }
+    $("#caPub").textContent = await api("/vault/ca/pub");
+  } catch (e) {
+    $("#caPub").textContent = e.message;
+  }
 }
 
 // --- Safes ---
@@ -7411,7 +7498,9 @@ $("#onboardModalCloseBtn")?.addEventListener("click", closeOnboardModal);
 // Sticky modal: do not close when clicking the backdrop — only Close button.
 
 async function loadOnboard() {
-  // Default proxy host if the user hasn't typed one.
+  // Device-type buttons are static — render immediately so a slow /policy/targets
+  // call cannot leave this tab blank (was blocking renderOnboardKindBar before).
+  renderOnboardKindBar();
   if (!$("#onboardHost").value) $("#onboardHost").value = detectedProxyHost();
   if (currentUser && $("#onboardSshCmd")) {
     if (!cache.targets.length) {
@@ -7422,12 +7511,18 @@ async function loadOnboard() {
       ? buildSshCommand(currentUser.username, t0)
       : buildSshCommand(currentUser.username, { id: 1, name: "machine" });
   }
-  // Fetch SSH CA pubkey once and cache; needed by Linux/Windows guides.
   if (!window._caPub) {
     try {
-      const r = await fetch("/api/vault/ca/pub", {headers: {Authorization: "Bearer " + token}});
-      if (r.ok) window._caPub = (await r.text()).trim();
-    } catch { /* ignore — guide will show a placeholder */ }
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+      try {
+        const r = await fetch("/api/vault/ca/pub", {
+          headers: {Authorization: "Bearer " + token},
+          signal: ctrl.signal,
+        });
+        if (r.ok) window._caPub = (await r.text()).trim();
+      } finally { clearTimeout(timer); }
+    } catch { /* guide shows placeholder */ }
   }
   renderOnboardKindBar();
 }
@@ -7903,48 +7998,4 @@ async function loadFortiSettings() {
     // Collect unique role names; always include the core built-in roles.
     const builtinRoles = ["admin", "secops", "netops", "sysadmin", "user", "viewer"];
     const dbRoles = (rolesData || []).map(r => r.name || r).filter(Boolean);
-    const allRoles = [...new Set([...builtinRoles, ...dbRoles])];
-
-    $("#fortiDefaultMemberof").value = (savedRaw && savedRaw.default_memberof) || "PAM-Admins";
-    $("#fortiRoleRows").innerHTML = renderFortiRoleRows(allRoles, savedRaw);
-  } catch (e) {
-    $("#fortiRoleRows").innerHTML = `<tr><td colspan="4" class="muted">${esc(e.message)}</td></tr>`;
-  }
-}
-
-$("#fortiSaveBtn").onclick = async () => {
-  const roleProfiles = {};
-  const roleMemberof = {};
-  document.querySelectorAll("#fortiRoleTable tbody tr[data-role]").forEach(row => {
-    const role = row.dataset.role;
-    const sel = row.querySelector(".forti-prof-sel");
-    const custom = row.querySelector(".forti-prof-custom");
-    const memberofEl = row.querySelector(".forti-memberof");
-    const prof = sel.value === "custom" ? custom.value.trim() : sel.value;
-    if (prof) roleProfiles[role] = prof;
-    const mo = (memberofEl.value || "").trim();
-    if (mo) roleMemberof[role] = mo;
-  });
-  const defaultMemberof = $("#fortiDefaultMemberof").value.trim() || "PAM-Admins";
-  try {
-    await api("/auth/settings/tacacs", {method:"PUT", body: JSON.stringify({
-      role_profiles: roleProfiles,
-      role_memberof: roleMemberof,
-      default_memberof: defaultMemberof,
-    })});
-    toast("FortiGate profile mappings saved — effective on next FortiGate login", "ok");
-    $("#fortiStatus").innerHTML = '<span class="pill ok">Saved</span>';
-    setTimeout(() => { $("#fortiStatus").innerHTML = ""; }, 4000);
-  } catch (e) { toast(e.message, "err"); }
-};
-
-// Boot
-(async () => {
-  if (await captureSSOToken()) return;
-  if (await restoreSession()) { enterApp(); return; }
-  $("#login-wrap").style.display = "flex";
-  discoverSSO();
-})();
-</script>
-</body>
-</html>
+    const allRoles = [...new Set([...builtinRoles, ...dbRoles])]

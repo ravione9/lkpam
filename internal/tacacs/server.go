@@ -2,6 +2,7 @@ package tacacs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -537,8 +538,8 @@ func (s *Server) fortinetAuthorArgs(role, svc, reqMemberof string) []string {
 	}
 	return []string{
 		"service=" + svc,
-		"admin_prof=" + s.fortinetAdminProfForRole(role),
-		"memberof=" + s.fortinetMemberofForRole(role, reqMemberof),
+		"admin_prof=" + s.fortinetAdminProfLive(role),
+		"memberof=" + s.fortinetMemberofLive(role, reqMemberof),
 	}
 }
 
@@ -737,3 +738,67 @@ func authenStatusForResult(ok, pamUser bool) (status uint8, msg string) {
 
 // Sanity to silence unused-import errors during partial editing.
 var _ = errors.New
+
+// ---- FortinetConfig — DB-backed role→profile mapping ----
+
+// FortinetConfig holds the FortiGate role→profile and role→memberof mappings
+// loaded from the settings table (key "tacacs_fortinet").
+type FortinetConfig struct {
+	RoleProfiles    map[string]string `json:"role_profiles"`
+	RoleMemberof    map[string]string `json:"role_memberof"`
+	DefaultMemberof string            `json:"default_memberof"`
+}
+
+// LoadFortinetConfigFromDB reads the tacacs_fortinet JSON from the settings table.
+// Called at startup and on every FortiGate authorization so profile changes made
+// in the Roles UI take effect immediately without restarting pam-tacacs.
+func LoadFortinetConfigFromDB(d *db.DB) FortinetConfig {
+	if d == nil {
+		return FortinetConfig{DefaultMemberof: "PAM-Admins"}
+	}
+	var raw string
+	_ = d.QueryRow(`SELECT value FROM settings WHERE key = 'tacacs_fortinet'`).Scan(&raw)
+	if raw == "" {
+		return FortinetConfig{DefaultMemberof: "PAM-Admins"}
+	}
+	var cfg FortinetConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		log.Printf("tacacs: could not parse tacacs_fortinet from DB: %v", err)
+		return FortinetConfig{DefaultMemberof: "PAM-Admins"}
+	}
+	if cfg.DefaultMemberof == "" {
+		cfg.DefaultMemberof = "PAM-Admins"
+	}
+	return cfg
+}
+
+// fortinetAdminProfLive returns the FortiGate admin_prof for a role with a live
+// DB read so changes in the Roles UI take effect on the next login — no restart.
+func (s *Server) fortinetAdminProfLive(role string) string {
+	r := strings.ToLower(strings.TrimSpace(role))
+	if s.DB != nil {
+		cfg := LoadFortinetConfigFromDB(s.DB)
+		if p, ok := cfg.RoleProfiles[r]; ok && p != "" {
+			return p
+		}
+	}
+	return s.fortinetAdminProfForRole(r)
+}
+
+// fortinetMemberofLive returns the memberof group for a role with a live DB read.
+func (s *Server) fortinetMemberofLive(role, reqMemberof string) string {
+	if strings.TrimSpace(reqMemberof) != "" {
+		return strings.TrimSpace(reqMemberof)
+	}
+	r := strings.ToLower(strings.TrimSpace(role))
+	if s.DB != nil {
+		cfg := LoadFortinetConfigFromDB(s.DB)
+		if m, ok := cfg.RoleMemberof[r]; ok && m != "" {
+			return m
+		}
+		if cfg.DefaultMemberof != "" {
+			return cfg.DefaultMemberof
+		}
+	}
+	return s.fortinetMemberofForRole(r, "")
+}
