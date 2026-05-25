@@ -302,23 +302,27 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	}
 
 	cmd, args := extractCommand(req.Args)
-	svc := serviceFromAuthorRequest(req.Args)
-	fullCmd := policy.FullCommand(cmd, args)
 	deviceIP := deviceIPFromAuthor(req, clientIP)
 	fgNAS := s.isFortiGateHost(deviceIP)
+	svc := serviceFromAuthorRequest(req.Args)
+	fullCmd := policy.FullCommand(cmd, args)
+	// FortiGate VSAs only for FortiOS NASes or explicit fortigate/fortinet service.
+	// service=administration|admin is shared with Cisco/HP — do not treat as Fortinet alone.
+	fortinet := isFortiGateService(svc) || fgNAS
 	var allow bool
 	var role string
 	var mapRole string
 	var userID int64
 	var replyArgs []string
-	fortinet := isFortinetService(svc) || fgNAS || isFortinetAdminService(svc)
 
 	if fortinet {
 		s.refreshFortinetConfig()
 	}
 
-	// FortiGate admin login: empty cmd + (service=fortigate|administration|…) or NAS is a registered FortiGate.
-	adminLogin := fullCmd == "" && (isAdminAuthService(svc) || fgNAS)
+	// FortiGate GUI: empty cmd + FortiOS service or registered FortiGate NAS.
+	// Cisco shell login: service=shell, empty cmd → authorize() below (priv-lvl path).
+	adminLogin := fullCmd == "" && (fgNAS || isFortiGateService(svc) ||
+		(isFortinetAdminService(svc) && fgNAS))
 	if adminLogin {
 		// FortiGate / PAN-OS admin login — not per-command authorization.
 		allow, role, userID = s.authorizeAdmin(req.User)
@@ -483,6 +487,11 @@ func extractArg(args []string, key string) string {
 }
 
 func isFortinetService(svc string) bool {
+	return isFortiGateService(svc)
+}
+
+// isFortiGateService is true when TACACS service= names FortiOS explicitly.
+func isFortiGateService(svc string) bool {
 	svc = strings.ToLower(strings.TrimSpace(svc))
 	switch svc {
 	case "fortigate", "fortinet", "ftm":
@@ -501,12 +510,7 @@ func isFortinetAdminService(svc string) bool {
 }
 
 func isAdminAuthService(svc string) bool {
-	svc = strings.ToLower(strings.TrimSpace(svc))
-	switch svc {
-	case "administration", "admin", "fortigate", "fortinet", "ftm":
-		return true
-	}
-	return isFortinetService(svc)
+	return isFortiGateService(svc) || isFortinetAdminService(svc)
 }
 
 // isFortiGateHost reports whether the NAS IP is a FortiGate registered in PAM inventory.

@@ -86,6 +86,8 @@ make docker-up                                      # build + start
 
 See [deploy/docker/README.md](deploy/docker/README.md) for full Docker deployment docs.
 
+**Full platform documentation:** [docs/PLATFORM.md](docs/PLATFORM.md) — architecture, implemented features, access flows, AD/LDAP/SAML, FortiGate web proxy, database broker, and roadmap.
+
 ### Pointing network devices at the PAM RADIUS server
 
 The RADIUS service exposes UDP/1812 (auth) and UDP/1813 (accounting). Add the
