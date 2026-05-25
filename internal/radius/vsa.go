@@ -2,6 +2,7 @@ package radius
 
 import (
 	"encoding/binary"
+	"fmt"
 	"strings"
 )
 
@@ -166,7 +167,10 @@ func ciscoProfile() VendorProfile {
 		Family: "cisco",
 		FillReply: func(out *AttributeList, role string, priv int) {
 			out.AddUint32(AttrServiceType, ServiceAdministrative)
-			out.AddVSAString(VendorCisco, CiscoAVPair, "shell:priv-lvl=15")
+			if priv <= 0 {
+				priv = 1
+			}
+			out.AddVSAString(VendorCisco, CiscoAVPair, fmt.Sprintf("shell:priv-lvl=%d", priv))
 			if role != "" {
 				out.AddVSAString(VendorCisco, CiscoAVPair, "shell:roles=\""+role+"\"")
 			}

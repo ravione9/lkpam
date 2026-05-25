@@ -1517,8 +1517,8 @@
         </div>
         <p class="desc">Each policy binds a <b>role</b> to target kind, tier ceiling, and commands. Users inherit roles from their account or from <b>Groups</b>. When <b>Require approval</b> is checked, the <b>Approval Matrix</b> maps requester groups → approver groups.</p>
         <table>
-          <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Linux priv</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
-          <tbody id="policyRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+          <thead><tr><th>Role</th><th>Target kind</th><th>Tier max</th><th>Approval</th><th>Linux priv</th><th>Cisco priv</th><th>Allowed</th><th>Denied</th><th></th></tr></thead>
+          <tbody id="policyRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
         </table>
         <div class="form-panel popup-form hidden" id="policyForm">
           <h4 id="policyFormTitle">Add policy</h4>
@@ -1545,6 +1545,26 @@
               <option value="root">root — same as sudo (full elevation)</option>
             </select>
             <span class="muted" style="grid-column:2">Applies when SSH creates a per-user Linux account (not shared pam-svc). <code>sudo</code>/<code>root</code> writes <code>/etc/sudoers.d/pam-&lt;user&gt;</code> on each login — user must reconnect after changing this.</span>
+            <label id="policyCiscoPrivLabel" style="display:none">Cisco privilege level</label>
+            <select id="policyCiscoPriv" style="display:none">
+              <option value="0">Role default (auto)</option>
+              <option value="1">1 — User EXEC (&gt;)</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+              <option value="9">9</option>
+              <option value="10">10</option>
+              <option value="11">11</option>
+              <option value="12">12</option>
+              <option value="13">13</option>
+              <option value="14">14</option>
+              <option value="15">15 — Privileged EXEC (#)</option>
+            </select>
+            <span id="policyCiscoPrivHint" class="muted" style="grid-column:2;display:none">IOS <code>priv-lvl</code> returned on TACACS/RADIUS shell login. Set the device to <code>aaa authorization commands N</code> with the same level (e.g. 15 for enable mode).</span>
           </div>
           <div class="row" style="margin-top:12px">
             <button class="primary" id="policySaveBtn">Save</button>
@@ -5040,11 +5060,26 @@ window.deleteSecret = async name => {
 };
 
 // --- Policies ---
+function isCiscoPolicyKind(k) {
+  k = (k || "").toLowerCase();
+  return k === "cisco" || k.startsWith("cisco-") || k === "*";
+}
+function updatePolicyFormFields() {
+  const cisco = isCiscoPolicyKind($("#policyKind").value);
+  const show = cisco ? "" : "none";
+  $("#policyCiscoPrivLabel").style.display = show;
+  $("#policyCiscoPriv").style.display = show;
+  $("#policyCiscoPrivHint").style.display = cisco ? "" : "none";
+}
 async function loadPolicies() {
   try {
     const rows = await api("/policy/policies");
-    if (!(rows||[]).length) { $("#policyRows").innerHTML = `<tr><td colspan="8" class="muted">No policies.</td></tr>`; return; }
+    if (!(rows||[]).length) { $("#policyRows").innerHTML = `<tr><td colspan="9" class="muted">No policies.</td></tr>`; return; }
     window._policies = rows;
+    const ciscoPrivLabel = n => {
+      const v = parseInt(n, 10);
+      return v > 0 ? String(v) : '<span class="muted">auto</span>';
+    };
     const actions = p => isAdmin()
       ? `<button class="ghost" onclick="editPolicy(${p.id})">Edit</button>
          <button class="ghost danger" onclick="deletePolicy(${p.id})">Delete</button>`
@@ -5054,11 +5089,12 @@ async function loadPolicies() {
         <td><b>${esc(p.role)}</b></td><td>${esc(p.target_kind)}</td><td>${p.tier_max}</td>
         <td>${p.require_approval ? '<span class="pill warn">required</span>' : '<span class="pill">no</span>'}</td>
         <td>${esc(p.linux_privilege || 'none')}</td>
+        <td>${ciscoPrivLabel(p.cisco_privilege_level)}</td>
         <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.allowed_commands)}">${esc(p.allowed_commands) || '—'}</td>
         <td class="muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.denied_commands)}">${esc(p.denied_commands) || '—'}</td>
         <td class="actions">${actions(p)}</td>
       </tr>`).join("");
-  } catch (e) { $("#policyRows").innerHTML = `<tr><td colspan="8" class="muted">${esc(e.message)}</td></tr>`; }
+  } catch (e) { $("#policyRows").innerHTML = `<tr><td colspan="9" class="muted">${esc(e.message)}</td></tr>`; }
 }
 function resetPolicyForm() {
   $("#policyId").value = "";
@@ -5067,6 +5103,8 @@ function resetPolicyForm() {
   $("#policyTier").value = "2"; $("#policyApproval").checked = false;
   ["policyAllow","policyDeny"].forEach(id => $("#"+id).value = "");
   $("#policyLinuxPriv").value = "none";
+  $("#policyCiscoPriv").value = "0";
+  updatePolicyFormFields();
   $("#policyForm").classList.add("hidden");
 }
 $("#policyAddBtn").onclick = async () => {
@@ -5076,6 +5114,7 @@ $("#policyAddBtn").onclick = async () => {
   $("#policyForm").classList.remove("hidden");
 };
 $("#policyCancelBtn").onclick = resetPolicyForm;
+$("#policyKind").addEventListener("change", updatePolicyFormFields);
 window.editPolicy = async id => {
   const p = (window._policies||[]).find(x => x.id === id); if (!p) return;
   await ensureRoles();
@@ -5085,6 +5124,8 @@ window.editPolicy = async id => {
   $("#policyTier").value = p.tier_max; $("#policyApproval").checked = p.require_approval;
   $("#policyAllow").value = p.allowed_commands || ""; $("#policyDeny").value = p.denied_commands || "";
   $("#policyLinuxPriv").value = p.linux_privilege || "none";
+  $("#policyCiscoPriv").value = String(p.cisco_privilege_level || 0);
+  updatePolicyFormFields();
   $("#policyFormTitle").textContent = "Edit policy";
   $("#policyForm").classList.remove("hidden");
   $("#policyRole").focus();
@@ -5095,6 +5136,7 @@ $("#policySaveBtn").onclick = async () => {
     tier_max: parseInt($("#policyTier").value,10), require_approval: $("#policyApproval").checked,
     allowed_commands: $("#policyAllow").value.trim(), denied_commands: $("#policyDeny").value.trim(),
     linux_privilege: $("#policyLinuxPriv").value,
+    cisco_privilege_level: parseInt($("#policyCiscoPriv").value, 10) || 0,
   };
   try {
     const id = $("#policyId").value;

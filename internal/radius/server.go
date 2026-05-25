@@ -213,7 +213,7 @@ func (s *Server) authenticate(ctx context.Context, user string, pkt *Packet,
 		}
 		res.ok, res.pamUser, res.role, res.roles, res.userID = s.checkPortalOrDevice(ctx, user, pw, nasIP)
 		if res.ok {
-			res.priv = privLevelForRole(res.role)
+			res.priv = s.privilegeLevel(ctx, res.userID, res.role, res.roles, nasIP)
 			res.detail = "ok"
 			return res
 		}
@@ -244,7 +244,7 @@ func (s *Server) authenticate(ctx context.Context, user string, pkt *Packet,
 			res.role = info.role
 			res.roles = info.roles
 			res.userID = info.id
-			res.priv = privLevelForRole(res.role)
+			res.priv = s.privilegeLevel(ctx, res.userID, res.role, res.roles, nasIP)
 			res.detail = "ok (CHAP)"
 			return res
 		}
@@ -507,6 +507,36 @@ func (s *Server) profileForNAS(nasIP string, client ClientRecord) VendorProfile 
 		return genericProfile()
 	}
 	return profileFor(kind)
+}
+
+func (s *Server) privilegeLevel(ctx context.Context, userID int64, role string, roles []string, nasIP string) int {
+	if s.Policy == nil || s.DB == nil {
+		return privLevelForRole(role)
+	}
+	host := nasIP
+	if h, _, err := net.SplitHostPort(nasIP); err == nil {
+		host = h
+	}
+	var tid int64
+	var kind string
+	var tier int
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT id, kind, tier FROM targets WHERE host = ? OR host = ?`, host, nasIP).
+		Scan(&tid, &kind, &tier)
+	if err != nil {
+		return privLevelForRole(role)
+	}
+	dec, err := s.Policy.Decide(ctx, policy.Input{
+		UserID: userID, Role: role, Roles: roles,
+		TargetID: tid, TargetKind: kind, TargetTier: tier, Action: "exec",
+	})
+	if err != nil || !dec.Allow {
+		return privLevelForRole(role)
+	}
+	if policy.IsCiscoKind(kind) {
+		return policy.EffectiveCiscoPrivilege(dec, role)
+	}
+	return privLevelForRole(role)
 }
 
 // nasIPFromPacket extracts NAS-IP-Address (or NAS-IPv6) when supplied, else

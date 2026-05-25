@@ -309,11 +309,14 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 	// FortiGate VSAs only for FortiOS NASes or explicit fortigate/fortinet service.
 	// service=administration|admin is shared with Cisco/HP — do not treat as Fortinet alone.
 	fortinet := isFortiGateService(svc) || fgNAS
-	var allow bool
-	var role string
-	var mapRole string
-	var userID int64
-	var replyArgs []string
+	var (
+		allow     bool
+		role      string
+		mapRole   string
+		userID    int64
+		replyArgs []string
+		dec       policy.Decision
+	)
 
 	if fortinet {
 		s.refreshFortinetConfig()
@@ -331,11 +334,20 @@ func (s *Server) handleAuthor(c net.Conn, h Header, body []byte, clientIP string
 				mapRole = s.fortinetMappingRole(userID, role)
 				replyArgs = s.fortinetAuthorArgs(mapRole, svc, extractArg(req.Args, "memberof"))
 			} else {
-				replyArgs = []string{"priv-lvl=15", "service=" + svc}
+				_, _, dec = s.authorize(req.User, deviceIP, "")
+				priv := policy.EffectiveCiscoPrivilege(dec, role)
+				replyArgs = []string{fmt.Sprintf("priv-lvl=%d", priv), "service=" + svc}
 			}
 		}
 	} else {
-		allow, role = s.authorize(req.User, deviceIP, fullCmd)
+		allow, role, dec = s.authorize(req.User, deviceIP, fullCmd)
+		if allow && policy.IsCiscoKind(s.targetKindForHost(deviceIP)) && strings.TrimSpace(fullCmd) == "" {
+			priv := policy.EffectiveCiscoPrivilege(dec, role)
+			replyArgs = []string{
+				fmt.Sprintf("priv-lvl=%d", priv),
+				"service=" + svc,
+			}
+		}
 	}
 
 	status := AuthorStatusFail
@@ -394,16 +406,17 @@ func (s *Server) authorizeAdmin(user string) (bool, string, int64) {
 	return true, role, userID
 }
 
-func (s *Server) authorize(user, deviceIP, fullCmd string) (bool, string) {
+func (s *Server) authorize(user, deviceIP, fullCmd string) (bool, string, policy.Decision) {
 	var (
 		userID int64
 		role   string
 	)
+	empty := policy.Decision{}
 	err := s.DB.QueryRow(`
 		SELECT id, role FROM users WHERE lower(username)=lower(?) AND disabled = 0`, user).
 		Scan(&userID, &role)
 	if err != nil {
-		return false, ""
+		return false, "", empty
 	}
 	roles := []string{role}
 	if s.Groups != nil && userID > 0 {
@@ -422,20 +435,29 @@ func (s *Server) authorize(user, deviceIP, fullCmd string) (bool, string) {
 		host, deviceIP).Scan(&tid, &kind, &tier)
 	if err != nil {
 		log.Printf("tacacs author: unknown device %q for user=%q cmd=%q", deviceIP, user, fullCmd)
-		return false, role
+		return false, role, empty
 	}
 	dec, err := s.Policy.Decide(context.Background(), policy.Input{
 		UserID: userID, Role: role, Roles: roles,
 		TargetID: tid, TargetKind: kind, TargetTier: tier, Action: "exec",
 	})
 	if err != nil || !dec.Allow {
-		return false, role
+		return false, role, dec
 	}
 	// Empty command = session/shell authorization (Cisco sends service=shell with no cmd= at login).
 	if strings.TrimSpace(fullCmd) == "" {
-		return true, role
+		return true, role, dec
 	}
-	return policy.CommandAllowed(fullCmd, dec.AllowedCmds, dec.DeniedCmds), role
+	return policy.CommandAllowed(fullCmd, dec.AllowedCmds, dec.DeniedCmds), role, dec
+}
+
+func (s *Server) targetKindForHost(deviceIP string) string {
+	host := hostPart(deviceIP)
+	var kind string
+	if err := s.DB.QueryRow(`SELECT kind FROM targets WHERE host = ? OR host = ?`, host, deviceIP).Scan(&kind); err != nil {
+		return ""
+	}
+	return kind
 }
 
 // ---- Accounting ----

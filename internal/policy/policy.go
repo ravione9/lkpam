@@ -22,6 +22,8 @@ type Decision struct {
 	DeniedCmds      []string `json:"denied_cmds,omitempty"`
 	// LinuxPrivilege is none | sudo | root for per-user Linux account provisioning.
 	LinuxPrivilege string `json:"linux_privilege,omitempty"`
+	// CiscoPrivilegeLevel is IOS priv-lvl 1–15 for TACACS/RADIUS (0 = role default).
+	CiscoPrivilegeLevel int `json:"cisco_privilege_level,omitempty"`
 }
 
 // Engine evaluates policy from the policies table.
@@ -55,7 +57,7 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 		return Decision{Reasons: []string{"no role"}}, nil
 	}
 
-	final := Decision{LinuxPrivilege: "none"}
+	final := Decision{LinuxPrivilege: "none", CiscoPrivilegeLevel: 0}
 	allowSeen := false
 	allowedSet := map[string]bool{}
 	deniedSet := map[string]bool{}
@@ -72,7 +74,7 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 	for _, role := range roles {
 		query := fmt.Sprintf(`
 			SELECT target_kind, tier_max, require_approval, allowed_commands, denied_commands,
-			       COALESCE(linux_privilege, 'none')
+			       COALESCE(linux_privilege, 'none'), COALESCE(cisco_privilege_level, 0)
 			FROM policies
 			WHERE role = ? AND target_kind IN (%s)
 			ORDER BY CASE
@@ -96,8 +98,9 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 			allowedCSV      string
 			deniedCSV       string
 			linuxPriv       string
+			ciscoPriv       int
 		)
-		err := row.Scan(&kind, &tierMax, &requireApproval, &allowedCSV, &deniedCSV, &linuxPriv)
+		err := row.Scan(&kind, &tierMax, &requireApproval, &allowedCSV, &deniedCSV, &linuxPriv, &ciscoPriv)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -120,6 +123,7 @@ func (e *Engine) Decide(ctx context.Context, in Input) (Decision, error) {
 			deniedSet[c] = true
 		}
 		final.LinuxPrivilege = MergeLinuxPrivilege(final.LinuxPrivilege, linuxPriv)
+		final.CiscoPrivilegeLevel = MergeCiscoPrivilegeLevel(final.CiscoPrivilegeLevel, ciscoPriv)
 	}
 
 	if !allowSeen {
@@ -259,14 +263,15 @@ type Rule struct {
 	RequireApproval bool   `json:"require_approval"`
 	AllowedCommands string `json:"allowed_commands"`
 	DeniedCommands  string `json:"denied_commands"`
-	LinuxPrivilege  string `json:"linux_privilege"`
+	LinuxPrivilege      string `json:"linux_privilege"`
+	CiscoPrivilegeLevel int    `json:"cisco_privilege_level"`
 }
 
 // ListRules returns all policy rules.
 func (e *Engine) ListRules(ctx context.Context) ([]Rule, error) {
 	rows, err := e.DB.QueryContext(ctx, `
 		SELECT id, role, target_kind, tier_max, require_approval, allowed_commands, denied_commands,
-		       COALESCE(linux_privilege, 'none')
+		       COALESCE(linux_privilege, 'none'), COALESCE(cisco_privilege_level, 0)
 		FROM policies ORDER BY role, target_kind`)
 	if err != nil {
 		return nil, err
@@ -276,7 +281,7 @@ func (e *Engine) ListRules(ctx context.Context) ([]Rule, error) {
 	for rows.Next() {
 		var r Rule
 		var appr int
-		if err := rows.Scan(&r.ID, &r.Role, &r.TargetKind, &r.TierMax, &appr, &r.AllowedCommands, &r.DeniedCommands, &r.LinuxPrivilege); err != nil {
+		if err := rows.Scan(&r.ID, &r.Role, &r.TargetKind, &r.TierMax, &appr, &r.AllowedCommands, &r.DeniedCommands, &r.LinuxPrivilege, &r.CiscoPrivilegeLevel); err != nil {
 			return nil, err
 		}
 		r.RequireApproval = appr != 0
@@ -295,10 +300,11 @@ func (e *Engine) CreateRule(ctx context.Context, r Rule) (int64, error) {
 		appr = 1
 	}
 	linuxPriv := NormalizeLinuxPrivilege(r.LinuxPrivilege)
+	ciscoPriv := NormalizeCiscoPrivilegeLevel(r.CiscoPrivilegeLevel)
 	res, err := e.DB.ExecContext(ctx, `
-		INSERT INTO policies(role, target_kind, tier_max, require_approval, allowed_commands, denied_commands, linux_privilege)
-		VALUES(?,?,?,?,?,?,?)`,
-		r.Role, r.TargetKind, r.TierMax, appr, r.AllowedCommands, r.DeniedCommands, linuxPriv)
+		INSERT INTO policies(role, target_kind, tier_max, require_approval, allowed_commands, denied_commands, linux_privilege, cisco_privilege_level)
+		VALUES(?,?,?,?,?,?,?,?)`,
+		r.Role, r.TargetKind, r.TierMax, appr, r.AllowedCommands, r.DeniedCommands, linuxPriv, ciscoPriv)
 	if err != nil {
 		return 0, err
 	}
@@ -315,10 +321,11 @@ func (e *Engine) UpdateRule(ctx context.Context, r Rule) error {
 		appr = 1
 	}
 	linuxPriv := NormalizeLinuxPrivilege(r.LinuxPrivilege)
+	ciscoPriv := NormalizeCiscoPrivilegeLevel(r.CiscoPrivilegeLevel)
 	res, err := e.DB.ExecContext(ctx, `
 		UPDATE policies SET role=?, target_kind=?, tier_max=?, require_approval=?,
-		  allowed_commands=?, denied_commands=?, linux_privilege=? WHERE id=?`,
-		r.Role, r.TargetKind, r.TierMax, appr, r.AllowedCommands, r.DeniedCommands, linuxPriv, r.ID)
+		  allowed_commands=?, denied_commands=?, linux_privilege=?, cisco_privilege_level=? WHERE id=?`,
+		r.Role, r.TargetKind, r.TierMax, appr, r.AllowedCommands, r.DeniedCommands, linuxPriv, ciscoPriv, r.ID)
 	if err != nil {
 		return err
 	}
