@@ -35,9 +35,10 @@ type Target struct {
 	Vendor         string `json:"vendor"`          // free-form vendor label
 	OSVersion      string `json:"os_version"`      // optional version (e.g. "IOS 16.9")
 	ConnectionType string `json:"connection_type"` // ssh | rdp | web | telnet | https-api
-	Host           string `json:"host"`            // for ssh/rdp/telnet
-	Port           int    `json:"port"`            // for ssh/rdp/telnet
+	Host           string `json:"host"`            // for ssh/rdp/telnet/db
+	Port           int    `json:"port"`            // for ssh/rdp/telnet/db
 	WebURL         string `json:"web_url"`         // for web / https-api
+	DBName         string `json:"db_name,omitempty"` // default database for broker sessions
 	Tier           int    `json:"tier"`
 	Tags           string `json:"tags"`
 	LocationID     int64  `json:"location_id"`
@@ -52,7 +53,7 @@ func (s *Service) List(ctx context.Context) ([]Target, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT t.id, t.name, t.kind, COALESCE(t.vendor,''), COALESCE(t.os_version,''),
 		       COALESCE(t.connection_type,'ssh'), t.host, t.port,
-		       COALESCE(t.web_url,''), t.tier, t.tags,
+		       COALESCE(t.web_url,''), COALESCE(t.db_name,''), t.tier, t.tags,
 		       COALESCE(t.location_id, 0), COALESCE(l.name, '')
 		FROM targets t
 		LEFT JOIN locations l ON l.id = t.location_id
@@ -65,7 +66,7 @@ func (s *Service) List(ctx context.Context) ([]Target, error) {
 	for rows.Next() {
 		var t Target
 		if err := rows.Scan(&t.ID, &t.Name, &t.Kind, &t.Vendor, &t.OSVersion,
-			&t.ConnectionType, &t.Host, &t.Port, &t.WebURL, &t.Tier, &t.Tags,
+			&t.ConnectionType, &t.Host, &t.Port, &t.WebURL, &t.DBName, &t.Tier, &t.Tags,
 			&t.LocationID, &t.LocationName); err != nil {
 			return nil, err
 		}
@@ -80,13 +81,13 @@ func (s *Service) Get(ctx context.Context, id int64) (Target, error) {
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT t.id, t.name, t.kind, COALESCE(t.vendor,''), COALESCE(t.os_version,''),
 		       COALESCE(t.connection_type,'ssh'), t.host, t.port,
-		       COALESCE(t.web_url,''), t.tier, t.tags,
+		       COALESCE(t.web_url,''), COALESCE(t.db_name,''), t.tier, t.tags,
 		       COALESCE(t.location_id, 0), COALESCE(l.name, '')
 		FROM targets t
 		LEFT JOIN locations l ON l.id = t.location_id
 		WHERE t.id = ?`, id).Scan(
 		&t.ID, &t.Name, &t.Kind, &t.Vendor, &t.OSVersion,
-		&t.ConnectionType, &t.Host, &t.Port, &t.WebURL, &t.Tier, &t.Tags,
+		&t.ConnectionType, &t.Host, &t.Port, &t.WebURL, &t.DBName, &t.Tier, &t.Tags,
 		&t.LocationID, &t.LocationName)
 	if err == sql.ErrNoRows {
 		return t, errors.New("target not found")
@@ -111,10 +112,10 @@ func (s *Service) Create(ctx context.Context, t Target) (int64, error) {
 	locID := nullableLocationID(t.LocationID)
 	res, err := s.DB.ExecContext(ctx, `
 		INSERT INTO targets(name, kind, vendor, os_version, connection_type,
-		                    host, port, web_url, tier, tags, location_id)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		                    host, port, web_url, db_name, tier, tags, location_id)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.Name, t.Kind, t.Vendor, t.OSVersion, t.ConnectionType,
-		t.Host, t.Port, t.WebURL, t.Tier, t.Tags, locID)
+		t.Host, t.Port, t.WebURL, t.DBName, t.Tier, t.Tags, locID)
 	if err != nil {
 		return 0, fmt.Errorf("insert target: %w", err)
 	}
@@ -138,10 +139,10 @@ func (s *Service) Update(ctx context.Context, t Target) error {
 	locID := nullableLocationID(t.LocationID)
 	res, err := s.DB.ExecContext(ctx, `
 		UPDATE targets SET name=?, kind=?, vendor=?, os_version=?,
-		  connection_type=?, host=?, port=?, web_url=?, tier=?, tags=?, location_id=?
+		  connection_type=?, host=?, port=?, web_url=?, db_name=?, tier=?, tags=?, location_id=?
 		WHERE id=?`,
 		t.Name, t.Kind, t.Vendor, t.OSVersion, t.ConnectionType,
-		t.Host, t.Port, t.WebURL, t.Tier, t.Tags, locID, t.ID)
+		t.Host, t.Port, t.WebURL, t.DBName, t.Tier, t.Tags, locID, t.ID)
 	if err != nil {
 		return err
 	}
@@ -186,6 +187,12 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 
 // validateConnection enforces the right addressing for each protocol.
 func validateConnection(t Target) error {
+	if IsDatabaseConnection(t.ConnectionType) {
+		if t.Host == "" {
+			return errors.New("host is required for database connections")
+		}
+		return nil
+	}
 	switch t.ConnectionType {
 	case ConnSSH, ConnRDP, ConnTelnet:
 		if t.Host == "" {
@@ -210,6 +217,22 @@ func nullableLocationID(id int64) interface{} {
 }
 
 func defaultPort(connType string) int {
+	if IsDatabaseConnection(connType) {
+		switch connType {
+		case ConnPostgres:
+			return 5432
+		case ConnMySQL, ConnMariaDB:
+			return 3306
+		case ConnMSSQL:
+			return 1433
+		case ConnMongoDB:
+			return 27017
+		case ConnRedis:
+			return 6379
+		case ConnOracle:
+			return 1521
+		}
+	}
 	switch connType {
 	case ConnRDP:
 		return 3389

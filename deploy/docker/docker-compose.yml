@@ -48,6 +48,7 @@ services:
       <<: *common-env
       PAM_AUTH_ADDR: ":8081"
       PAM_PORTAL_URL: "${PAM_PORTAL_URL:-http://localhost:8080}"
+      PAM_DB_BROKER_HOST: "${PAM_DB_BROKER_HOST:-localhost}"
       PAM_LDAP_SYNC_INTERVAL: "${PAM_LDAP_SYNC_INTERVAL:-5m}"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/health"]
@@ -130,6 +131,32 @@ services:
       retries: 5
       start_period: 30s
 
+  db-proxy:
+    <<: *common
+    container_name: pam-db-proxy
+    command: ["/app/db-proxy"]
+    environment:
+      <<: *common-env
+      PAM_DB_POSTGRES_PORT: "15432"
+      PAM_DB_MYSQL_PORT: "13306"
+      PAM_DB_MSSQL_PORT: "11433"
+      PAM_DB_MONGODB_PORT: "27018"
+      PAM_DB_REDIS_PORT: "16379"
+      PAM_DB_ORACLE_PORT: "11521"
+    depends_on:
+      vault:
+        condition: service_healthy
+    ports:
+      - "${PAM_DB_POSTGRES_PORT:-15432}:15432"
+      - "${PAM_DB_MYSQL_PORT:-13306}:13306"
+      - "${PAM_DB_REDIS_PORT:-16379}:16379"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "15432"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
   # guacd uses the HOST network so RDP dials to LAN targets (192.168.x.x) use the
   # PAM server IP — bridge-network guacd often gets UPSTREAM_NOT_FOUND (519).
   # On Windows Docker Desktop only, comment network_mode and restore networks/extra_hosts below.
@@ -190,6 +217,7 @@ services:
       PAM_AUDIT_URL: "http://audit:8085"
       PAM_RDP_PROXY_URL: "http://rdp-proxy:8086"
       PAM_PORTAL_URL: "${PAM_PORTAL_URL:-http://localhost:8080}"
+      PAM_DB_BROKER_HOST: "${PAM_DB_BROKER_HOST:-localhost}"
     depends_on:
       auth:
         condition: service_healthy

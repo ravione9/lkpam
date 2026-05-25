@@ -152,6 +152,49 @@ func (s *Service) FindPrimaryForTarget(ctx context.Context, targetID int64) (*Pr
 	return &a, dual != 0, rows.Err()
 }
 
+// FindAccountForTarget returns the first privileged account linked to a target
+// (any platform). Used for database broker sessions.
+func (s *Service) FindAccountForTarget(ctx context.Context, targetID int64) (*PrivilegedAccount, bool, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT a.id, a.safe_id, sf.name, a.name, a.username,
+		       a.target_id, COALESCE(t.name,''), a.platform, a.secret_ref,
+		       a.last_rotated, a.next_rotation, a.rotation_status, a.rotation_error,
+		       a.notes, a.created_at, sf.require_dual_control
+		FROM privileged_accounts a
+		JOIN safes sf ON sf.id = a.safe_id
+		LEFT JOIN targets t ON t.id = a.target_id
+		WHERE a.target_id = ?
+		ORDER BY a.id
+		LIMIT 1`, targetID)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, false, ErrNoAccountForTarget
+	}
+	var a PrivilegedAccount
+	var tid sql.NullInt64
+	var lastRot, nextRot sql.NullInt64
+	var dual int
+	if err := rows.Scan(&a.ID, &a.SafeID, &a.SafeName, &a.Name, &a.Username,
+		&tid, &a.TargetName, &a.Platform, &a.SecretRef,
+		&lastRot, &nextRot, &a.RotationStatus, &a.RotationError,
+		&a.Notes, &a.CreatedAt, &dual); err != nil {
+		return nil, false, err
+	}
+	if tid.Valid {
+		a.TargetID = &tid.Int64
+	}
+	if lastRot.Valid {
+		a.LastRotated = &lastRot.Int64
+	}
+	if nextRot.Valid {
+		a.NextRotation = &nextRot.Int64
+	}
+	return &a, dual != 0, rows.Err()
+}
+
 var ErrNoAccountForTarget = errors.New("no privileged account linked to target")
 
 // Get returns a single account by ID.

@@ -9,7 +9,7 @@ RUN go mod download
 COPY . .
 RUN go mod tidy
 
-ARG SERVICES="auth-service vault-service policy-service approval-service audit-service ssh-proxy rdp-proxy api-gateway tacacs-service radius-service pam-cli"
+ARG SERVICES="auth-service vault-service policy-service approval-service audit-service ssh-proxy rdp-proxy db-proxy api-gateway tacacs-service radius-service pam-cli"
 RUN mkdir -p /out && \
     for svc in $SERVICES; do \
         echo "building $svc"; \

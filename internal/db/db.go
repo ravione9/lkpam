@@ -345,6 +345,19 @@ func (d *DB) migrate() error {
 		`ALTER TABLE access_requests ADD COLUMN sudo_requested INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE access_requests ADD COLUMN sudo_granted INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE targets ADD COLUMN location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`,
+		`ALTER TABLE targets ADD COLUMN db_name TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE IF NOT EXISTS db_query_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			ts INTEGER NOT NULL,
+			actor TEXT NOT NULL DEFAULT '',
+			engine TEXT NOT NULL DEFAULT '',
+			database_name TEXT NOT NULL DEFAULT '',
+			statement TEXT NOT NULL DEFAULT '',
+			allowed INTEGER NOT NULL DEFAULT 1,
+			latency_ms INTEGER NOT NULL DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_db_query_session ON db_query_events(session_id, ts DESC)`,
 	} {
 		_, _ = d.Exec(alter) // ignore "duplicate column" errors on new DBs
 	}

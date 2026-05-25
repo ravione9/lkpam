@@ -33,6 +33,7 @@ import (
 	"github.com/example/pam-platform/internal/safes"
 	"github.com/example/pam-platform/internal/sessions"
 	"github.com/example/pam-platform/internal/sshlaunch"
+	"github.com/example/pam-platform/internal/dblaunch"
 	"github.com/example/pam-platform/internal/weblaunch"
 	samlpkg "github.com/example/pam-platform/internal/saml"
 	"github.com/example/pam-platform/internal/settings"
@@ -107,6 +108,19 @@ func main() {
 	webLaunchSvc := &weblaunch.Service{
 		DB: d, Policy: policyEng, Approval: approvalSvc, Groups: groupSvc,
 		Vault: v, BrowserBase: config.Get("PAM_PORTAL_URL", ""),
+	}
+	dbLaunchSvc := &dblaunch.Service{
+		DB: d, Policy: policyEng, Approval: approvalSvc, Groups: groupSvc,
+		Accounts: accountSvc, Vault: v,
+		BrokerHost: config.Get("PAM_DB_BROKER_HOST", "localhost"),
+		BrokerPorts: map[string]int{
+			"postgres": envInt("PAM_DB_POSTGRES_PORT", 15432),
+			"mysql":    envInt("PAM_DB_MYSQL_PORT", 13306),
+			"mssql":    envInt("PAM_DB_MSSQL_PORT", 11433),
+			"mongodb":  envInt("PAM_DB_MONGODB_PORT", 27018),
+			"redis":    envInt("PAM_DB_REDIS_PORT", 16379),
+			"oracle":   envInt("PAM_DB_ORACLE_PORT", 11521),
+		},
 	}
 	bus := events.NewForwarder(events.New(), config.Get("PAM_AUDIT_URL", "http://audit:8085"))
 
@@ -1316,6 +1330,49 @@ func main() {
 		httpx.JSON(w, http.StatusOK, res)
 	})
 
+	// --- Database launch (brokered wire-protocol session) ---
+	mux.HandleFunc("POST /targets/{id}/db-launch", func(w http.ResponseWriter, r *http.Request) {
+		targetID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		uid, _ := strconv.ParseInt(r.Header.Get("X-PAM-UID"), 10, 64)
+		role := r.Header.Get("X-PAM-Role")
+		user := r.Header.Get("X-PAM-User")
+		var in struct {
+			Reason string `json:"reason"`
+		}
+		_ = httpx.ReadJSON(r, &in)
+		clientIP := r.Header.Get("X-Forwarded-For")
+		if clientIP == "" {
+			clientIP = r.RemoteAddr
+		}
+		res, err := dbLaunchSvc.Launch(r.Context(), targetID, uid, role, user, in.Reason, clientIP)
+		if err != nil {
+			switch {
+			case errors.Is(err, dblaunch.ErrTargetNotFound):
+				httpx.Error(w, http.StatusNotFound, err)
+			case errors.Is(err, dblaunch.ErrNotDatabase):
+				httpx.Error(w, http.StatusBadRequest, err)
+			case errors.Is(err, dblaunch.ErrPolicyDenied):
+				httpx.Error(w, http.StatusForbidden, err)
+			case errors.Is(err, dblaunch.ErrApprovalRequired):
+				httpx.Error(w, http.StatusForbidden, err)
+			case errors.Is(err, accounts.ErrNoAccountForTarget), errors.Is(err, dblaunch.ErrNoAccount):
+				httpx.Error(w, http.StatusBadRequest, err)
+			default:
+				httpx.Error(w, http.StatusBadRequest, err)
+			}
+			return
+		}
+		bus.Publish(events.Event{
+			Source: "auth", Kind: "db.launch", Severity: "info",
+			Actor: user, Target: strconv.FormatInt(targetID, 10),
+			Detail: map[string]string{
+				"session_id": res.SessionID, "target": res.TargetName,
+				"engine": res.Engine, "broker": fmt.Sprintf("%s:%d", res.BrokerHost, res.BrokerPort),
+			},
+		})
+		httpx.JSON(w, http.StatusOK, res)
+	})
+
 	// --- App credentials (CCP) ---
 	mux.HandleFunc("GET /apps", func(w http.ResponseWriter, r *http.Request) {
 		out, err := ccpSvc.List(r.Context())
@@ -1938,6 +1995,18 @@ func bootstrap(svc *auth.Service, groupSvc *groups.Service, roleSvc *roles.Servi
 		})
 		log.Printf("bootstrap: seeded default safe 'General'")
 	}
+}
+
+func envInt(key string, def int) int {
+	v := config.Get(key, "")
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 // AsJSON is a small helper to keep error logs structured.

@@ -1154,6 +1154,7 @@
       <button data-tab="ca" data-admin><span class="ico">★</span> SSH CA</button>
       <div class="section-title">Onboarding</div>
       <button data-tab="onboard"><span class="ico">⚒</span> Device Setup</button>
+      <button data-tab="integrations"><span class="ico">⎈</span> Integrations</button>
       <div class="section-title" data-admin>System</div>
       <button data-tab="settings" data-admin><span class="ico">⚙</span> Settings</button>
     </nav>
@@ -1946,6 +1947,19 @@
         <pre id="caPub">…</pre>
       </section>
 
+      <!-- Integrations catalog (Adaptive-style brokered access) -->
+      <section class="card tab" id="tab-integrations" style="display:none">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <h3 style="margin:0">Integrations</h3>
+          <span class="muted" style="font-size:12px">Brokered access — share access, not credentials</span>
+        </div>
+        <p class="desc">Connect databases, cloud, Kubernetes, and infrastructure through PAM. Native database engines use the <b>db-proxy</b> broker (JIT checkout, session audit). Register a machine with the matching protocol, link a privileged account in Safes, then launch from <b>Machines</b> or pick an integration below.</p>
+        <div class="form-panel" style="margin-bottom:16px">
+          <input id="integrationsFilter" placeholder="Filter integrations (postgres, redis, aws, cisco…)" style="width:100%;max-width:480px"/>
+        </div>
+        <div id="integrationsGrid"></div>
+      </section>
+
       <!-- Device Setup -->
       <section class="card tab" id="tab-onboard" style="display:none">
         <div class="row" style="justify-content:space-between;margin-bottom:8px">
@@ -2167,11 +2181,20 @@
               <option value="web">Web GUI (HTTPS console)</option>
               <option value="telnet">Telnet (legacy CLI)</option>
               <option value="https-api">HTTPS API</option>
+              <option value="postgres">PostgreSQL (broker)</option>
+              <option value="mysql">MySQL / MariaDB (broker)</option>
+              <option value="mssql">Microsoft SQL Server (broker)</option>
+              <option value="mongodb">MongoDB (broker)</option>
+              <option value="redis">Redis (broker)</option>
+              <option value="oracle">Oracle (broker)</option>
             </select>
             <div class="conn-segments" id="targetConnSegments" role="group" aria-label="Connection type">
               <button type="button" class="conn-seg" data-conn="ssh"><span class="seg-label">SSH</span><span class="seg-sub">CLI · port 22</span></button>
               <button type="button" class="conn-seg" data-conn="rdp"><span class="seg-label">RDP</span><span class="seg-sub">Windows desktop</span></button>
               <button type="button" class="conn-seg" data-conn="web"><span class="seg-label">Web GUI</span><span class="seg-sub">HTTPS console</span></button>
+              <button type="button" class="conn-seg" data-conn="postgres"><span class="seg-label">PostgreSQL</span><span class="seg-sub">Broker · 15432</span></button>
+              <button type="button" class="conn-seg" data-conn="mysql"><span class="seg-label">MySQL</span><span class="seg-sub">Broker · 13306</span></button>
+              <button type="button" class="conn-seg" data-conn="redis"><span class="seg-label">Redis</span><span class="seg-sub">Broker · 16379</span></button>
               <button type="button" class="conn-seg" data-conn="telnet"><span class="seg-label">Telnet</span><span class="seg-sub">Legacy CLI</span></button>
               <button type="button" class="conn-seg" data-conn="https-api"><span class="seg-label">HTTPS API</span><span class="seg-sub">REST / API</span></button>
             </div>
@@ -2181,6 +2204,8 @@
             <input class="tf-host" id="targetHost" placeholder="192.168.1.1 or hostname"/>
             <input class="tf-port" id="targetPort" type="number" value="22" title="Port"/>
           </div>
+          <label class="tf-db tf-hidden" for="targetDbName">Database name</label>
+          <input class="tf-db tf-hidden" id="targetDbName" placeholder="postgres, mydb, 0 (redis db index)"/>
           <label class="tf-web tf-hidden" for="targetWebURL">Web URL</label>
           <input class="tf-web tf-hidden" id="targetWebURL" placeholder="https://fw01.corp.local/login"/>
           <span class="field-hint tf-host">SSH and RDP sessions route through the PAM proxy; users connect after JIT approval.</span>
@@ -2450,7 +2475,7 @@ const TAB_TITLES = {
   roles: "Roles", secrets: "Vault Secrets", policies: "Access Policies",
   matrix: "Approval Matrix", requests: "Access Requests",
   sessions: "SSH Sessions", audit: "Audit Log", proxy: "Proxy Log", ca: "SSH Certificate Authority",
-  onboard: "Device Setup",
+  onboard: "Device Setup", integrations: "Integrations",
   safes: "Safes", accounts: "Privileged Accounts", checkouts: "Credential Checkouts",
   apps: "Applications (CCP)", threats: "Threat Alerts", reports: "Reports",
   settings: "System Settings",
@@ -2652,7 +2677,7 @@ function showTab(name) {
     secrets: loadSecrets, policies: loadPolicies, matrix: loadMatrix,
     requests: loadRequests, birthright: loadBirthright,
     sessions: () => { loadSessions(); startSessionAutoRefresh(); }, audit: loadAudit, proxy: loadProxy, ca: loadCA,
-    onboard: loadOnboard,
+    onboard: loadOnboard, integrations: renderIntegrations,
     safes: loadSafes, accounts: loadAccounts, checkouts: loadCheckouts,
     apps: loadApps, threats: loadThreats, reports: loadReports,
     settings: loadSettings,
@@ -3310,13 +3335,16 @@ const DEVICE_CATALOG = {
     {kind:"docker",          label:"Docker / Docker Swarm host",     protocols:["ssh","https-api"]},
   ],
   "Databases": [
-    {kind:"mysql",           label:"MySQL / MariaDB",                protocols:["ssh","https-api"]},
-    {kind:"postgres",        label:"PostgreSQL",                     protocols:["ssh","https-api"]},
-    {kind:"mssql",           label:"Microsoft SQL Server",           protocols:["rdp","ssh"]},
-    {kind:"oracle-db",       label:"Oracle Database",                protocols:["ssh"]},
-    {kind:"mongodb",         label:"MongoDB",                        protocols:["ssh"]},
-    {kind:"redis",           label:"Redis",                          protocols:["ssh"]},
+    {kind:"postgres",        label:"PostgreSQL",                     protocols:["postgres","ssh"]},
+    {kind:"mysql",           label:"MySQL / MariaDB",                protocols:["mysql","mariadb","ssh"]},
+    {kind:"mssql",           label:"Microsoft SQL Server",           protocols:["mssql","rdp","ssh"]},
+    {kind:"oracle-db",       label:"Oracle Database",                protocols:["oracle","ssh"]},
+    {kind:"mongodb",         label:"MongoDB",                        protocols:["mongodb","ssh"]},
+    {kind:"redis",           label:"Redis",                          protocols:["redis","ssh"]},
     {kind:"elastic",         label:"Elasticsearch / OpenSearch",     protocols:["ssh","web"]},
+    {kind:"cockroachdb",     label:"CockroachDB",                    protocols:["postgres","ssh"]},
+    {kind:"clickhouse",      label:"ClickHouse",                     protocols:["postgres","ssh"]},
+    {kind:"snowflake",       label:"Snowflake",                      protocols:["https-api"]},
   ],
   "Directory & Identity": [
     {kind:"active-directory",label:"Microsoft Active Directory DC",  protocols:["rdp","ssh"]},
@@ -3330,6 +3358,124 @@ const DEVICE_CATALOG = {
     {kind:"generic-rdp",     label:"Generic RDP host",               protocols:["rdp"]},
   ],
 };
+
+// INTEGRATIONS_CATALOG — Adaptive-style integration matrix (broker + SSH/API paths).
+const INTEGRATIONS_CATALOG = {
+  "Databases & Data Stores": [
+    {id:"postgres", label:"PostgreSQL", conn:"postgres", port:5432, broker:15432, desc:"Native wire-protocol broker + query audit"},
+    {id:"mysql", label:"MySQL / MariaDB", conn:"mysql", port:3306, broker:13306, desc:"Brokered TCP with PAMAUTH handshake"},
+    {id:"mssql", label:"Microsoft SQL Server", conn:"mssql", port:1433, broker:11433, desc:"JIT checkout via db-proxy"},
+    {id:"oracle", label:"Oracle", conn:"oracle", port:1521, broker:11521, desc:"Brokered infrastructure access"},
+    {id:"mongodb", label:"MongoDB", conn:"mongodb", port:27017, broker:27018, desc:"Session-scoped broker relay"},
+    {id:"redis", label:"Redis", conn:"redis", port:6379, broker:16379, desc:"Short-lived token auth at broker"},
+    {id:"cockroachdb", label:"CockroachDB", conn:"postgres", port:26257, broker:15432, desc:"PostgreSQL-compatible broker"},
+    {id:"clickhouse", label:"ClickHouse", conn:"postgres", port:8123, desc:"HTTP/SQL via SSH hop or API"},
+    {id:"elastic", label:"Elasticsearch", conn:"ssh", desc:"SSH tunnel + API policy"},
+    {id:"snowflake", label:"Snowflake", conn:"https-api", desc:"Workload identity + API token checkout"},
+  ],
+  "Data Warehouses": [
+    {id:"redshift", label:"Amazon Redshift", conn:"postgres", port:5439, desc:"PostgreSQL wire via broker"},
+    {id:"bigquery", label:"Google BigQuery", conn:"https-api", desc:"Scoped API credentials"},
+    {id:"databricks", label:"Databricks", conn:"https-api", desc:"Token broker for notebooks/ETL"},
+  ],
+  "Cloud & Kubernetes": [
+    {id:"aws", label:"AWS", conn:"https-api", desc:"IAM role / access key checkout"},
+    {id:"azure", label:"Microsoft Azure", conn:"https-api", desc:"Entra ID + scoped subscriptions"},
+    {id:"gcp", label:"Google Cloud", conn:"https-api", desc:"Service account JIT"},
+    {id:"kubernetes", label:"Kubernetes", conn:"https-api", desc:"kubectl exec / API proxy"},
+    {id:"eks", label:"Amazon EKS", conn:"https-api", desc:"Cluster-scoped kubeconfig"},
+  ],
+  "Network & Infrastructure": [
+    {id:"cisco", label:"Cisco", conn:"ssh", desc:"TACACS+ / SSH proxy"},
+    {id:"fortinet", label:"Fortinet FortiGate", conn:"web", desc:"Web proxy + TACACS GUI"},
+    {id:"juniper", label:"Juniper", conn:"ssh", desc:"Junos CLI via SSH proxy"},
+    {id:"paloalto", label:"Palo Alto PAN-OS", conn:"web", desc:"HTTPS admin via web proxy"},
+    {id:"linux", label:"Linux / Unix", conn:"ssh", desc:"SSH CA + session recording"},
+    {id:"windows", label:"Windows Server", conn:"rdp", desc:"Recorded RDP via guacd"},
+  ],
+  "Identity & Observability": [
+    {id:"okta", label:"Okta", conn:"https-api", desc:"SSO + SCIM integration"},
+    {id:"ldap", label:"LDAP / AD", conn:"ssh", desc:"Directory sync + bind checkout"},
+    {id:"datadog", label:"Datadog", conn:"https-api", desc:"API key vault checkout"},
+    {id:"splunk", label:"Splunk", conn:"https-api", desc:"HEC token broker"},
+    {id:"grafana", label:"Grafana", conn:"web", desc:"Admin API via proxy"},
+  ],
+};
+
+function renderIntegrations() {
+  const grid = $("#integrationsGrid");
+  if (!grid) return;
+  const q = ($("#integrationsFilter")?.value || "").toLowerCase();
+  let html = "";
+  for (const [cat, items] of Object.entries(INTEGRATIONS_CATALOG)) {
+    const filtered = items.filter(x =>
+      !q || [x.label, x.id, x.conn, x.desc].join(" ").toLowerCase().includes(q));
+    if (!filtered.length) continue;
+    html += `<h4 style="margin:18px 0 8px;color:var(--fg-soft)">${esc(cat)}</h4>`;
+    html += `<div class="integrations-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-bottom:8px">`;
+    for (const item of filtered) {
+      const broker = item.broker ? ` · broker :${item.broker}` : "";
+      html += `<div class="form-panel" style="padding:12px;margin:0">
+        <div style="font-weight:600;font-size:13px">${esc(item.label)}</div>
+        <div class="muted" style="font-size:11px;margin:4px 0">${esc(item.conn || "ssh")}${broker}</div>
+        <div style="font-size:12px;line-height:1.4;margin-bottom:8px">${esc(item.desc || "")}</div>
+        <button class="ghost" style="font-size:11px;padding:4px 10px" onclick="registerIntegration('${esc(item.conn)}','${esc(item.id)}')">Register machine</button>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+  grid.innerHTML = html || `<p class="muted">No integrations match filter.</p>`;
+}
+
+window.registerIntegration = (conn, kind) => {
+  resetTargetForm();
+  if (conn && $("#targetConn")) $("#targetConn").value = conn;
+  fillTargetKindSelect($("#targetKind"), kind || "postgres", {includeAny: false, forPolicy: false});
+  applyConnectionTypeUI();
+  showTab("targets");
+  openTargetModal("Register integration");
+};
+
+function showDbLaunchModal(target, res) {
+  const eng = res.engine || target.connection_type;
+  let cmd = "";
+  if (eng === "postgres") {
+    cmd = `PGPASSWORD='${res.connection_token}' psql -h ${res.broker_host} -p ${res.broker_port} -U ${res.connection_user} -d ${res.database || "postgres"}`;
+  } else if (eng === "mysql" || eng === "mariadb") {
+    cmd = `# Prepend PAMAUTH handshake then mysql protocol — use portal copy or:\n# mysql -h ${res.broker_host} -P ${res.broker_port} -u ${res.connection_user} -p'${res.connection_token}' ${res.database || ""}`;
+  } else {
+    cmd = res.connection_uri || `${eng}://${res.connection_user}@${res.broker_host}:${res.broker_port}/${res.database || ""}`;
+  }
+  const modal = document.createElement("div");
+  modal.className = "modal-backdrop show";
+  modal.innerHTML = `
+    <div class="modal" style="max-width:720px">
+      <h3>Database session — ${esc(target.name)}</h3>
+      <p class="muted">${esc(res.instructions || "Brokered access — real DB password stays in vault.")}</p>
+      <div class="pill ok" style="display:block;padding:8px 12px;margin:8px 0">Session <code>${esc(res.session_id)}</code> · engine <b>${esc(eng)}</b> · recorded</div>
+      <label class="muted" style="font-size:12px">Broker endpoint</label>
+      <pre style="font-size:12px">${esc(res.broker_host)}:${esc(String(res.broker_port))}</pre>
+      <label class="muted" style="font-size:12px">Username (broker)</label>
+      <pre style="font-size:12px">${esc(res.connection_user)}</pre>
+      <label class="muted" style="font-size:12px">One-time token (password at broker — expires with session)</label>
+      <pre id="dbTokPre" style="font-size:11px;word-break:break-all">${esc(res.connection_token)}</pre>
+      <label class="muted" style="font-size:12px;margin-top:8px">Client command</label>
+      <pre id="dbCmdPre" style="font-size:11px;max-height:100px;overflow:auto;white-space:pre-wrap">${esc(cmd)}</pre>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button class="primary" id="dbCopyCmd">Copy command</button>
+        <button class="ghost" id="dbCopyTok">Copy token</button>
+        <button class="ghost" id="dbCloseBtn">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.addEventListener("click", e => { if (e.target === modal) close(); });
+  modal.querySelector("#dbCloseBtn").onclick = close;
+  modal.querySelector("#dbCopyCmd").onclick = () => { copyToClipboard(cmd); toast("Command copied", "ok"); };
+  modal.querySelector("#dbCopyTok").onclick = () => { copyToClipboard(res.connection_token); toast("Token copied", "ok"); };
+}
+
+$("#integrationsFilter")?.addEventListener("input", renderIntegrations);
 
 // kindLabel returns the human label for a kind.
 function kindLabel(kind) {
@@ -3373,16 +3519,26 @@ function fillTargetKindSelect(el, current, opts) {
   if (current) el.value = current;
 }
 
-const DEFAULT_PORTS = { ssh: 22, rdp: 3389, telnet: 23, web: 443, "https-api": 443 };
+const DEFAULT_PORTS = {
+  ssh: 22, rdp: 3389, telnet: 23, web: 443, "https-api": 443,
+  postgres: 5432, mysql: 3306, mariadb: 3306, mssql: 1433,
+  mongodb: 27017, redis: 6379, oracle: 1521,
+};
+const DB_CONN_TYPES = new Set(["postgres","mysql","mariadb","mssql","mongodb","redis","oracle"]);
+function isDbConnection(ct) { return DB_CONN_TYPES.has(ct || ""); }
 
 function applyConnectionTypeUI() {
   const ct = $("#targetConn").value;
   const isWeb = ct === "web" || ct === "https-api";
+  const isDb = isDbConnection(ct);
   document.querySelectorAll("#targetModal .tf-host").forEach(el => {
     el.classList.toggle("tf-hidden", isWeb);
   });
   document.querySelectorAll("#targetModal .tf-web").forEach(el => {
     el.classList.toggle("tf-hidden", !isWeb);
+  });
+  document.querySelectorAll("#targetModal .tf-db").forEach(el => {
+    el.classList.toggle("tf-hidden", !isDb);
   });
   document.querySelectorAll("#targetConnSegments .conn-seg").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.conn === ct);
@@ -4087,6 +4243,18 @@ window.launchTarget = async id => {
     toast("Telnet command copied (legacy — prefer SSH)", "ok");
     return;
   }
+  if (isDbConnection(ct)) {
+    try {
+      const res = await api(`/auth/targets/${t.id}/db-launch`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "Database session via PAM broker" }),
+      });
+      showDbLaunchModal(t, res);
+    } catch (e) {
+      toast("DB launch failed: " + e.message, "err");
+    }
+    return;
+  }
   if (ct === "web" || ct === "https-api") {
     if (!t.web_url) {
       toast("No Web URL set for this target — admin must edit it", "err");
@@ -4371,6 +4539,7 @@ window.editTarget = id => {
   $("#targetOSVersion").value = t.os_version || "";
   $("#targetHost").value = t.host || ""; $("#targetPort").value = t.port || 22;
   $("#targetWebURL").value = t.web_url || "";
+  if ($("#targetDbName")) $("#targetDbName").value = t.db_name || "";
   $("#targetTier").value = t.tier; $("#targetTags").value = t.tags || "";
   populateTargetLocationSelect(Number(t.location_id) || 0);
   applyConnectionTypeUI();
@@ -4387,6 +4556,7 @@ $("#targetSaveBtn").onclick = async () => {
     host: $("#targetHost").value.trim(),
     port: parseInt($("#targetPort").value, 10) || DEFAULT_PORTS[$("#targetConn").value] || 22,
     web_url: $("#targetWebURL").value.trim(),
+    db_name: ($("#targetDbName") && $("#targetDbName").value.trim()) || "",
     tier: parseInt($("#targetTier").value,10),
     tags: $("#targetTags").value.trim(),
     location_id: locVal ? parseInt(locVal, 10) : 0,

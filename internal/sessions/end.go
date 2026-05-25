@@ -14,6 +14,11 @@ func WebVaultSecretName(sessionID string) string {
 	return "_web_session_" + sessionID
 }
 
+// DBVaultSecretName is the vault key for brokered database session credentials.
+func DBVaultSecretName(sessionID string) string {
+	return "_db_session_" + sessionID
+}
+
 // End marks a session ended in the database and removes web vault credentials when applicable.
 // Returns true if the session was active and is now ended.
 func End(ctx context.Context, d *db.DB, v *vault.Vault, sessionID, reason string) (bool, error) {
@@ -38,6 +43,8 @@ func End(ctx context.Context, d *db.DB, v *vault.Vault, sessionID, reason string
 			_ = v.DeleteSecret(ctx, WebVaultSecretName(sessionID))
 		case strings.HasPrefix(sessionID, "rdp-"):
 			_ = v.DeleteSecret(ctx, "_rdp_session_"+sessionID)
+		case strings.HasPrefix(sessionID, "db-"):
+			_ = v.DeleteSecret(ctx, DBVaultSecretName(sessionID))
 		}
 	}
 	return true, nil
