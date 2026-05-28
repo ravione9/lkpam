@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -51,6 +52,17 @@ func TestFortigateLoginOKLegacyPrefix(t *testing.T) {
 	}
 	if fortigateLoginOK(&http.Response{StatusCode: 200}, []byte(`0`)) {
 		t.Fatal("leading 0 should fail")
+	}
+}
+
+func TestFortigateAuthAPIResponseSuccess(t *testing.T) {
+	body := []byte(`{"status_code":5,"status_message":"LOGIN_SUCCESS"}`)
+	var ar fortigateAuthAPIResponse
+	if err := json.Unmarshal(body, &ar); err != nil {
+		t.Fatal(err)
+	}
+	if ar.StatusCode != 5 || ar.StatusMessage != "LOGIN_SUCCESS" {
+		t.Fatalf("unexpected %+v", ar)
 	}
 }
 

@@ -222,7 +222,7 @@ func ensureFortiGateAuthenticated(ctx context.Context, client *http.Client, targ
 	if !ok {
 		return false
 	}
-	if !fortigateFormLogin(ctx, client, target, user, pass, assetPrefix) {
+	if !fortigateFormLogin(ctx, client, target, user, pass, "", assetPrefix) {
 		return false
 	}
 	nJar := len(collectJarCookies(client.Jar, target, "/"))
@@ -242,12 +242,20 @@ func fortigateLogincheckPaths(assetPrefix string) []string {
 	return paths
 }
 
-// fortigateFormLogin performs FortiOS admin GUI login via POST /logincheck.
-// FortiGate does not accept HTTP Basic auth on the login page — that yields
-// "Authentication failure" while still showing the form.
-func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.URL, username, password, assetPrefix string) bool {
+// fortigateFormLogin establishes a FortiOS admin session. FortiOS 7.x needs
+// POST /api/v2/authentication (session_key cookie); legacy /logincheck only
+// sets APSCOOKIE which is insufficient for /api/v2/static/* (401).
+func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.URL, username, password, tokenCode, assetPrefix string) bool {
 	if client == nil || target == nil || username == "" || password == "" {
 		return false
+	}
+	if fortigateLoginViaAPI(ctx, client, target, username, password, tokenCode) {
+		log.Printf("web-proxy: fortigate login ok via api/v2/authentication user=%q", username)
+		return true
+	}
+	loginPass := password
+	if tokenCode != "" {
+		loginPass += tokenCode
 	}
 	extras := fortigateFetchLoginForm(ctx, client, target, assetPrefix)
 	for _, checkPath := range fortigateLogincheckPaths(assetPrefix) {
@@ -259,7 +267,7 @@ func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.UR
 				}
 			}
 			form.Set("username", username)
-			form.Set(passField, password)
+			form.Set(passField, loginPass)
 			form.Set("ajax", "1")
 			u := buildUpstreamURL(target, checkPath, nil)
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(form.Encode()))
@@ -298,7 +306,7 @@ func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.UR
 				}
 			}
 			form.Set("username", username)
-			form.Set(passField, password)
+			form.Set(passField, loginPass)
 			u := buildUpstreamURL(target, checkPath, nil)
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(form.Encode()))
 			if err != nil {
@@ -319,6 +327,96 @@ func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.UR
 			if fortigateCompleteSession(ctx, client, target, assetPrefix, body) {
 				log.Printf("web-proxy: fortigate form login ok (redirect) user=%q url=%s", username, u)
 				return true
+			}
+		}
+	}
+	return false
+}
+
+type fortigateAuthAPIResponse struct {
+	StatusCode    int    `json:"status_code"`
+	StatusMessage string `json:"status_message"`
+}
+
+// fortigateLoginViaAPI uses POST /api/v2/authentication (FortiOS 6.4.2+) which
+// returns session_key + ccsrftoken cookies usable by the NG admin SPA. Plain
+// /logincheck often leaves only APSCOOKIE_* and /api/v2/static/* returns 401.
+func fortigateLoginViaAPI(ctx context.Context, client *http.Client, target *url.URL, username, password, tokenCode string) bool {
+	if client == nil || target == nil {
+		return false
+	}
+	const path = "/api/v2/authentication"
+	ackPre, ackPost := true, true
+
+	for step := 0; step < 5; step++ {
+		payload := map[string]interface{}{
+			"username":            username,
+			"secretkey":           password,
+			"ack_pre_disclaimer":  ackPre,
+			"ack_post_disclaimer": ackPost,
+		}
+		if tokenCode != "" {
+			payload["token_code"] = tokenCode
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		pageURL := buildUpstreamURL(target, path, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, pageURL, bytes.NewReader(raw))
+		if err != nil {
+			return false
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		tuneUpstreamRequest(req, target, path)
+		mergeUpstreamCookies(req, &http.Request{}, client.Jar, target, true)
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("web-proxy: fortigate api auth error: %v", err)
+			return false
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		fortigateStoreResponseCookies(client.Jar, pageURL, resp)
+
+		if resp.StatusCode == http.StatusNotFound {
+			log.Printf("web-proxy: fortigate api auth unavailable (404) — trying logincheck")
+			return false
+		}
+
+		var ar fortigateAuthAPIResponse
+		if err := json.Unmarshal(respBody, &ar); err != nil {
+			log.Printf("web-proxy: fortigate api auth bad json status=%d body=%q", resp.StatusCode, truncate(string(respBody), 120))
+			return false
+		}
+		log.Printf("web-proxy: fortigate api auth status_code=%d msg=%q cookies=[%s]",
+			ar.StatusCode, ar.StatusMessage, fortigateJarCookieNames(client.Jar, target))
+
+		switch ar.StatusCode {
+		case 5:
+			fortigatePrimeAuthenticatedSession(ctx, client, target, "")
+			return fortigateValidateSession(ctx, client, target)
+		case 3:
+			ackPost = true
+			ackPre = true
+			continue
+		case -2:
+			ackPre = true
+			continue
+		case 2:
+			if tokenCode != "" {
+				continue
+			}
+			log.Printf("web-proxy: fortigate api auth requires 2FA token_code")
+			return false
+		case -1:
+			log.Printf("web-proxy: fortigate api auth LOGIN_FAILED")
+			return false
+		default:
+			if ar.StatusCode < 0 {
+				log.Printf("web-proxy: fortigate api auth failed code=%d msg=%q", ar.StatusCode, ar.StatusMessage)
+				return false
 			}
 		}
 	}
@@ -648,10 +746,6 @@ func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID st
 		writeFortiLoginJSON(http.StatusBadRequest, map[string]string{"error": "MFA must be 6 digits or left empty"})
 		return
 	}
-	loginPass := pass
-	if len(mfa) == 6 {
-		loginPass += mfa
-	}
 
 	state.mu.Lock()
 	assetPrefix := state.assetPrefix
@@ -662,7 +756,7 @@ func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID st
 
 	log.Printf("web-proxy: pam-forti-login session=%s user=%q target=%s mfa=%v",
 		sessionID, user, target.String(), len(mfa) == 6)
-	ok := fortigateFormLogin(r.Context(), state.client, target, user, loginPass, assetPrefix)
+	ok := fortigateFormLogin(r.Context(), state.client, target, user, pass, mfa, assetPrefix)
 	if !ok {
 		writeFortiLoginJSON(http.StatusUnauthorized, map[string]string{
 			"error": "FortiGate session not established — logincheck or post-login disclaimer failed. Check: docker compose logs gateway --tail 30",
