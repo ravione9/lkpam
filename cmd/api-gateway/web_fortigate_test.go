@@ -53,3 +53,14 @@ func TestFortigateLoginOKLegacyPrefix(t *testing.T) {
 		t.Fatal("leading 0 should fail")
 	}
 }
+
+func TestFortigateParseDocumentLocation(t *testing.T) {
+	body := []byte(`1document.location="/prompt?viewOnly&redir=%2F";`)
+	got := fortigateParseDocumentLocation(body)
+	if got != "/prompt?viewOnly&redir=%2F" {
+		t.Fatalf("got %q", got)
+	}
+	if p := fortigateAbsPath(got); p != got {
+		t.Fatalf("abs path %q", p)
+	}
+}
