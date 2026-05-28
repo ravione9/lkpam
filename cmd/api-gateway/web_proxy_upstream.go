@@ -52,7 +52,8 @@ func upstreamSessionState(sessionID string) *webSessionState {
 	s := &webSessionState{
 		client: &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: &tlsConfig{InsecureSkipVerify: true},
+				TLSClientConfig:     &tlsConfig{InsecureSkipVerify: true},
+				DisableCompression:  true, // keep raw gzip; rewrite path decompresses explicitly
 			},
 			Jar: jar,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {

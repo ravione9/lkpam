@@ -687,9 +687,14 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	ct := upResp.Header.Get("Content-Type")
 	mimeByPath := mimeForWebPath(rest)
 	if isWebManifestPath(rest) {
-		body, _ := io.ReadAll(upResp.Body)
+		rawBody, _ := io.ReadAll(upResp.Body)
+		body, err := decompressUpstreamBody(rawBody, upResp.Header.Get("Content-Encoding"))
+		if err != nil {
+			body = rawBody
+		}
 		body = coerceWebManifestBody(body, upResp.StatusCode)
 		w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+		stripResponseEncoding(w.Header())
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(http.StatusOK)
 		w.Write(body)
@@ -697,7 +702,13 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	}
 	rewriteBody := shouldRewriteWebBody(ct) || shouldRewriteWebPath(rest)
 	if rewriteBody {
-		body, _ := io.ReadAll(upResp.Body)
+		rawBody, _ := io.ReadAll(upResp.Body)
+		body, err := decompressUpstreamBody(rawBody, upResp.Header.Get("Content-Encoding"))
+		if err != nil {
+			log.Printf("web-proxy: decompress session=%s url=%s: %v", sessionID, upstreamURL, err)
+			writeWebProxyError(w, rest, "proxy decode error", http.StatusBadGateway)
+			return
+		}
 		// Asset path (.js/.css/.json/.woff…) with HTML body = appliance SPA
 		// fallback (FortiOS returns its login page for any unknown asset).
 		// Returning that HTML to the browser causes "Unexpected token '<'"
@@ -726,6 +737,8 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		} else if ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
+		stripResponseEncoding(w.Header())
+		w.Header().Del("Content-Length")
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(upResp.StatusCode)
 		w.Write(body)
