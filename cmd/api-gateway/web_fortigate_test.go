@@ -66,6 +66,21 @@ func TestFortigateAuthAPIResponseSuccess(t *testing.T) {
 	}
 }
 
+func TestIsFortiBuildManifestPath(t *testing.T) {
+	for _, p := range []string{
+		"/api/v2/static/fweb_build.json",
+		"/api/v2/static/fweb_build.json?vdom=root",
+		"/login/api/v2/static/fweb_build.json",
+	} {
+		if !isFortiBuildManifestPath(p) {
+			t.Fatalf("expected match: %s", p)
+		}
+	}
+	if isFortiBuildManifestPath("/api/v2/static/other.json") {
+		t.Fatal("should not match other static files")
+	}
+}
+
 func TestFortigateParseDocumentLocation(t *testing.T) {
 	body := []byte(`1document.location="/prompt?viewOnly&redir=%2F";`)
 	got := fortigateParseDocumentLocation(body)

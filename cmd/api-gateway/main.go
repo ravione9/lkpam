@@ -691,6 +691,19 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 			log.Printf("web-proxy: fortigate api 401 session=%s url=%s forti_done=%v jar_cookies=%d portal_pw=%v",
 				sessionID, upstreamURL, fortiDone, len(collectJarCookies(httpClient.Jar, targetURL, rest)), creds.PortalPassword != "")
 		}
+		// fweb_build.json: some FortiOS builds 401 even for valid admin sessions.
+		// The SPA reads .build/.version off it and crashes (Cannot read 'message'
+		// of undefined) if the fetch rejects, so serve a synthetic stub.
+		if fortiDone && upResp.StatusCode == http.StatusUnauthorized && isFortiBuildManifestPath(rest) {
+			io.Copy(io.Discard, upResp.Body)
+			upResp.Body.Close()
+			log.Printf("web-proxy: fortigate fweb_build.json 401 — serving synthetic stub session=%s", sessionID)
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(fortiBuildManifestStub)
+			return
+		}
 		if fortiDone {
 			syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
 		}

@@ -193,6 +193,19 @@ func fortiLoginCredentials(creds weblaunch.SessionCreds) (user, pass string, ok 
 }
 
 // isFortinetPreAuthRequest is true for login-page assets that must stay unauthenticated.
+// fortiBuildManifestStub mirrors the shape of FortiOS /api/v2/static/fweb_build.json
+// just enough for the NG SPA to bootstrap when the real endpoint refuses to serve it.
+var fortiBuildManifestStub = []byte(`{"build":"0","version":"0.0.0","results":{"build":"0","version":"0.0.0"}}`)
+
+// isFortiBuildManifestPath matches /api/v2/static/fweb_build.json (with optional query/vdom).
+func isFortiBuildManifestPath(rest string) bool {
+	p := strings.ToLower(rest)
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p = p[:i]
+	}
+	return strings.HasSuffix(p, "/api/v2/static/fweb_build.json") || p == "/api/v2/static/fweb_build.json"
+}
+
 func isFortinetPreAuthRequest(rest string) bool {
 	if isPublicWebAsset(rest) {
 		return true
