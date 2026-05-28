@@ -535,17 +535,14 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		return
 	}
 
-	// FortiGate: server-side form login (never Basic auth — shows "Authentication failure").
-	if r.Method == http.MethodGet && isFortinetSession(creds, state) && creds.Username != "" && creds.Password != "" {
+	// FortiGate: server-side login before authenticated SPA/API paths (TACACS uses portal creds).
+	if isFortinetSession(creds, state) && !isFortinetPreAuthRequest(rest) {
 		state.mu.Lock()
-		tryLogin := !state.fortiLoginDone && !isPublicWebAsset(rest)
+		needLogin := !state.fortiLoginDone
 		assetPrefix := state.assetPrefix
 		state.mu.Unlock()
-		if tryLogin {
-			if fortigateFormLogin(r.Context(), httpClient, targetURL, creds.Username, creds.Password, assetPrefix) {
-				state.mu.Lock()
-				state.fortiLoginDone = true
-				state.mu.Unlock()
+		if needLogin {
+			if ensureFortiGateAuthenticated(r.Context(), httpClient, targetURL, creds, state, assetPrefix) {
 				syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
 			}
 		}
@@ -572,7 +569,11 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		primeUpstreamSession(r.Context(), httpClient, targetURL)
 	}
 
-	upstream, upstreamURL, err := buildWebUpstreamRequest(r, targetURL, effectiveRest, upQ, sessionID, creds, httpClient.Jar)
+	state.mu.Lock()
+	preferJarCookies := state.fortiLoginDone
+	state.mu.Unlock()
+
+	upstream, upstreamURL, err := buildWebUpstreamRequest(r, targetURL, effectiveRest, upQ, sessionID, creds, httpClient.Jar, preferJarCookies)
 	if err != nil {
 		writeWebProxyError(w, rest, "proxy build error: "+err.Error(), http.StatusBadGateway)
 		return
@@ -590,6 +591,34 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	if err != nil {
 		writeWebProxyError(w, rest, "proxy error: "+err.Error(), http.StatusBadGateway)
 		return
+	}
+
+	// FortiGate: SPA API 401 before login — authenticate with portal/TACACS creds and retry once.
+	if upResp.StatusCode == http.StatusUnauthorized &&
+		strings.HasPrefix(strings.ToLower(rest), "/api/") &&
+		isFortinetSession(creds, state) {
+		state.mu.Lock()
+		needLogin := !state.fortiLoginDone
+		assetPrefix := state.assetPrefix
+		state.mu.Unlock()
+		if needLogin {
+			io.Copy(io.Discard, upResp.Body)
+			upResp.Body.Close()
+			if ensureFortiGateAuthenticated(r.Context(), httpClient, targetURL, creds, state, assetPrefix) {
+				syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
+				preferJarCookies = true
+				upstream, upstreamURL, err = buildWebUpstreamRequest(r, targetURL, effectiveRest, upQ, sessionID, creds, httpClient.Jar, true)
+				if err != nil {
+					writeWebProxyError(w, rest, "proxy retry build error: "+err.Error(), http.StatusBadGateway)
+					return
+				}
+				upResp, err = httpClient.Do(upstream)
+				if err != nil {
+					writeWebProxyError(w, rest, "proxy retry error: "+err.Error(), http.StatusBadGateway)
+					return
+				}
+			}
+		}
 	}
 
 	if isLogincheck {
@@ -651,6 +680,19 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	if portalTok == "" {
 		if c, err := r.Cookie("pam_web_tok"); err == nil {
 			portalTok = strings.TrimSpace(c.Value)
+		}
+	}
+
+	state.mu.Lock()
+	fortiDone := state.fortiLoginDone
+	state.mu.Unlock()
+	if isFortinetSession(creds, state) {
+		if upResp.StatusCode == http.StatusUnauthorized && strings.HasPrefix(strings.ToLower(rest), "/api/") {
+			log.Printf("web-proxy: fortigate api 401 session=%s url=%s forti_done=%v jar_cookies=%d portal_pw=%v",
+				sessionID, upstreamURL, fortiDone, len(collectJarCookies(httpClient.Jar, targetURL, rest)), creds.PortalPassword != "")
+		}
+		if fortiDone {
+			syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
 		}
 	}
 
@@ -755,7 +797,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 
 // buildWebUpstreamRequest constructs the outbound request to the device,
 // stripping internal PAM headers/cookies and conditionally attaching Basic Auth.
-func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, upQ url.Values, sessionID string, creds weblaunch.SessionCreds, jar http.CookieJar) (*http.Request, string, error) {
+func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, upQ url.Values, sessionID string, creds weblaunch.SessionCreds, jar http.CookieJar, preferJarCookies bool) (*http.Request, string, error) {
 	upstreamURL := buildUpstreamURL(targetURL, rest, upQ)
 	upstream, err := http.NewRequestWithContext(r.Context(), r.Method, upstreamURL, r.Body)
 	if err != nil {
@@ -769,7 +811,10 @@ func buildWebUpstreamRequest(r *http.Request, targetURL *url.URL, rest string, u
 	upstream.Header.Del("Authorization")
 	rewriteUpstreamReferer(upstream.Header, targetURL, sessionID)
 	tuneUpstreamRequest(upstream, targetURL, rest)
-	mergeUpstreamCookies(upstream, r, jar, targetURL)
+	mergeUpstreamCookies(upstream, r, jar, targetURL, preferJarCookies)
+	if preferJarCookies && isFortinetTarget(creds) && strings.HasPrefix(strings.ToLower(rest), "/api/") {
+		fortigateAttachCSRF(upstream, jar, targetURL)
+	}
 
 	// FortiGate/PAN-OS use form POST /logincheck — never attach Basic Auth on GET login paths.
 	if shouldUseBasicAuth(r, rest, creds) {
@@ -829,8 +874,11 @@ func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *
 	}
 
 	wantNonHTML := assetExpectsScriptStyle(rest)
+	state.mu.Lock()
+	preferJar := state.fortiLoginDone
+	state.mu.Unlock()
 	for _, c := range tries {
-		altReq, altURL, err := buildWebUpstreamRequest(r, targetURL, c.path, upQ, sessionID, creds, httpClient.Jar)
+		altReq, altURL, err := buildWebUpstreamRequest(r, targetURL, c.path, upQ, sessionID, creds, httpClient.Jar, preferJar)
 		if err != nil {
 			continue
 		}
@@ -855,7 +903,7 @@ func retryAssetWithFallback(r *http.Request, state *webSessionState, targetURL *
 		io.Copy(io.Discard, altResp.Body)
 		altResp.Body.Close()
 	}
-	finalReq, finalURL, err := buildWebUpstreamRequest(r, targetURL, rest, upQ, sessionID, creds, httpClient.Jar)
+	finalReq, finalURL, err := buildWebUpstreamRequest(r, targetURL, rest, upQ, sessionID, creds, httpClient.Jar, preferJar)
 	if err != nil {
 		return nil, "", false
 	}

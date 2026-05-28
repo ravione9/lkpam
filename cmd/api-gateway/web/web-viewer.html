@@ -243,7 +243,12 @@
           frame.setAttribute("sandbox", "allow-forms allow-scripts allow-same-origin allow-popups allow-downloads");
         }
 
-        frame.src = proxyURL;
+        if (isForti && (fortiPortalPassword || (info.portal_password || "").trim())) {
+          if (!fortiPortalPassword) fortiPortalPassword = String(info.portal_password || "").trim();
+          loginViaPAM();
+        } else {
+          frame.src = proxyURL;
+        }
         frame.onload = () => {
           try {
             const doc = frame.contentDocument;

@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -173,6 +174,78 @@ func rewriteProxySetCookie(cookie, sessionID string) string {
 		out = append(out, "Path="+pfx)
 	}
 	return strings.Join(out, "; ")
+}
+
+// browserSetCookie formats a device cookie for the browser under /web/{sessionID}/.
+func browserSetCookie(c *http.Cookie, sessionID string) string {
+	if c == nil {
+		return ""
+	}
+	pfx := "/web/" + sessionID + "/"
+	var b strings.Builder
+	b.WriteString(c.Name)
+	b.WriteString("=")
+	b.WriteString(c.Value)
+	b.WriteString("; Path=")
+	b.WriteString(pfx)
+	if c.HttpOnly {
+		b.WriteString("; HttpOnly")
+	}
+	if c.MaxAge != 0 {
+		b.WriteString("; Max-Age=")
+		b.WriteString(strconv.Itoa(c.MaxAge))
+	} else if !c.Expires.IsZero() {
+		b.WriteString("; Expires=")
+		b.WriteString(c.Expires.UTC().Format(http.TimeFormat))
+	}
+	switch c.SameSite {
+	case http.SameSiteStrictMode:
+		b.WriteString("; SameSite=Strict")
+	case http.SameSiteLaxMode:
+		b.WriteString("; SameSite=Lax")
+	case http.SameSiteNoneMode:
+		b.WriteString("; SameSite=None")
+	default:
+		b.WriteString("; SameSite=Lax")
+	}
+	return b.String()
+}
+
+// collectJarCookies gathers cookies from the upstream jar across common FortiOS/PAN paths.
+func collectJarCookies(jar http.CookieJar, target *url.URL, requestPath string) []*http.Cookie {
+	if jar == nil || target == nil {
+		return nil
+	}
+	host := upstreamHost(target)
+	scheme := target.Scheme
+	paths := []string{requestPath, "/api/v2/", "/api/", "/ng/", "/ui/", "/login/", "/"}
+	seen := map[string]bool{}
+	var out []*http.Cookie
+	for _, path := range paths {
+		if path == "" {
+			path = "/"
+		}
+		u := &url.URL{Scheme: scheme, Host: host, Path: path}
+		for _, c := range jar.Cookies(u) {
+			if c.Name == "" || seen[c.Name] {
+				continue
+			}
+			seen[c.Name] = true
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// syncUpstreamCookiesToBrowser copies device session cookies from the proxy's
+// upstream jar into the browser Set-Cookie headers (path rewritten for /web/sid/).
+func syncUpstreamCookiesToBrowser(w http.ResponseWriter, jar http.CookieJar, target *url.URL, sessionID string) {
+	if jar == nil || target == nil {
+		return
+	}
+	for _, c := range collectJarCookies(jar, target, "/") {
+		w.Header().Add("Set-Cookie", browserSetCookie(c, sessionID))
+	}
 }
 
 // upstreamHost returns the Host header value appliances expect (no :443/:80 suffix).

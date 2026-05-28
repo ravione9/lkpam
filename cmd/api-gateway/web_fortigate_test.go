@@ -44,3 +44,12 @@ func TestFortigateLoginOKJSON(t *testing.T) {
 		t.Fatal("retcode 0 should succeed")
 	}
 }
+
+func TestFortigateLoginOKLegacyPrefix(t *testing.T) {
+	if !fortigateLoginOK(&http.Response{StatusCode: 200}, []byte(`1document.location="/ng/"`)) {
+		t.Fatal("leading 1 should succeed")
+	}
+	if fortigateLoginOK(&http.Response{StatusCode: 200}, []byte(`0`)) {
+		t.Fatal("leading 0 should fail")
+	}
+}
