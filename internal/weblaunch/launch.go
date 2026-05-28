@@ -63,11 +63,12 @@ func SessionSecretName(sessionID string) string {
 
 // SessionCreds is the vault payload for a web session.
 type SessionCreds struct {
-	Username       string `json:"username"`
-	Password       string `json:"password"`
-	TargetURL      string `json:"target_url"`
-	TargetKind     string `json:"target_kind,omitempty"`
-	PortalUsername string `json:"portal_username,omitempty"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
+	TargetURL       string `json:"target_url"`
+	TargetKind      string `json:"target_kind,omitempty"`
+	PortalUsername  string `json:"portal_username,omitempty"`
+	PortalPassword  string `json:"portal_password,omitempty"` // cached portal password (append MFA for FortiGate)
 }
 
 // AuthHint returns user-facing login guidance for the web viewer.
@@ -77,6 +78,9 @@ func AuthHint(c SessionCreds, hasAccount bool) string {
 			return "FortiGate: PAM logs in with the linked privileged account automatically (form login, not TACACS)."
 		}
 		if c.PortalUsername != "" {
+			if c.PortalPassword != "" {
+				return "FortiGate uses TACACS to PAM. Username and portal password are prefilled — append your 6-digit MFA to the password (no space), then Login. FortiGate TACACS must have authorization enable and PAP auth type."
+			}
 			return "FortiGate uses TACACS to PAM. Username is prefilled. Password = your portal password + 6-digit MFA (no space). FortiGate TACACS must have authorization enable and PAP auth type."
 		}
 		return "FortiGate uses TACACS to PAM for GUI login. Use your PAM portal username; password + MFA appended with no space."
@@ -150,6 +154,13 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 	sessionID := fmt.Sprintf("web-%d-%d", time.Now().UnixNano(), targetID)
 	username, password, hasAccount := s.lookupAccount(ctx, targetID)
 
+	portalPassword := ""
+	if userID > 0 && s.Vault != nil {
+		if pw, err := s.Vault.GetSecret(ctx, vault.UserPassthroughKey(userID)); err == nil && len(pw) > 0 {
+			portalPassword = string(pw)
+		}
+	}
+
 	// Store credentials in vault so the proxy can retrieve them.
 	creds := SessionCreds{
 		Username:       username,
@@ -157,6 +168,7 @@ func (s *Service) Launch(ctx context.Context, targetID, userID int64, userRole, 
 		TargetURL:      webURL,
 		TargetKind:     kind,
 		PortalUsername: strings.TrimSpace(portalUsername),
+		PortalPassword: portalPassword,
 	}
 	if err := storeSessionCreds(ctx, s.Vault, sessionID, creds); err != nil {
 		return nil, fmt.Errorf("store web session credentials: %w", err)
@@ -213,8 +225,8 @@ func (s *Service) lookupAccount(ctx context.Context, targetID int64) (username, 
 }
 
 func storeSessionCreds(ctx context.Context, v *vault.Vault, sessionID string, c SessionCreds) error {
-	payload := fmt.Sprintf("%s\n%s\n%s\n%s\n%s",
-		c.Username, c.Password, c.TargetURL, c.TargetKind, c.PortalUsername)
+	payload := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
+		c.Username, c.Password, c.TargetURL, c.TargetKind, c.PortalUsername, c.PortalPassword)
 	return v.PutSecret(ctx, SessionSecretName(sessionID), []byte(payload), nil)
 }
 
@@ -224,7 +236,7 @@ func LoadSessionCreds(ctx context.Context, v *vault.Vault, sessionID string) (Se
 	if err != nil {
 		return SessionCreds{}, err
 	}
-	parts := strings.SplitN(string(raw), "\n", 5)
+	parts := strings.SplitN(string(raw), "\n", 6)
 	c := SessionCreds{}
 	if len(parts) > 0 {
 		c.Username = parts[0]
@@ -240,6 +252,9 @@ func LoadSessionCreds(ctx context.Context, v *vault.Vault, sessionID string) (Se
 	}
 	if len(parts) > 4 {
 		c.PortalUsername = parts[4]
+	}
+	if len(parts) > 5 {
+		c.PortalPassword = parts[5]
 	}
 	return c, nil
 }

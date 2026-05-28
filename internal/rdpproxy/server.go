@@ -496,11 +496,18 @@ func findGuacInDir(dir string) string {
 	var best string
 	var bestMod time.Time
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".guac") {
+		if e.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(e.Name())
+		if ext == ".log" || strings.HasSuffix(e.Name(), ".timing") {
+			continue
+		}
+		if ext != ".guac" && ext != "" {
 			continue
 		}
 		info, err := e.Info()
-		if err != nil {
+		if err != nil || info.Size() == 0 {
 			continue
 		}
 		if info.ModTime().After(bestMod) {

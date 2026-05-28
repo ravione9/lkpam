@@ -5576,6 +5576,7 @@ function renderSessions() {
     }
     if (!active && s.recording_path) {
       const isLog = /\.log$/i.test(s.recording_path);
+      const isBrowserSSH = proto === "SSH" && !isLog;
       if (isLog) {
         const vBtn = document.createElement("button");
         vBtn.className = "ghost";
@@ -5595,6 +5596,15 @@ function renderSessions() {
         pBtn.title = "Play recording in browser";
         pBtn.addEventListener("click", () => playGuacRecording(s.id));
         actions.appendChild(pBtn);
+        if (isBrowserSSH) {
+          const vBtn = document.createElement("button");
+          vBtn.className = "ghost";
+          vBtn.style.marginLeft = "6px";
+          vBtn.textContent = "View log";
+          vBtn.title = "Keystroke transcript from ssh-proxy";
+          vBtn.addEventListener("click", () => viewLogRecording(s.id));
+          actions.appendChild(vBtn);
+        }
         const dBtn = document.createElement("button");
         dBtn.className = "ghost";
         dBtn.style.marginLeft = "6px";
@@ -5661,7 +5671,7 @@ window.playGuacRecording = sid => {
 
 window.viewLogRecording = async sid => {
   try {
-    const r = await fetch("/api/audit/sessions/" + encodeURIComponent(sid) + "/recording", {
+    const r = await fetch("/api/audit/sessions/" + encodeURIComponent(sid) + "/recording?kind=log", {
       headers: { Authorization: "Bearer " + token },
     });
     if (!r.ok) throw new Error(await r.text() || "could not load log");

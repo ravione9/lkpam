@@ -292,7 +292,7 @@ func injectFortinetLoginAssist(body []byte, creds weblaunch.SessionCreds, sessio
 	}
 	body = neutralizeFortinetFrameBusters(body)
 	targetURL, _ := url.Parse(creds.TargetURL)
-	script := fortinetProxyBridgeScript(sessionID, creds.PortalUsername, targetURL)
+	script := fortinetProxyBridgeScript(sessionID, creds.PortalUsername, creds.PortalPassword, targetURL)
 	// Inject as EARLY as possible (right after <head>) so subsequent inline
 	// scripts cannot navigate away before our location-setter override loads.
 	if i := bytes.Index(bytes.ToLower(body), []byte("<head>")); i >= 0 {
@@ -359,7 +359,7 @@ func loginAssetPrefixFromTarget(rawURL string) string {
 // Location.prototype, which is what FortiOS uses to "frame-bust" out of any
 // embedded viewer. Without this hook, FortiOS does `top.location.href = "https://192.168.48.5/login"`
 // and the browser navigates straight to the firewall, bypassing PAM.
-func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []byte {
+func fortinetProxyBridgeScript(sessionID, portalUser, portalPass string, target *url.URL) []byte {
 	pfx := "/web/" + sessionID
 	hosts := []string{}
 	if target != nil {
@@ -368,6 +368,7 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
 	hostsJSON, _ := json.Marshal(hosts)
 	pfxJSON, _ := json.Marshal(pfx)
 	userJSON, _ := json.Marshal(portalUser)
+	passJSON, _ := json.Marshal(portalPass)
 	return []byte(`<script>(function(){
 try{
   var pfx=` + string(pfxJSON) + `;
@@ -440,17 +441,35 @@ try{
       if(m){var nu=fix(m[1].trim());metas[i].setAttribute("content",c.replace(m[1],nu));}
     }
   }catch(e){}
-  // Pre-fill portal username so user just types password+MFA.
-  try{
+  // Pre-fill portal username/password (append MFA digits before Login).
+  function prefillLogin(){
     var pu=` + string(userJSON) + `;
+    var pp=` + string(passJSON) + `;
+    var done=false;
     if(pu){
-      var sel=["input[name=username]","input[name=ajax_username]","#username","input[id*=user i]","input[type=text]"];
-      for(var i=0;i<sel.length;i++){
-        var el=document.querySelector(sel[i]);
-        if(el&&!el.value){el.value=pu;break;}
+      var usel=["input[name=username]","input[name=ajax_username]","#username","input[id*=user i]","input[type=text]"];
+      for(var i=0;i<usel.length;i++){
+        var el=document.querySelector(usel[i]);
+        if(el&&!el.value){el.value=pu;done=true;break;}
       }
     }
-  }catch(e){}
+    if(pp){
+      var pwsel=["input[name=secretkey]","input[name=passwd]","#secretkey","input[type=password]"];
+      for(var j=0;j<pwsel.length;j++){
+        var pw=document.querySelector(pwsel[j]);
+        if(pw&&!pw.value){pw.value=pp;done=true;break;}
+      }
+    }
+    return done;
+  }
+  if(!prefillLogin()){
+    document.addEventListener("DOMContentLoaded",prefillLogin);
+    try{
+      var obs=new MutationObserver(function(){if(prefillLogin())obs.disconnect();});
+      obs.observe(document.documentElement,{childList:true,subtree:true});
+      setTimeout(function(){obs.disconnect();},15000);
+    }catch(e){}
+  }
 }catch(err){try{console.warn("pam-bridge init failed",err);}catch(e){}}
 })();</script>`)
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/example/pam-platform/internal/vault"
 	"github.com/example/pam-platform/internal/events"
 	"github.com/example/pam-platform/internal/groups"
+	"github.com/example/pam-platform/internal/inventory"
 	"github.com/example/pam-platform/internal/mfa"
 	"github.com/example/pam-platform/internal/policy"
 )
@@ -430,9 +431,7 @@ func (s *Server) authorize(user, deviceIP, fullCmd string) (bool, string, policy
 		kind string
 		tier int
 	)
-	host := hostPart(deviceIP)
-	err = s.DB.QueryRow(`SELECT id, kind, tier FROM targets WHERE host = ? OR host = ?`,
-		host, deviceIP).Scan(&tid, &kind, &tier)
+	tid, kind, tier, err = inventory.TargetMetaForHost(context.Background(), s.DB, deviceIP)
 	if err != nil {
 		log.Printf("tacacs author: unknown device %q for user=%q cmd=%q", deviceIP, user, fullCmd)
 		return false, role, empty
@@ -452,9 +451,8 @@ func (s *Server) authorize(user, deviceIP, fullCmd string) (bool, string, policy
 }
 
 func (s *Server) targetKindForHost(deviceIP string) string {
-	host := hostPart(deviceIP)
-	var kind string
-	if err := s.DB.QueryRow(`SELECT kind FROM targets WHERE host = ? OR host = ?`, host, deviceIP).Scan(&kind); err != nil {
+	kind, err := inventory.KindForHost(context.Background(), s.DB, deviceIP)
+	if err != nil {
 		return ""
 	}
 	return kind
@@ -541,18 +539,11 @@ func (s *Server) isFortiGateHost(host string) bool {
 	if s.DB == nil {
 		return false
 	}
-	host = hostPart(strings.TrimSpace(host))
-	if host == "" {
-		return false
-	}
-	var kind string
-	err := s.DB.QueryRow(`
-		SELECT kind FROM targets WHERE host = ? LIMIT 1`, host).Scan(&kind)
+	kind, err := inventory.KindForHost(context.Background(), s.DB, host)
 	if err != nil {
 		return false
 	}
-	k := strings.ToLower(kind)
-	return strings.Contains(k, "forti")
+	return strings.Contains(strings.ToLower(kind), "forti")
 }
 
 // fortinetAuthorArgs builds VSAs FortiOS expects (admin_prof, memberof, service).

@@ -106,7 +106,8 @@
           credBar.style.display = "block";
           credBar.innerHTML = `<b>Login:</b> ${esc(info.auth_hint)}`;
         }
-        if (info.username && info.password) {
+        const hasPrivAccount = info.username && info.password;
+        if (hasPrivAccount) {
           showCreds.style.display = "";
           const hint = info.auth_hint ? `<p style="margin:0 0 6px">${esc(info.auth_hint)}</p>` : "";
           credBar.innerHTML = hint + `
@@ -119,6 +120,25 @@
           if (info.password) {
             document.getElementById("copyPwBtn").onclick = () => {
               navigator.clipboard.writeText(info.password).then(() => alert("Copied!"));
+            };
+          }
+        } else if (info.portal_username) {
+          showCreds.style.display = "";
+          const hint = info.auth_hint ? `<p style="margin:0 0 6px">${esc(info.auth_hint)}</p>` : "";
+          const pwBlock = info.portal_password
+            ? `Password (portal, add MFA): <span id="pwSpan" style="filter:blur(4px);cursor:pointer" title="click to reveal">${esc(info.portal_password)}</span>
+               <button class="btn ghost" style="font-size:11px;padding:2px 8px;margin-left:6px" id="copyPwBtn">Copy</button>`
+            : `Password: your portal password + 6-digit MFA (no space)`;
+          credBar.innerHTML = hint + `
+            <b>TACACS login (prefilled in form):</b>
+            Username: <b>${esc(info.portal_username)}</b>
+            &nbsp;·&nbsp;
+            ${pwBlock}`;
+          const pwEl = document.getElementById("pwSpan");
+          if (pwEl) pwEl.onclick = function() { this.style.filter = ""; };
+          if (info.portal_password) {
+            document.getElementById("copyPwBtn").onclick = () => {
+              navigator.clipboard.writeText(info.portal_password).then(() => alert("Copied portal password — append MFA before Login"));
             };
           }
         }

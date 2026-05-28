@@ -60,7 +60,7 @@ const (
 // password for a user. The password is encrypted with the vault master key
 // just like every other secret and is removed on sign-out.
 func vaultUserPassthroughKey(uid int64) string {
-	return "_user_passthrough_pw_" + strconv.FormatInt(uid, 10)
+	return vault.UserPassthroughKey(uid)
 }
 
 func main() {
@@ -1287,6 +1287,7 @@ func main() {
 			"username":         creds.Username,
 			"password":         creds.Password,
 			"portal_username":  creds.PortalUsername,
+			"portal_password":  creds.PortalPassword,
 			"auth_hint":        weblaunch.AuthHint(creds, creds.Username != "" && creds.Password != ""),
 			"active":           ended == nil,
 		})

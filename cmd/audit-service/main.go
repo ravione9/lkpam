@@ -325,7 +325,8 @@ func main() {
 			httpx.Error(w, http.StatusNotFound, errStr("no recording for this session"))
 			return
 		}
-		file, err := resolveRecordingFile(recPath)
+		wantLog := r.URL.Query().Get("kind") == "log"
+		file, err := resolveRecordingFile(recPath, wantLog)
 		if err != nil {
 			httpx.Error(w, http.StatusNotFound, errStr(err.Error()))
 			return
@@ -465,7 +466,8 @@ func cleanupPendingSessions(ctx context.Context, d *db.DB, v *vault.Vault) {
 
 // resolveRecordingFile maps a session recording_path to a readable file on disk.
 // Supports native SSH .log files and browser RDP/SSH .guac recordings in a directory.
-func resolveRecordingFile(recPath string) (string, error) {
+// When wantLog is true, prefer the keystroke .log (browser SSH keeps .guac + .log in one dir).
+func resolveRecordingFile(recPath string, wantLog bool) (string, error) {
 	info, err := os.Stat(recPath)
 	if err != nil {
 		return "", errors.New("recording file not found on disk")
@@ -481,28 +483,54 @@ func resolveRecordingFile(recPath string) (string, error) {
 			if info.Size() == 0 {
 				return "", errors.New("recording is empty — session ended before any data was captured")
 			}
+			if wantLog && ext != ".log" {
+				return "", errors.New("session log not found for this recording")
+			}
+			if !wantLog && ext == ".log" {
+				return "", errors.New("no video recording for this session — use View log for keystroke transcript")
+			}
 			return recPath, nil
 		}
 		return "", errors.New("unsupported recording format")
 	}
 	entries, _ := os.ReadDir(recPath)
+	if wantLog {
+		if path, ok := pickRecordingInDir(recPath, entries, true); ok {
+			return path, nil
+		}
+		return "", errors.New("session log not found — session may still be active")
+	}
+	if path, ok := pickRecordingInDir(recPath, entries, false); ok {
+		return path, nil
+	}
+	return "", errors.New("recording not ready yet — session may still be active")
+}
+
+func pickRecordingInDir(dir string, entries []os.DirEntry, wantLog bool) (string, bool) {
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		ext := filepath.Ext(e.Name())
-		// Accept .guac and .log files.
-		// Also accept files with no extension — guacd writes SSH/RDP recordings
-		// as plain files named after the session ID (no .guac suffix).
-		// Skip .timing files (guacd typescript timing sidecars).
-		if ext == ".guac" || ext == ".log" || (ext == "" && !strings.HasSuffix(e.Name(), ".timing")) {
-			info, err := e.Info()
-			if err == nil && info.Size() > 0 {
-				return filepath.Join(recPath, e.Name()), nil
-			}
+		if strings.HasSuffix(e.Name(), ".timing") {
+			continue
 		}
+		if wantLog {
+			if ext != ".log" {
+				continue
+			}
+		} else if ext == ".log" {
+			continue
+		} else if ext != ".guac" && ext != "" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.Size() == 0 {
+			continue
+		}
+		return filepath.Join(dir, e.Name()), true
 	}
-	return "", errors.New("recording not ready yet — session may still be active")
+	return "", false
 }
 
 func pendingRecordingMissing(recPath string) bool {
@@ -518,11 +546,15 @@ func pendingRecordingMissing(recPath string) bool {
 		return true
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
-			ext := filepath.Ext(e.Name())
-			if ext == ".guac" || ext == ".log" {
-				return false
-			}
+		if e.IsDir() {
+			continue
+		}
+		ext := filepath.Ext(e.Name())
+		if ext == ".guac" || ext == ".log" {
+			return false
+		}
+		if ext == "" && !strings.HasSuffix(e.Name(), ".timing") {
+			return false
 		}
 	}
 	return true

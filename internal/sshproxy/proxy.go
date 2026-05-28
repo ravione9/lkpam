@@ -58,9 +58,14 @@ type Server struct {
 
 // Run starts the proxy. Blocks until ctx is done.
 func (s *Server) Run(ctx context.Context) error {
-	if err := os.MkdirAll(s.RecordingDir, 0o700); err != nil {
+	if err := os.MkdirAll(s.RecordingDir, 0o777); err != nil {
 		return fmt.Errorf("sshproxy: mkdir recordings: %w", err)
 	}
+	_ = os.Chmod(s.RecordingDir, 0o777)
+	if err := os.MkdirAll(filepath.Join(s.RecordingDir, "ssh"), 0o777); err != nil {
+		return fmt.Errorf("sshproxy: mkdir ssh recordings: %w", err)
+	}
+	_ = os.Chmod(filepath.Join(s.RecordingDir, "ssh"), 0o777)
 
 	cfg := &ssh.ServerConfig{
 		PasswordCallback:            s.passwordAuth,
@@ -611,11 +616,12 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 	var upClient *ssh.Client
 	var activeMode string
 
-	// Open recording file (browser sessions are recorded by guacd; skip duplicate tee).
+	// Native SSH: single .log under PAM_REC_DIR. Browser SSH: guacd writes .guac in
+	// PAM_REC_DIR/ssh/<id>/ and ssh-proxy tees the same keystroke .log there.
 	var rec *os.File
 	if browserSess == "" {
 		recPath := filepath.Join(s.RecordingDir, sessionID+".log")
-		rec, err = os.OpenFile(recPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		rec, err = os.OpenFile(recPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666)
 		if err != nil {
 			log.Printf("open recording: %v", err)
 			s.sendShellError(chans, fmt.Sprintf("PAM: internal error — could not start session recording.\r\nUnderlying error: %v\r\n", err))
@@ -641,7 +647,18 @@ func (s *Server) handle(ctx context.Context, nc net.Conn, cfg *ssh.ServerConfig)
 			}
 		}
 	} else {
-		rec, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		recDir := filepath.Join(s.RecordingDir, "ssh", sessionID)
+		if mkErr := os.MkdirAll(recDir, 0o777); mkErr != nil {
+			log.Printf("mkdir browser session log dir: %v", mkErr)
+		} else {
+			_ = os.Chmod(recDir, 0o777)
+		}
+		recPath := filepath.Join(recDir, sessionID+".log")
+		rec, err = os.OpenFile(recPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o666)
+		if err != nil {
+			log.Printf("open browser session log: %v", err)
+			rec, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		}
 		if rec != nil {
 			defer rec.Close()
 		}

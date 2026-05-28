@@ -22,10 +22,13 @@ func (s *Service) DevicePasswordForHost(ctx context.Context, hostOrAddr string) 
 		SELECT a.secret_ref
 		FROM privileged_accounts a
 		JOIN targets t ON t.id = a.target_id
-		WHERE (t.host = ? OR t.host = ?)
+		WHERE (t.host = ? OR t.host = ?
+		   OR lower(t.web_url) GLOB '*://' || lower(?) || '/*'
+		   OR lower(t.web_url) GLOB '*://' || lower(?) || ':*'
+		   OR lower(t.web_url) GLOB '*://' || lower(?))
 		  AND LOWER(a.platform) NOT IN ('windows','rdp')
 		ORDER BY a.id
-		LIMIT 1`, host, hostOrAddr).Scan(&secretRef)
+		LIMIT 1`, host, hostOrAddr, host, host, host).Scan(&secretRef)
 	if err != nil {
 		return "", err
 	}

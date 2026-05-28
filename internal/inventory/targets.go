@@ -106,6 +106,7 @@ func (s *Service) Create(ctx context.Context, t Target) (int64, error) {
 	if err := validateConnection(t); err != nil {
 		return 0, err
 	}
+	NormalizeTargetHost(&t)
 	if t.Port <= 0 {
 		t.Port = defaultPort(t.ConnectionType)
 	}
@@ -133,6 +134,7 @@ func (s *Service) Update(ctx context.Context, t Target) error {
 	if err := validateConnection(t); err != nil {
 		return err
 	}
+	NormalizeTargetHost(&t)
 	if t.Port <= 0 {
 		t.Port = defaultPort(t.ConnectionType)
 	}
