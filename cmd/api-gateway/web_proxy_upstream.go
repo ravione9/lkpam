@@ -38,6 +38,8 @@ type webSessionState struct {
 	fortiLoginDone bool
 	// fortiBuildStub caches /api/v2/monitor/system/status fields for fweb_build.json stub.
 	fortiBuildStub []byte
+	// fortiAuthBody caches GET /api/v2/authentication for the NG SPA session check.
+	fortiAuthBody []byte
 	// detectedFortinet is set when upstream Server header contains FortiOS.
 	detectedFortinet bool
 }

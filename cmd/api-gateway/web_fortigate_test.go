@@ -92,6 +92,28 @@ func TestFortigateParseDocumentLocation(t *testing.T) {
 	}
 }
 
+func TestFortigateResponseIsLoginHTML(t *testing.T) {
+	login := []byte(`<!doctype html><html><head><script src="login.js"></script></head><body><input name="username"></body></html>`)
+	if !fortigateResponseIsLoginHTML(login) {
+		t.Fatal("expected login HTML detection")
+	}
+	ng := []byte(`<!doctype html><html><head><base href="/ng/"></head><body><app-root></app-root></body></html>`)
+	if fortigateResponseIsLoginHTML(ng) {
+		t.Fatal("ng shell should not match login HTML")
+	}
+}
+
+func TestIsFortinetSPAEntryPath(t *testing.T) {
+	for _, p := range []string{"/ng/", "/ng/dashboard", "/ui/", "/"} {
+		if !isFortinetSPAEntryPath(p) {
+			t.Fatalf("expected SPA entry: %s", p)
+		}
+	}
+	if isFortinetSPAEntryPath("/static/js/app.js") {
+		t.Fatal("static asset is not SPA entry")
+	}
+}
+
 func TestFortigateBuildStubFromStatus(t *testing.T) {
 	meta := map[string]interface{}{
 		"version": "v7.2.8",

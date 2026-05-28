@@ -95,6 +95,38 @@
   let fortiPortalPassword = "";
   let fortiPortalUser = "";
 
+  function pamInjectIframeBridge() {
+    try {
+      var doc = frame.contentDocument;
+      if (!doc || !doc.documentElement) return;
+      if (doc.getElementById("pam-iframe-bridge")) return;
+      var pfx = "/web/" + encodeURIComponent(sessionId);
+      var s = doc.createElement("script");
+      s.id = "pam-iframe-bridge";
+      s.textContent = [
+        "(function(){",
+        "var pfx=" + JSON.stringify(pfx) + ";",
+        "function goNG(){",
+        "  var p=location.pathname||'';",
+        "  fetch(pfx+'/api/v2/monitor/web-ui/extend-session',{credentials:'same-origin'})",
+        "    .then(function(r){",
+        "      if(!r.ok)return;",
+        "      if(p.indexOf('/ng/')>=0){",
+        "        var el=document.querySelector('input[name=username],#username,.login-page');",
+        "        if(el) location.replace(pfx+'/ng/'+(location.search||''));",
+        "        return;",
+        "      }",
+        "      location.replace(pfx+'/ng/'+(location.search||''));",
+        "    }).catch(function(){});",
+        "}",
+        "goNG();document.addEventListener('DOMContentLoaded',goNG);",
+        "setTimeout(goNG,400);setTimeout(goNG,1500);",
+        "})();"
+      ].join("");
+      (doc.head || doc.documentElement).appendChild(s);
+    } catch (e) { /* cross-origin or not ready */ }
+  }
+
   async function loginViaPAM() {
     const statusEl = document.getElementById("fortiApplyStatus");
     const btn = document.getElementById("fortiApplyPwBtn");
@@ -137,6 +169,7 @@
       }
       statusEl.textContent = "Logged in — loading FortiGate console…";
       statusEl.className = "ok";
+      frame.onload = function() { pamInjectIframeBridge(); };
       frame.src = data.redirect || ("/web/" + encodeURIComponent(sessionId) + "/ng/?token=" + encodeURIComponent(token || ""));
     } catch (e) {
       statusEl.textContent = "Login request failed: " + (e.message || "network error");
@@ -250,6 +283,7 @@
           frame.src = proxyURL;
         }
         frame.onload = () => {
+          pamInjectIframeBridge();
           try {
             const doc = frame.contentDocument;
             if (!doc || doc.URL === "about:blank") throw new Error("blank");

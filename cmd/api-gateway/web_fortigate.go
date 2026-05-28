@@ -290,6 +290,33 @@ func isFortiAuthSessionPath(rest string) bool {
 	return p == "/api/v2/authentication"
 }
 
+// isFortinetSPAEntryPath is true for FortiOS NG admin shell paths (not static assets).
+func isFortinetSPAEntryPath(rest string) bool {
+	p := strings.ToLower(strings.Split(rest, "?")[0])
+	switch p {
+	case "/", "/index.html", "/ng", "/ng/", "/ui", "/ui/":
+		return true
+	}
+	if strings.HasPrefix(p, "/ng/") || strings.HasPrefix(p, "/ui/") {
+		return true
+	}
+	return false
+}
+
+func fortigateResponseIsLoginHTML(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	lower := bytes.ToLower(body)
+	if !bytes.Contains(lower, []byte("<html")) && !bytes.Contains(lower, []byte("<!doctype")) {
+		return false
+	}
+	return bytes.Contains(lower, []byte("logincheck")) ||
+		bytes.Contains(lower, []byte("login.js")) ||
+		bytes.Contains(lower, []byte(`name="username"`)) ||
+		bytes.Contains(lower, []byte(`id="username"`))
+}
+
 func fortigateWriteBuildStub(w http.ResponseWriter, state *webSessionState, sessionID string, jar http.CookieJar, target *url.URL) {
 	syncUpstreamCookiesToBrowser(w, jar, target, sessionID)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -318,6 +345,71 @@ func fortigateFetchAPIViaJar(ctx context.Context, client *http.Client, target *u
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	return body, resp.StatusCode
+}
+
+// fortigateFetchDocumentViaJar GETs an HTML/SPA shell using only the upstream jar.
+func fortigateFetchDocumentViaJar(ctx context.Context, client *http.Client, target *url.URL, rest string, query url.Values) ([]byte, int, string) {
+	if client == nil || target == nil {
+		return nil, 0, ""
+	}
+	u := buildUpstreamURL(target, rest, query)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, 0, ""
+	}
+	tuneUpstreamRequest(req, target, rest)
+	mergeUpstreamCookies(req, &http.Request{}, client.Jar, target, true)
+	fortigateAttachCSRF(req, client.Jar, target)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0, ""
+	}
+	rawBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	body, err := decompressUpstreamBody(rawBody, resp.Header.Get("Content-Encoding"))
+	if err != nil {
+		body = rawBody
+	}
+	return body, resp.StatusCode, resp.Header.Get("Content-Type")
+}
+
+func fortigateCacheAuthSession(ctx context.Context, client *http.Client, target *url.URL, state *webSessionState, username string) {
+	if state == nil {
+		return
+	}
+	if body, code := fortigateFetchAPIViaJar(ctx, client, target, "/api/v2/authentication", nil); code == http.StatusOK && len(body) > 0 {
+		state.mu.Lock()
+		state.fortiAuthBody = append([]byte(nil), body...)
+		state.mu.Unlock()
+		log.Printf("web-proxy: fortigate cached GET /api/v2/authentication (%d bytes)", len(body))
+		return
+	}
+	stub, err := json.Marshal(map[string]interface{}{
+		"status_code":    5,
+		"status_message": "LOGIN_SUCCESS",
+		"username":       strings.TrimSpace(username),
+	})
+	if err != nil {
+		return
+	}
+	state.mu.Lock()
+	state.fortiAuthBody = stub
+	state.mu.Unlock()
+	log.Printf("web-proxy: fortigate synthesized GET /api/v2/authentication for user=%q", username)
+}
+
+func fortigateAuthBodyCached(state *webSessionState) []byte {
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.fortiAuthBody) == 0 {
+		return nil
+	}
+	out := make([]byte, len(state.fortiAuthBody))
+	copy(out, state.fortiAuthBody)
+	return out
 }
 
 // fortigatePostLoginPath is the NG admin SPA entry after server-side auth.
@@ -506,7 +598,7 @@ func ensureFortiGateAuthenticated(ctx context.Context, client *http.Client, targ
 	if !ok {
 		return false
 	}
-	if !fortigateFormLogin(ctx, client, target, user, pass, "", assetPrefix) {
+	if !fortigateFormLogin(ctx, client, target, user, pass, "", assetPrefix, state) {
 		return false
 	}
 	if !fortigateHasSessionCookies(client.Jar, target) {
@@ -534,11 +626,11 @@ func fortigateLogincheckPaths(assetPrefix string) []string {
 // fortigateFormLogin establishes a FortiOS admin session. FortiOS 7.x needs
 // POST /api/v2/authentication (session_key cookie); legacy /logincheck only
 // sets APSCOOKIE which is insufficient for /api/v2/static/* (401).
-func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.URL, username, password, tokenCode, assetPrefix string) bool {
+func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.URL, username, password, tokenCode, assetPrefix string, state *webSessionState) bool {
 	if client == nil || target == nil || username == "" || password == "" {
 		return false
 	}
-	if fortigateLoginViaAPI(ctx, client, target, username, password, tokenCode) {
+	if fortigateLoginViaAPI(ctx, client, target, username, password, tokenCode, state) {
 		log.Printf("web-proxy: fortigate login ok via api/v2/authentication user=%q", username)
 		return true
 	}
@@ -630,7 +722,7 @@ type fortigateAuthAPIResponse struct {
 // fortigateLoginViaAPI uses POST /api/v2/authentication (FortiOS 6.4.2+) which
 // returns session_key + ccsrftoken cookies usable by the NG admin SPA. Plain
 // /logincheck often leaves only APSCOOKIE_* and /api/v2/static/* returns 401.
-func fortigateLoginViaAPI(ctx context.Context, client *http.Client, target *url.URL, username, password, tokenCode string) bool {
+func fortigateLoginViaAPI(ctx context.Context, client *http.Client, target *url.URL, username, password, tokenCode string, state *webSessionState) bool {
 	if client == nil || target == nil {
 		return false
 	}
@@ -692,6 +784,7 @@ func fortigateLoginViaAPI(ctx context.Context, client *http.Client, target *url.
 			if !fortigateValidateSession(ctx, client, target) {
 				log.Printf("web-proxy: fortigate api auth LOGIN_SUCCESS but probe 401 — trusting session_key cookies")
 			}
+			fortigateCacheAuthSession(ctx, client, target, state, username)
 			return true
 		case 3:
 			ackPost = true
@@ -1093,7 +1186,7 @@ func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID st
 
 	log.Printf("web-proxy: pam-forti-login session=%s user=%q target=%s mfa=%v",
 		sessionID, user, target.String(), len(mfa) == 6)
-	ok := fortigateFormLogin(r.Context(), state.client, target, user, pass, mfa, assetPrefix)
+	ok := fortigateFormLogin(r.Context(), state.client, target, user, pass, mfa, assetPrefix, state)
 	if !ok || !fortigateHasSessionCookies(state.client.Jar, target) {
 		writeFortiLoginJSON(http.StatusUnauthorized, map[string]string{
 			"error": "FortiGate session not established — logincheck or post-login disclaimer failed. Check: docker compose logs gateway --tail 30",
@@ -1197,6 +1290,36 @@ func isLikelyLoginProbe(path string) bool {
 	default:
 		return false
 	}
+}
+
+// fortigateWriteJarDocument serves an SPA HTML shell fetched with the upstream jar
+// (browser cookies may be missing HttpOnly session keys even when the jar is valid).
+func fortigateWriteJarDocument(w http.ResponseWriter, r *http.Request, state *webSessionState, targetURL *url.URL, sessionID, rest string, upQ url.Values, creds weblaunch.SessionCreds, portalTok string, httpClient *http.Client) bool {
+	body, code, ct := fortigateFetchDocumentViaJar(r.Context(), httpClient, targetURL, rest, upQ)
+	if code != http.StatusOK || len(body) == 0 {
+		return false
+	}
+	if fortigateResponseIsLoginHTML(body) {
+		log.Printf("web-proxy: fortigate jar fetch %s returned login HTML session=%s", rest, sessionID)
+		return false
+	}
+	syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
+	body = rewriteHTML(body, targetURL, sessionID, portalTok, creds)
+	body = injectFortinetLoginAssist(body, creds, sessionID)
+	if mime := mimeForWebPath(rest); mime != "" {
+		w.Header().Set("Content-Type", mime)
+	} else if ct != "" {
+		w.Header().Set("Content-Type", ct)
+	} else {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	stripResponseEncoding(w.Header())
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+	log.Printf("web-proxy: fortigate served %s from jar (%d bytes) session=%s", rest, len(body), sessionID)
+	return true
 }
 
 func injectFortinetLoginAssist(body []byte, creds weblaunch.SessionCreds, sessionID string) []byte {

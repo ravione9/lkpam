@@ -546,6 +546,9 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	state.mu.Unlock()
 	if fortiDoneEarly && isFortinetSession(creds, state) && r.Method == http.MethodGet && shouldBounceFortinetAuthedToNG(rest) {
 		if fortigateReconcileLoginState(state, httpClient.Jar, targetURL, r) {
+			if fortigateWriteJarDocument(w, r, state, targetURL, sessionID, "/ng/", upQ, creds, portalTokEarly, httpClient) {
+				return
+			}
 			log.Printf("web-proxy: fortigate authed bounce session=%s path=%s -> /ng/", sessionID, rest)
 			http.Redirect(w, r, fortigatePostLoginPath(sessionID, portalTokEarly), http.StatusFound)
 			return
@@ -595,12 +598,21 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 			return
 		}
 		if isFortiAuthSessionPath(rest) {
-			if body, code := fortigateFetchAPIViaJar(r.Context(), httpClient, targetURL, rest, upQ); code == http.StatusOK && len(body) > 0 {
+			body, code := fortigateFetchAPIViaJar(r.Context(), httpClient, targetURL, rest, upQ)
+			if code != http.StatusOK || len(body) == 0 {
+				body = fortigateAuthBodyCached(state)
+			}
+			if len(body) > 0 {
 				syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
 				w.Header().Set("Content-Type", "application/json; charset=utf-8")
 				w.Header().Set("Cache-Control", "no-store")
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write(body)
+				return
+			}
+		}
+		if isFortinetSPAEntryPath(rest) {
+			if fortigateWriteJarDocument(w, r, state, targetURL, sessionID, rest, upQ, creds, portalTokEarly, httpClient) {
 				return
 			}
 		}
@@ -821,7 +833,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		body = rewriteHTML(body, targetURL, sessionID, portalTok, creds)
 		// Only inject the FortiGate login bridge into actual HTML documents.
 		// Path-based check guards against upstreams that mis-label JS as HTML.
-		if isHTMLDocumentResponse(rest, ct) {
+		if isHTMLDocumentResponse(rest, ct) || (isFortinetSPAEntryPath(rest) && looksLikeHTMLBody(body)) {
 			body = injectFortinetLoginAssist(body, creds, sessionID)
 		}
 		if mimeByPath != "" {
@@ -1013,7 +1025,11 @@ func shouldRewriteWebPath(path string) bool {
 	case strings.HasSuffix(path, ".css"):
 		return true
 	}
-	return false
+	switch path {
+	case "/", "/index.html", "/ng", "/ng/", "/ui", "/ui/", "/login", "/login/":
+		return true
+	}
+	return strings.HasPrefix(path, "/ng/") || strings.HasPrefix(path, "/ui/") || strings.HasPrefix(path, "/login/")
 }
 
 // isHTMLWebResponse reports whether the upstream response is an HTML document
