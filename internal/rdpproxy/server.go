@@ -199,8 +199,8 @@ func (s *Server) doConnect(r *http.Request) (guac.Tunnel, error) {
 		}
 		config.Protocol = "rdp"
 		config.Parameters = rdpGuacParams(dialHost, dialPort, params.Username, params.Password, params.RecDir, params.SessionID, true)
-		config.OptimalScreenWidth = 1280
-		config.OptimalScreenHeight = 800
+		config.OptimalScreenWidth = 1920
+		config.OptimalScreenHeight = 1080
 		config.AudioMimetypes = []string{"audio/L16", "rate=44100", "channels=2"}
 	}
 
