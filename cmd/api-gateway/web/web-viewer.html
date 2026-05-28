@@ -137,7 +137,7 @@
       }
       statusEl.textContent = "Logged in — loading FortiGate console…";
       statusEl.className = "ok";
-      frame.src = data.redirect || ("/web/" + encodeURIComponent(sessionId) + "/?token=" + encodeURIComponent(token || ""));
+      frame.src = data.redirect || ("/web/" + encodeURIComponent(sessionId) + "/ng/?token=" + encodeURIComponent(token || ""));
     } catch (e) {
       statusEl.textContent = "Login request failed: " + (e.message || "network error");
       statusEl.className = "err";

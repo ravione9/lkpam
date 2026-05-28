@@ -535,6 +535,21 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		return
 	}
 
+	portalTokEarly := strings.TrimSpace(r.URL.Query().Get("token"))
+	if portalTokEarly == "" {
+		if c, err := r.Cookie("pam_web_tok"); err == nil {
+			portalTokEarly = strings.TrimSpace(c.Value)
+		}
+	}
+	state.mu.Lock()
+	fortiDoneEarly := state.fortiLoginDone
+	state.mu.Unlock()
+	if fortiDoneEarly && isFortinetSession(creds, state) && r.Method == http.MethodGet && shouldBounceFortinetAuthedToNG(rest) {
+		log.Printf("web-proxy: fortigate authed bounce session=%s path=%s -> /ng/", sessionID, rest)
+		http.Redirect(w, r, fortigatePostLoginPath(sessionID, portalTokEarly), http.StatusFound)
+		return
+	}
+
 	// FortiGate: server-side login before authenticated SPA/API paths (TACACS uses portal creds).
 	if isFortinetSession(creds, state) && !isFortinetPreAuthRequest(rest) {
 		state.mu.Lock()
@@ -701,7 +716,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(fortiBuildManifestStub)
+			_, _ = w.Write(fortigateBuildStubBody(state))
 			return
 		}
 		if fortiDone {
@@ -714,6 +729,9 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		if strings.EqualFold(k, "Location") {
 			for _, v := range vs {
 				v = rewriteLocation(v, targetURL, sessionID, portalTok)
+				if fortiDone && isFortinetSession(creds, state) && fortinetLocationShouldNG(v, sessionID) {
+					v = fortigatePostLoginPath(sessionID, portalTok)
+				}
 				w.Header().Add(k, v)
 			}
 			continue

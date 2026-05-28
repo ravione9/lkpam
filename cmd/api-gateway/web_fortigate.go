@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/example/pam-platform/internal/weblaunch"
@@ -193,9 +195,8 @@ func fortiLoginCredentials(creds weblaunch.SessionCreds) (user, pass string, ok 
 }
 
 // isFortinetPreAuthRequest is true for login-page assets that must stay unauthenticated.
-// fortiBuildManifestStub mirrors the shape of FortiOS /api/v2/static/fweb_build.json
-// just enough for the NG SPA to bootstrap when the real endpoint refuses to serve it.
-var fortiBuildManifestStub = []byte(`{"build":"0","version":"0.0.0","results":{"build":"0","version":"0.0.0"}}`)
+// fortiBuildManifestStubDefault is used when monitor/system/status is unavailable.
+var fortiBuildManifestStubDefault = []byte(`{"build":"2600","version":"v7.4.0","branch":"GA","results":{"build":"2600","version":"v7.4.0","branch":"GA"}}`)
 
 // isFortiBuildManifestPath matches /api/v2/static/fweb_build.json (with optional query/vdom).
 func isFortiBuildManifestPath(rest string) bool {
@@ -204,6 +205,143 @@ func isFortiBuildManifestPath(rest string) bool {
 		p = p[:i]
 	}
 	return strings.HasSuffix(p, "/api/v2/static/fweb_build.json") || p == "/api/v2/static/fweb_build.json"
+}
+
+// fortigatePostLoginPath is the NG admin SPA entry after server-side auth.
+func fortigatePostLoginPath(sessionID, portalToken string) string {
+	p := "/web/" + sessionID + "/ng/"
+	if portalToken != "" {
+		p += "?token=" + url.QueryEscape(portalToken)
+	}
+	return p
+}
+
+// shouldBounceFortinetAuthedToNG is true for login/root paths that should not
+// be shown once server-side FortiGate auth succeeded (prevents login loops).
+func shouldBounceFortinetAuthedToNG(rest string) bool {
+	p := strings.ToLower(strings.Split(rest, "?")[0])
+	switch p {
+	case "/", "/index.html", "/login":
+		return true
+	}
+	return strings.HasPrefix(p, "/login/")
+}
+
+// fortinetLocationShouldNG returns true when a rewritten Location header should
+// land on the NG SPA instead of login/root (prevents post-auth redirect loops).
+func fortinetLocationShouldNG(loc, sessionID string) bool {
+	p := strings.ToLower(strings.Split(loc, "?")[0])
+	if strings.Contains(p, "/login") {
+		return true
+	}
+	base := "/web/" + sessionID
+	return p == base || p == base+"/"
+}
+
+func fortigateBuildStubBody(state *webSessionState) []byte {
+	if state == nil {
+		return fortiBuildManifestStubDefault
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.fortiBuildStub) > 0 {
+		out := make([]byte, len(state.fortiBuildStub))
+		copy(out, state.fortiBuildStub)
+		return out
+	}
+	return fortiBuildManifestStubDefault
+}
+
+func fortigateCacheBuildStub(ctx context.Context, client *http.Client, target *url.URL, state *webSessionState) {
+	if client == nil || target == nil || state == nil {
+		return
+	}
+	for _, probe := range []string{"/api/v2/monitor/system/status?vdom=root", "/api/v2/monitor/system/status"} {
+		u := buildUpstreamURL(target, probe, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			continue
+		}
+		tuneUpstreamRequest(req, target, probe)
+		mergeUpstreamCookies(req, &http.Request{}, client.Jar, target, true)
+		fortigateAttachCSRF(req, client.Jar, target)
+		resp, err := client.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var meta map[string]interface{}
+		if json.Unmarshal(body, &meta) != nil {
+			continue
+		}
+		version, build := fortigateStatusFields(meta)
+		if version == "" && build == "" {
+			continue
+		}
+		if version == "" {
+			version = "v7.4.0"
+		}
+		if build == "" {
+			build = "2600"
+		}
+		stub, err := json.Marshal(map[string]interface{}{
+			"build":   build,
+			"version": version,
+			"branch":  "GA",
+			"results": map[string]interface{}{
+				"build":   build,
+				"version": version,
+				"branch":  "GA",
+			},
+		})
+		if err != nil {
+			continue
+		}
+		state.mu.Lock()
+		state.fortiBuildStub = stub
+		state.mu.Unlock()
+		log.Printf("web-proxy: fortigate cached fweb_build stub version=%s build=%s", version, build)
+		return
+	}
+}
+
+func fortigateStatusFields(meta map[string]interface{}) (version, build string) {
+	pick := func(m map[string]interface{}) {
+		if version != "" && build != "" {
+			return
+		}
+		if version == "" {
+			version = jsonStringField(m, "version")
+		}
+		if build == "" {
+			build = jsonStringField(m, "build")
+		}
+	}
+	pick(meta)
+	if r, ok := meta["results"].(map[string]interface{}); ok {
+		pick(r)
+	}
+	return version, build
+}
+
+func jsonStringField(m map[string]interface{}, key string) string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case float64:
+		return strconv.FormatInt(int64(t), 10)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
 }
 
 func isFortinetPreAuthRequest(rest string) bool {
@@ -242,6 +380,7 @@ func ensureFortiGateAuthenticated(ctx context.Context, client *http.Client, targ
 	state.mu.Lock()
 	state.fortiLoginDone = true
 	state.mu.Unlock()
+	fortigateCacheBuildStub(ctx, client, target, state)
 	log.Printf("web-proxy: fortigate session ready user=%q jar_cookies=%d", user, nJar)
 	return true
 }
@@ -794,6 +933,7 @@ func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID st
 	state.mu.Lock()
 	state.fortiLoginDone = true
 	state.mu.Unlock()
+	fortigateCacheBuildStub(r.Context(), state.client, target, state)
 	syncUpstreamCookiesToBrowser(w, state.client.Jar, target, sessionID)
 
 	tok := strings.TrimSpace(r.URL.Query().Get("token"))
@@ -802,10 +942,7 @@ func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID st
 			tok = strings.TrimSpace(c.Value)
 		}
 	}
-	redirect := "/web/" + sessionID + "/"
-	if tok != "" {
-		redirect += "?token=" + url.QueryEscape(tok)
-	}
+	redirect := fortigatePostLoginPath(sessionID, tok)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"ok":       true,

@@ -36,6 +36,8 @@ type webSessionState struct {
 	assetStrip string
 	// fortiLoginDone tracks server-side FortiGate form login for this session.
 	fortiLoginDone bool
+	// fortiBuildStub caches /api/v2/monitor/system/status fields for fweb_build.json stub.
+	fortiBuildStub []byte
 	// detectedFortinet is set when upstream Server header contains FortiOS.
 	detectedFortinet bool
 }
