@@ -230,12 +230,25 @@ func CommandAllowed(cmd string, allow, deny []string) bool {
 
 // NormalizeCLI lowercases and expands Cisco IOS abbreviations token-by-token so
 // policy deny/allow lists match abbreviated input (config t, sh run, wr eri, etc.).
+// A leading "do" (exec-mode from config submode) is stripped so "do reload" is
+// evaluated as "reload".
 func NormalizeCLI(cmd string) string {
 	cmd = strings.ToLower(strings.TrimSpace(cmd))
 	if cmd == "" {
 		return cmd
 	}
-	return strings.Join(expandCiscoTokens(strings.Fields(cmd)), " ")
+	fields := strings.Fields(cmd)
+	fields = stripCiscoExecDo(fields)
+	return strings.Join(expandCiscoTokens(fields), " ")
+}
+
+// stripCiscoExecDo removes the IOS/NX-OS "do" prefix used to run exec-mode
+// commands from configuration submode (e.g. "do reload" while in config t).
+func stripCiscoExecDo(fields []string) []string {
+	if len(fields) >= 2 && fields[0] == "do" {
+		return fields[1:]
+	}
+	return fields
 }
 
 // FullCommand joins a TACACS cmd= value with cmd-arg= pieces into one line.

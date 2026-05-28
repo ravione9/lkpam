@@ -83,6 +83,7 @@ var ciscoTokenAlias = map[string]string{
 	"aux": "aux",
 	"exit": "exit", "ex": "exit",
 	"end": "end",
+	"do": "do",
 	"no": "no",
 }
 

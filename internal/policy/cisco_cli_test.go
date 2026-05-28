@@ -22,6 +22,10 @@ func TestExpandCiscoAbbreviations(t *testing.T) {
 		{"no shut", "no shutdown"},
 		{"int gi0/1", "interface gi0/1"},
 		{"ping 10.0.0.1", "ping 10.0.0.1"},
+		{"do reload", "reload"},
+		{"do rel", "reload"},
+		{"do sh run", "show running-config"},
+		{"do exit", "exit"},
 	}
 	for _, tc := range cases {
 		got := NormalizeCLI(tc.in)
@@ -47,6 +51,10 @@ func TestCommandAllowedCiscoAbbrev(t *testing.T) {
 		{"era start", false},
 		{"wr erase", false},
 		{"wr er", false},
+		{"do reload", false},
+		{"do rel", false},
+		{"do wr erase", false},
+		{"do config t", false},
 	}
 	for _, c := range checks {
 		got := CommandAllowed(c.cmd, allow, deny)

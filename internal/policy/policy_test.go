@@ -22,6 +22,7 @@ func TestCommandAllowed(t *testing.T) {
 		{"end", true},
 		{"ping 8.8.8.8", true},
 		{"sh run", true},
+		{"do sh run", true},
 		{"rel", false},
 		{"wr erase", false},
 		{"era start", false},
