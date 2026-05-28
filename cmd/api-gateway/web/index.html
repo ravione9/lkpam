@@ -2620,13 +2620,26 @@ function buildPuttyCommand(username, target) {
 }
 
 // openPamViewer opens a recorded session using the same host as the portal (not PAM_PORTAL_URL).
-function openPamViewer(viewerPage, sessionId) {
+function openPamViewer(viewerPage, sessionId, extraParams) {
   if (!token) { toast("Not signed in", "err"); return false; }
   const u = new URL("/" + viewerPage, location.origin);
   u.searchParams.set("session", sessionId);
   u.searchParams.set("token", token);
+  if (extraParams && typeof extraParams === "object") {
+    for (const [k, v] of Object.entries(extraParams)) {
+      if (v !== undefined && v !== null) u.searchParams.set(k, String(v));
+    }
+  }
   window.open(u.toString(), "_blank", "noopener");
   return true;
+}
+
+function sshViewerParams(res) {
+  if (!res) return {};
+  const p = {};
+  if (res.clipboard_copy === false) p.clipboard_copy = "0";
+  if (res.clipboard_paste === false) p.clipboard_paste = "0";
+  return p;
 }
 
 async function persistToken(tok) {
@@ -4413,7 +4426,7 @@ function showSshLaunchModal(target) {
         method: "POST",
         body: JSON.stringify({ reason, portal_password: pw || "" }),
       });
-      if (openPamViewer("ssh-viewer.html", res.session_id)) {
+      if (openPamViewer("ssh-viewer.html", res.session_id, sshViewerParams(res))) {
         close();
         toast("Recorded SSH session opened in browser", "ok");
       }
@@ -8064,7 +8077,7 @@ function showSshMfaPrompt(cachedPw, reason) {
         body: JSON.stringify({ reason: window._sshMfaReason, portal_password: passthroughPw }),
       });
       modal.classList.remove("show");
-      if (openPamViewer("ssh-viewer.html", res.session_id)) {
+      if (openPamViewer("ssh-viewer.html", res.session_id, sshViewerParams(res))) {
         toast("Recorded SSH session opened in browser", "ok");
       }
     } catch (e) {
