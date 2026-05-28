@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/example/pam-platform/internal/weblaunch"
@@ -170,9 +171,15 @@ func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.UR
 	if client == nil || target == nil || username == "" || password == "" {
 		return false
 	}
+	extras := fortigateFetchLoginForm(ctx, client, target, assetPrefix)
 	for _, checkPath := range fortigateLogincheckPaths(assetPrefix) {
 		for _, passField := range []string{"secretkey", "passwd"} {
 			form := url.Values{}
+			for k, vs := range extras {
+				if len(vs) > 0 {
+					form.Set(k, vs[0])
+				}
+			}
 			form.Set("username", username)
 			form.Set(passField, password)
 			form.Set("ajax", "1")
@@ -199,6 +206,57 @@ func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.UR
 		}
 	}
 	return false
+}
+
+var (
+	fortiHiddenInputTag = regexp.MustCompile(`(?i)<input[^>]*type\s*=\s*["']hidden["'][^>]*>`)
+	fortiInputNameAttr  = regexp.MustCompile(`(?i)name\s*=\s*["']([^"']+)["']`)
+	fortiInputValueAttr = regexp.MustCompile(`(?i)value\s*=\s*["']([^"']*)["']`)
+)
+
+// fortigateFetchLoginForm GETs the login page and returns hidden form fields
+// (csrf, reqid, etc.) FortiOS 7.x expects on /logincheck.
+func fortigateFetchLoginForm(ctx context.Context, client *http.Client, target *url.URL, assetPrefix string) url.Values {
+	out := url.Values{}
+	if client == nil || target == nil {
+		return out
+	}
+	paths := []string{"/login/", "/login", "/"}
+	if p := strings.TrimSuffix(strings.TrimSpace(assetPrefix), "/"); p != "" && p != "/login" {
+		paths = append([]string{p + "/login/", p + "/login"}, paths...)
+	}
+	for _, p := range paths {
+		u := buildUpstreamURL(target, p, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			continue
+		}
+		tuneUpstreamRequest(req, target, p)
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 400 || len(body) < 64 {
+			continue
+		}
+		for _, tag := range fortiHiddenInputTag.FindAllString(string(body), -1) {
+			nm := fortiInputNameAttr.FindStringSubmatch(tag)
+			if len(nm) < 2 {
+				continue
+			}
+			val := ""
+			if vm := fortiInputValueAttr.FindStringSubmatch(tag); len(vm) >= 2 {
+				val = vm[1]
+			}
+			out.Set(nm[1], val)
+		}
+		if len(out) > 0 || bytes.Contains(bytes.ToLower(body), []byte("logincheck")) {
+			return out
+		}
+	}
+	return out
 }
 
 func fortigateLoginOK(resp *http.Response, body []byte) bool {
@@ -239,25 +297,38 @@ func truncate(s string, n int) string {
 // FortiOS browser login.js encrypts credentials client-side, which breaks TACACS
 // through the proxy; plain logincheck matches "diagnose test authserver tacacs+".
 func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID string, creds weblaunch.SessionCreds, target *url.URL, state *webSessionState) {
-	if !isFortinetTarget(creds) {
-		http.Error(w, "not a FortiGate web session", http.StatusBadRequest)
-		return
+	writeFortiLoginJSON := func(status int, payload map[string]string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(payload)
 	}
-	user := strings.TrimSpace(creds.PortalUsername)
-	pass := strings.TrimSpace(creds.PortalPassword)
-	if user == "" || pass == "" {
-		http.Error(w, "portal credentials not cached — sign out and sign in to PAM, then re-launch", http.StatusBadRequest)
+	if !isFortinetTarget(creds) {
+		writeFortiLoginJSON(http.StatusBadRequest, map[string]string{"error": "not a FortiGate web session"})
 		return
 	}
 	var in struct {
-		MFA string `json:"mfa"`
+		MFA      string `json:"mfa"`
+		Password string `json:"password"`
+		Username string `json:"username"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&in)
+	user := strings.TrimSpace(creds.PortalUsername)
+	if u := strings.TrimSpace(in.Username); u != "" {
+		user = u
+	}
+	pass := strings.TrimSpace(creds.PortalPassword)
+	if p := strings.TrimSpace(in.Password); p != "" {
+		pass = p
+	}
+	if user == "" || pass == "" {
+		writeFortiLoginJSON(http.StatusBadRequest, map[string]string{
+			"error": "username and password required — enter portal password in the Login via PAM bar",
+		})
+		return
+	}
 	mfa := digitsOnly(in.MFA)
 	if mfa != "" && len(mfa) != 6 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "MFA must be 6 digits or left empty"})
+		writeFortiLoginJSON(http.StatusBadRequest, map[string]string{"error": "MFA must be 6 digits or left empty"})
 		return
 	}
 	loginPass := pass
@@ -272,14 +343,12 @@ func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID st
 		assetPrefix = loginAssetPrefixFromTarget(creds.TargetURL)
 	}
 
-	primeUpstreamSession(r.Context(), state.client, target)
-	log.Printf("web-proxy: pam-forti-login session=%s user=%q mfa=%v", sessionID, user, len(mfa) == 6)
+	log.Printf("web-proxy: pam-forti-login session=%s user=%q target=%s mfa=%v",
+		sessionID, user, target.String(), len(mfa) == 6)
 	ok := fortigateFormLogin(r.Context(), state.client, target, user, loginPass, assetPrefix)
 	if !ok {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"error": "FortiGate login failed — check portal password/MFA and watch tacacs logs",
+		writeFortiLoginJSON(http.StatusUnauthorized, map[string]string{
+			"error": "FortiGate logincheck failed — confirm password (same as diagnose test authserver) and watch: docker compose logs gateway tacacs --tail 30",
 		})
 		return
 	}

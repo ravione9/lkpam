@@ -36,6 +36,7 @@
     </div>
   </div>
   <div class="row">
+    <button class="btn" id="fortiHeaderLoginBtn" type="button" style="display:none">Login via PAM</button>
     <button class="btn ghost" id="showCredsBtn" style="display:none">Show credentials</button>
     <button class="btn ghost" id="openDirectBtn">Open directly ↗</button>
     <button class="btn danger" id="endBtn">End Session</button>
@@ -45,8 +46,10 @@
 <div id="fortiMfaBar" class="cred-box" style="display:none;margin:0 16px 6px">
   <div><b>FortiGate TACACS login</b> — use <b>Login via PAM</b> below (server-side, same as <code>diagnose test authserver</code>). Do <b>not</b> click Login in the FortiGate form — its JavaScript encryption breaks TACACS through the proxy.</div>
   <div class="row" style="margin-top:8px">
-    <label class="muted" for="fortiMfaInput">MFA (optional)</label>
-    <input id="fortiMfaInput" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" style="width:88px;padding:6px 8px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0"/>
+    <label class="muted" for="fortiPwInput">Password</label>
+    <input id="fortiPwInput" type="password" autocomplete="current-password" placeholder="Portal password" style="width:160px;padding:6px 8px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0"/>
+    <label class="muted" for="fortiMfaInput">MFA</label>
+    <input id="fortiMfaInput" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="optional" style="width:72px;padding:6px 8px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0"/>
     <button class="btn" id="fortiApplyPwBtn" type="button">Login via PAM</button>
     <span class="muted" id="fortiApplyStatus"></span>
   </div>
@@ -90,36 +93,46 @@
 
   let targetURL = "";
   let fortiPortalPassword = "";
-  let fortiTacacsMode = false;
+  let fortiPortalUser = "";
 
   async function loginViaPAM() {
     const statusEl = document.getElementById("fortiApplyStatus");
     const btn = document.getElementById("fortiApplyPwBtn");
+    const headerBtn = document.getElementById("fortiHeaderLoginBtn");
     const mfa = String(document.getElementById("fortiMfaInput").value || "").replace(/\D/g, "");
+    const pwInput = document.getElementById("fortiPwInput");
+    const password = String((pwInput && pwInput.value) || fortiPortalPassword || "").trim();
     if (mfa.length > 0 && mfa.length !== 6) {
       statusEl.textContent = "MFA must be 6 digits or left empty";
       statusEl.className = "err";
       return;
     }
-    if (!fortiPortalPassword) {
-      statusEl.textContent = "Portal password not cached — sign out and sign in to PAM again";
+    if (!password) {
+      statusEl.textContent = "Enter your portal password above (same as PAM login)";
       statusEl.className = "err";
+      if (pwInput) pwInput.focus();
       return;
     }
-    btn.disabled = true;
-    statusEl.textContent = "Logging in via PAM…";
+    if (btn) btn.disabled = true;
+    if (headerBtn) headerBtn.disabled = true;
+    statusEl.textContent = "Logging in via PAM (server-side logincheck)…";
     statusEl.className = "";
     try {
       const loginURL = "/web/" + encodeURIComponent(sessionId) + "/pam-forti-login?token=" + encodeURIComponent(token || "");
       const r = await fetch(loginURL, {
         method: "POST",
+        credentials: "same-origin",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ mfa: mfa }),
+        body: JSON.stringify({ mfa: mfa, password: password }),
       });
-      const data = await r.json().catch(() => ({}));
+      const text = await r.text();
+      let data = {};
+      try { data = JSON.parse(text); } catch { data = { error: text.slice(0, 200) }; }
       if (!r.ok) {
-        statusEl.textContent = data.error || "Login failed — check tacacs logs";
+        const msg = data.error || ("HTTP " + r.status);
+        statusEl.textContent = msg;
         statusEl.className = "err";
+        console.error("pam-forti-login failed", r.status, data);
         return;
       }
       statusEl.textContent = "Logged in — loading FortiGate console…";
@@ -128,8 +141,30 @@
     } catch (e) {
       statusEl.textContent = "Login request failed: " + (e.message || "network error");
       statusEl.className = "err";
+      console.error("pam-forti-login error", e);
     } finally {
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
+      if (headerBtn) headerBtn.disabled = false;
+    }
+  }
+
+  function setupFortiLoginUI(info) {
+    fortiPortalUser = info.portal_username || "";
+    fortiPortalPassword = info.portal_password || "";
+    document.getElementById("fortiMfaBar").style.display = "block";
+    const headerBtn = document.getElementById("fortiHeaderLoginBtn");
+    headerBtn.style.display = "";
+    headerBtn.onclick = loginViaPAM;
+    document.getElementById("fortiApplyPwBtn").onclick = loginViaPAM;
+    document.getElementById("fortiMfaInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); loginViaPAM(); }
+    });
+    const pwInput = document.getElementById("fortiPwInput");
+    if (pwInput) {
+      if (fortiPortalPassword) pwInput.placeholder = "Portal password (cached — click to change)";
+      pwInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); loginViaPAM(); }
+      });
     }
   }
 
@@ -177,34 +212,20 @@
               navigator.clipboard.writeText(info.password).then(() => alert("Copied!"));
             };
           }
-        } else if (info.portal_username) {
-          fortiTacacsMode = true;
-          fortiPortalPassword = info.portal_password || "";
+        } else if (info.portal_username || (isFortiWebTarget({ target_kind: info.target_kind, web_url: info.web_url, name: info.target_name }) && !hasPrivAccount)) {
           showCreds.style.display = "";
           const hint = info.auth_hint ? `<p style="margin:0 0 6px">${esc(info.auth_hint)}</p>` : "";
+          const userLine = info.portal_username
+            ? `Username: <b>${esc(info.portal_username)}</b>`
+            : `Use your PAM portal username in the bar below`;
           const pwBlock = info.portal_password
-            ? `Portal password: <span id="pwSpan" style="filter:blur(4px);cursor:pointer" title="click to reveal">${esc(info.portal_password)}</span>
-               <button class="btn ghost" style="font-size:11px;padding:2px 8px;margin-left:6px" id="copyPwBtn">Copy</button>`
-            : `Sign out/in to PAM to cache your portal password`;
+            ? `Portal password cached (or type in bar below)`
+            : `Type your portal password in the bar below`;
+          credBar.style.display = "block";
           credBar.innerHTML = hint + `
-            <b>TACACS login:</b>
-            Username: <b>${esc(info.portal_username)}</b>
-            &nbsp;·&nbsp;
-            ${pwBlock}`;
-          const pwEl = document.getElementById("pwSpan");
-          if (pwEl) pwEl.onclick = function() { this.style.filter = ""; };
-          if (info.portal_password) {
-            document.getElementById("copyPwBtn").onclick = () => {
-              navigator.clipboard.writeText(info.portal_password).then(() => alert("Copied portal password"));
-            };
-          }
-          if (info.portal_password) {
-            document.getElementById("fortiMfaBar").style.display = "block";
-            document.getElementById("fortiApplyPwBtn").onclick = loginViaPAM;
-            document.getElementById("fortiMfaInput").addEventListener("keydown", (e) => {
-              if (e.key === "Enter") { e.preventDefault(); loginViaPAM(); }
-            });
-          }
+            <b>TACACS login — use Login via PAM (header or bar below), NOT the FortiGate form:</b>
+            ${userLine} · ${pwBlock}`;
+          setupFortiLoginUI(info);
         }
 
         showCreds.onclick = () => {
