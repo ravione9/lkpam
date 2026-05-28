@@ -25,10 +25,12 @@ RUN apk add --no-cache ca-certificates wget su-exec tzdata netcat-openbsd libcap
 WORKDIR /app
 COPY --from=build /out/ /app/
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh \
+COPY deploy/docker/fix-recordings-perms.sh /fix-recordings-perms.sh
+RUN chmod +x /entrypoint.sh /fix-recordings-perms.sh \
     && mkdir -p /data /recordings \
     && chown -R pam:pam /data /recordings \
-    && setcap 'cap_net_bind_service=+ep' /app/tacacs-service
+    && setcap 'cap_net_bind_service=+ep' /app/tacacs-service \
+    && setcap 'cap_dac_read_search=+ep' /app/audit-service
 
 VOLUME ["/data", "/recordings"]
 

@@ -170,6 +170,7 @@ services:
     volumes:
       - pam-rec:/recordings
       - ./guacd-entrypoint.sh:/guacd-entrypoint.sh:ro
+      - ./fix-recordings-perms.sh:/fix-recordings-perms.sh:ro
 
   rdp-proxy:
     <<: *common

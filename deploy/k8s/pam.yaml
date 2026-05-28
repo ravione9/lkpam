@@ -261,6 +261,9 @@ spec:
           image: pam-platform:latest
           imagePullPolicy: IfNotPresent
           args: ["/app/audit-service"]
+          securityContext:
+            capabilities:
+              add: ["DAC_READ_SEARCH"]
           ports: [{ name: http, containerPort: 8085 }]
           envFrom:
             - secretRef: { name: pam-secrets }

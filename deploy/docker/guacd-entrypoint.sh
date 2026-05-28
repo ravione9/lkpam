@@ -15,15 +15,18 @@ mkdir -p /recordings/ssh /recordings/rdp
 chmod -R 0777 /recordings
 echo "guacd-entrypoint: /recordings permissions set for guacd (umask 0)"
 
-# guacd sometimes still writes root-owned 0600 files (ignores umask). audit-service
-# runs as the unprivileged pam user in another container and cannot read those files.
-# Re-chmod new recordings in the background so playback always works.
-(
-  while true; do
-    find /recordings -type d -exec chmod a+rwx {} + 2>/dev/null || true
-    find /recordings -type f -exec chmod a+rw {} + 2>/dev/null || true
-    sleep 2
-  done
-) &
+if [ -f /fix-recordings-perms.sh ]; then
+	# shellcheck source=/fix-recordings-perms.sh
+	. /fix-recordings-perms.sh
+	recordings_perms_loop &
+else
+	(
+		while true; do
+			find /recordings -type d -exec chmod a+rwx {} + 2>/dev/null || true
+			find /recordings -type f -exec chmod a+rw {} + 2>/dev/null || true
+			sleep 1
+		done
+	) &
+fi
 
 exec /opt/guacamole/sbin/guacd -b 0.0.0.0 -L info -f
