@@ -545,9 +545,11 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 	fortiDoneEarly := state.fortiLoginDone
 	state.mu.Unlock()
 	if fortiDoneEarly && isFortinetSession(creds, state) && r.Method == http.MethodGet && shouldBounceFortinetAuthedToNG(rest) {
-		log.Printf("web-proxy: fortigate authed bounce session=%s path=%s -> /ng/", sessionID, rest)
-		http.Redirect(w, r, fortigatePostLoginPath(sessionID, portalTokEarly), http.StatusFound)
-		return
+		if fortigateReconcileLoginState(state, httpClient.Jar, targetURL, r) {
+			log.Printf("web-proxy: fortigate authed bounce session=%s path=%s -> /ng/", sessionID, rest)
+			http.Redirect(w, r, fortigatePostLoginPath(sessionID, portalTokEarly), http.StatusFound)
+			return
+		}
 	}
 
 	// FortiGate: server-side login before authenticated SPA/API paths (TACACS uses portal creds).
@@ -584,9 +586,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		primeUpstreamSession(r.Context(), httpClient, targetURL)
 	}
 
-	state.mu.Lock()
-	preferJarCookies := state.fortiLoginDone
-	state.mu.Unlock()
+	preferJarCookies := fortigateReconcileLoginState(state, httpClient.Jar, targetURL, r)
 
 	upstream, upstreamURL, err := buildWebUpstreamRequest(r, targetURL, effectiveRest, upQ, sessionID, creds, httpClient.Jar, preferJarCookies)
 	if err != nil {
@@ -608,12 +608,16 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		return
 	}
 
-	// FortiGate: SPA API 401 before login — authenticate with portal/TACACS creds and retry once.
+	// FortiGate: SPA API 401 — authenticate with portal/TACACS creds and retry once.
 	if upResp.StatusCode == http.StatusUnauthorized &&
 		strings.HasPrefix(strings.ToLower(rest), "/api/") &&
 		isFortinetSession(creds, state) {
+		importBrowserFortiCookiesIntoJar(r, httpClient.Jar, targetURL)
 		state.mu.Lock()
-		needLogin := !state.fortiLoginDone
+		needLogin := !state.fortiLoginDone || !fortigateHasSessionCookies(httpClient.Jar, targetURL)
+		if needLogin {
+			state.fortiLoginDone = false
+		}
 		assetPrefix := state.assetPrefix
 		state.mu.Unlock()
 		if needLogin {

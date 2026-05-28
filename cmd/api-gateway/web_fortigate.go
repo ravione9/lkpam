@@ -110,6 +110,78 @@ func stripInternalCookies(cookieHeader string) string {
 	return strings.Join(kept, "; ")
 }
 
+// fortigateHasSessionCookies reports whether the upstream jar holds FortiOS admin
+// session cookies (session_key / APSCOOKIE / ccsrftoken).
+func fortigateHasSessionCookies(jar http.CookieJar, target *url.URL) bool {
+	for _, c := range collectJarCookies(jar, target, "/") {
+		lower := strings.ToLower(c.Name)
+		if strings.HasPrefix(lower, "session_key") ||
+			strings.HasPrefix(lower, "apscookie") ||
+			strings.HasPrefix(lower, "ccsrftoken") {
+			return true
+		}
+	}
+	return false
+}
+
+// importBrowserFortiCookiesIntoJar copies FortiOS session cookies from the
+// browser Cookie header into the upstream jar when the jar lost them.
+func importBrowserFortiCookiesIntoJar(browser *http.Request, jar http.CookieJar, target *url.URL) {
+	if browser == nil || jar == nil || target == nil {
+		return
+	}
+	if fortigateHasSessionCookies(jar, target) {
+		return
+	}
+	device := stripInternalCookies(browser.Header.Get("Cookie"))
+	if device == "" {
+		return
+	}
+	u := &url.URL{Scheme: target.Scheme, Host: upstreamHost(target), Path: "/"}
+	var cookies []*http.Cookie
+	for _, part := range strings.Split(device, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name := part
+		value := ""
+		if i := strings.IndexByte(part, '='); i >= 0 {
+			name = strings.TrimSpace(part[:i])
+			value = strings.TrimSpace(part[i+1:])
+		}
+		lower := strings.ToLower(name)
+		if !strings.HasPrefix(lower, "session_key") &&
+			!strings.HasPrefix(lower, "apscookie") &&
+			!strings.HasPrefix(lower, "ccsrftoken") {
+			continue
+		}
+		cookies = append(cookies, &http.Cookie{Name: name, Value: value, Path: "/"})
+	}
+	if len(cookies) == 0 {
+		return
+	}
+	jar.SetCookies(u, cookies)
+	log.Printf("web-proxy: fortigate imported %d session cookie(s) from browser into jar", len(cookies))
+}
+
+// fortigateReconcileLoginState clears a stale fortiLoginDone flag when the jar
+// has no session cookies, optionally importing them from the browser first.
+func fortigateReconcileLoginState(state *webSessionState, jar http.CookieJar, target *url.URL, browser *http.Request) bool {
+	if state == nil {
+		return false
+	}
+	importBrowserFortiCookiesIntoJar(browser, jar, target)
+	has := fortigateHasSessionCookies(jar, target)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.fortiLoginDone && !has {
+		log.Printf("web-proxy: fortigate fortiLoginDone stale — no session cookies in jar")
+		state.fortiLoginDone = false
+	}
+	return state.fortiLoginDone && has
+}
+
 // mergeUpstreamCookies forwards device session cookies to the upstream appliance.
 // When preferJar is true (after server-side FortiGate login), the upstream jar
 // is authoritative — stale pre-auth cookies from the browser must not win.
@@ -123,6 +195,7 @@ func mergeUpstreamCookies(upstream *http.Request, browser *http.Request, jar htt
 		}
 		return
 	}
+	importBrowserFortiCookiesIntoJar(browser, jar, target)
 	u, err := url.Parse(upstream.URL.String())
 	if err != nil {
 		return
@@ -137,7 +210,12 @@ func mergeUpstreamCookies(upstream *http.Request, browser *http.Request, jar htt
 	}
 	if preferJar {
 		if len(jarCookies) == 0 {
-			upstream.Header.Del("Cookie")
+			device := stripInternalCookies(browser.Header.Get("Cookie"))
+			if device != "" {
+				upstream.Header.Set("Cookie", device)
+			} else {
+				upstream.Header.Del("Cookie")
+			}
 			return
 		}
 		parts := make([]string, 0, len(jarCookies))
@@ -364,8 +442,12 @@ func ensureFortiGateAuthenticated(ctx context.Context, client *http.Client, targ
 	}
 	state.mu.Lock()
 	if state.fortiLoginDone {
-		state.mu.Unlock()
-		return true
+		if fortigateHasSessionCookies(client.Jar, target) {
+			state.mu.Unlock()
+			return true
+		}
+		log.Printf("web-proxy: fortigate fortiLoginDone stale in ensure — re-login")
+		state.fortiLoginDone = false
 	}
 	state.mu.Unlock()
 
@@ -374,6 +456,10 @@ func ensureFortiGateAuthenticated(ctx context.Context, client *http.Client, targ
 		return false
 	}
 	if !fortigateFormLogin(ctx, client, target, user, pass, "", assetPrefix) {
+		return false
+	}
+	if !fortigateHasSessionCookies(client.Jar, target) {
+		log.Printf("web-proxy: fortigate login finished but no session cookies in jar user=%q", user)
 		return false
 	}
 	nJar := len(collectJarCookies(client.Jar, target, "/"))
@@ -548,9 +634,10 @@ func fortigateLoginViaAPI(ctx context.Context, client *http.Client, target *url.
 		switch ar.StatusCode {
 		case 5:
 			fortigatePrimeAuthenticatedSession(ctx, client, target, "")
-			// LOGIN_SUCCESS is authoritative; even if our probe 401s on this
-			// firmware, the SPA can still use session_key + ccsrftoken cookies
-			// for /ng/ and the documented monitor endpoints.
+			if !fortigateHasSessionCookies(client.Jar, target) {
+				log.Printf("web-proxy: fortigate LOGIN_SUCCESS but no session cookies in jar")
+				return false
+			}
 			if !fortigateValidateSession(ctx, client, target) {
 				log.Printf("web-proxy: fortigate api auth LOGIN_SUCCESS but probe 401 — trusting session_key cookies")
 			}
@@ -730,7 +817,13 @@ func fortigateStoreResponseCookies(jar http.CookieJar, pageURL string, resp *htt
 	if err != nil {
 		return
 	}
-	jar.SetCookies(u, resp.Cookies())
+	cookies := resp.Cookies()
+	if len(cookies) == 0 {
+		return
+	}
+	jar.SetCookies(u, cookies)
+	root := &url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/"}
+	jar.SetCookies(root, cookies)
 }
 
 func fortigateJarCookieNames(jar http.CookieJar, target *url.URL) string {
@@ -924,7 +1017,7 @@ func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID st
 	log.Printf("web-proxy: pam-forti-login session=%s user=%q target=%s mfa=%v",
 		sessionID, user, target.String(), len(mfa) == 6)
 	ok := fortigateFormLogin(r.Context(), state.client, target, user, pass, mfa, assetPrefix)
-	if !ok {
+	if !ok || !fortigateHasSessionCookies(state.client.Jar, target) {
 		writeFortiLoginJSON(http.StatusUnauthorized, map[string]string{
 			"error": "FortiGate session not established — logincheck or post-login disclaimer failed. Check: docker compose logs gateway --tail 30",
 		})
