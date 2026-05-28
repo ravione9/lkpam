@@ -234,6 +234,87 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
+// handleFortiPortalLogin performs FortiGate GUI login server-side via POST
+// /logincheck with the portal username and password (+ optional MFA suffix).
+// FortiOS browser login.js encrypts credentials client-side, which breaks TACACS
+// through the proxy; plain logincheck matches "diagnose test authserver tacacs+".
+func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID string, creds weblaunch.SessionCreds, target *url.URL, state *webSessionState) {
+	if !isFortinetTarget(creds) {
+		http.Error(w, "not a FortiGate web session", http.StatusBadRequest)
+		return
+	}
+	user := strings.TrimSpace(creds.PortalUsername)
+	pass := strings.TrimSpace(creds.PortalPassword)
+	if user == "" || pass == "" {
+		http.Error(w, "portal credentials not cached — sign out and sign in to PAM, then re-launch", http.StatusBadRequest)
+		return
+	}
+	var in struct {
+		MFA string `json:"mfa"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	mfa := digitsOnly(in.MFA)
+	if mfa != "" && len(mfa) != 6 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "MFA must be 6 digits or left empty"})
+		return
+	}
+	loginPass := pass
+	if len(mfa) == 6 {
+		loginPass += mfa
+	}
+
+	state.mu.Lock()
+	assetPrefix := state.assetPrefix
+	state.mu.Unlock()
+	if assetPrefix == "" {
+		assetPrefix = loginAssetPrefixFromTarget(creds.TargetURL)
+	}
+
+	primeUpstreamSession(r.Context(), state.client, target)
+	log.Printf("web-proxy: pam-forti-login session=%s user=%q mfa=%v", sessionID, user, len(mfa) == 6)
+	ok := fortigateFormLogin(r.Context(), state.client, target, user, loginPass, assetPrefix)
+	if !ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": "FortiGate login failed — check portal password/MFA and watch tacacs logs",
+		})
+		return
+	}
+	state.mu.Lock()
+	state.fortiLoginDone = true
+	state.mu.Unlock()
+	syncUpstreamCookiesToBrowser(w, state.client.Jar, target, sessionID)
+
+	tok := strings.TrimSpace(r.URL.Query().Get("token"))
+	if tok == "" {
+		if c, err := r.Cookie("pam_web_tok"); err == nil {
+			tok = strings.TrimSpace(c.Value)
+		}
+	}
+	redirect := "/web/" + sessionID + "/"
+	if tok != "" {
+		redirect += "?token=" + url.QueryEscape(tok)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":       true,
+		"redirect": redirect,
+	})
+}
+
+func digitsOnly(s string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(s) {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // syncUpstreamCookiesToBrowser copies device session cookies from the proxy's
 // upstream jar into the browser Set-Cookie headers (path rewritten for /web/sid/).
 func syncUpstreamCookiesToBrowser(w http.ResponseWriter, jar http.CookieJar, target *url.URL, sessionID string) {

@@ -518,6 +518,14 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		state.mu.Unlock()
 	}
 
+	// FortiGate TACACS: browser form login encrypts the password client-side and
+	// often never reaches TACACS. POST /pam-forti-login performs the same plain
+	// /logincheck the CLI "diagnose test authserver" uses, then syncs cookies.
+	if r.Method == http.MethodPost && rest == "/pam-forti-login" {
+		handleFortiPortalLogin(w, r, sessionID, creds, targetURL, state)
+		return
+	}
+
 	// FortiGate manifest is cosmetic; skip upstream fetch to avoid parse errors in DevTools.
 	if r.Method == http.MethodGet && isWebManifestPath(rest) {
 		w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")

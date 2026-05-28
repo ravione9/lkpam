@@ -79,7 +79,7 @@ func AuthHint(c SessionCreds, hasAccount bool) string {
 		}
 		if c.PortalUsername != "" {
 			if c.PortalPassword != "" {
-				return "FortiGate uses TACACS to PAM. Username is prefilled. Enter your 6-digit MFA above and click Apply password (do not type the password manually — FortiOS encrypts it on submit). Then click Login in the form. TACACS must have authorization enable and PAP auth type."
+				return "FortiGate uses TACACS to PAM. Enter MFA (if enrolled) and click Login via PAM — PAM logs in server-side (same as diagnose test authserver). Do not use the FortiGate form Login button. TACACS must have authorization enable and PAP auth type."
 			}
 			return "FortiGate uses TACACS to PAM. Username is prefilled. Password = your portal password + 6-digit MFA (no space). FortiGate TACACS must have authorization enable and PAP auth type."
 		}
