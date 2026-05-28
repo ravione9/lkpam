@@ -165,9 +165,9 @@ func importBrowserFortiCookiesIntoJar(browser *http.Request, jar http.CookieJar,
 	log.Printf("web-proxy: fortigate imported %d session cookie(s) from browser into jar", len(cookies))
 }
 
-// fortigateReconcileLoginState clears a stale fortiLoginDone flag when the jar
-// has no session cookies, optionally importing them from the browser first.
-func fortigateReconcileLoginState(state *webSessionState, jar http.CookieJar, target *url.URL, browser *http.Request) bool {
+// fortigateJarAuthed reports whether the upstream jar holds a FortiOS admin session,
+// optionally importing session cookies from the browser Cookie header first.
+func fortigateJarAuthed(state *webSessionState, jar http.CookieJar, target *url.URL, browser *http.Request) bool {
 	if state == nil {
 		return false
 	}
@@ -179,7 +179,15 @@ func fortigateReconcileLoginState(state *webSessionState, jar http.CookieJar, ta
 		log.Printf("web-proxy: fortigate fortiLoginDone stale — no session cookies in jar")
 		state.fortiLoginDone = false
 	}
-	return state.fortiLoginDone && has
+	if has && !state.fortiLoginDone {
+		state.fortiLoginDone = true
+	}
+	return has
+}
+
+// fortigateReconcileLoginState is an alias kept for call sites that gate jar-first proxying.
+func fortigateReconcileLoginState(state *webSessionState, jar http.CookieJar, target *url.URL, browser *http.Request) bool {
+	return fortigateJarAuthed(state, jar, target, browser)
 }
 
 // mergeUpstreamCookies forwards device session cookies to the upstream appliance.
@@ -290,6 +298,31 @@ func isFortiAuthSessionPath(rest string) bool {
 	return p == "/api/v2/authentication"
 }
 
+func isFortiWebUIAPIPath(rest string) bool {
+	p := strings.ToLower(strings.Split(rest, "?")[0])
+	return strings.HasPrefix(p, "/api/v2/monitor/web-ui/")
+}
+
+func isFortiJarAPIPath(rest string) bool {
+	return isFortiAuthSessionPath(rest) || isFortiWebUIAPIPath(rest)
+}
+
+func fortigateStubHasGUIConfig(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var meta map[string]interface{}
+	if json.Unmarshal(body, &meta) != nil {
+		return false
+	}
+	results, ok := meta["results"].(map[string]interface{})
+	if !ok || results == nil {
+		return false
+	}
+	v, ok := results["CONFIG_GUI_PUBLIC_PATH"].(string)
+	return ok && strings.TrimSpace(v) != ""
+}
+
 // isFortinetSPAEntryPath is true for FortiOS NG admin shell paths (not static assets).
 func isFortinetSPAEntryPath(rest string) bool {
 	p := strings.ToLower(strings.Split(rest, "?")[0])
@@ -327,13 +360,25 @@ func fortigateWriteBuildStub(w http.ResponseWriter, state *webSessionState, sess
 
 // fortigateFetchAPIViaJar performs a server-side GET using the upstream cookie jar.
 func fortigateFetchAPIViaJar(ctx context.Context, client *http.Client, target *url.URL, rest string, query url.Values) ([]byte, int) {
+	return fortigateCallAPIViaJar(ctx, client, target, http.MethodGet, rest, query, nil, "")
+}
+
+// fortigateCallAPIViaJar performs a server-side API call using the upstream jar.
+func fortigateCallAPIViaJar(ctx context.Context, client *http.Client, target *url.URL, method, rest string, query url.Values, body []byte, contentType string) ([]byte, int) {
 	if client == nil || target == nil {
 		return nil, 0
 	}
 	u := buildUpstreamURL(target, rest, query)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	var reqBody io.Reader
+	if len(body) > 0 {
+		reqBody = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, reqBody)
 	if err != nil {
 		return nil, 0
+	}
+	if len(body) > 0 && contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	tuneUpstreamRequest(req, target, rest)
 	mergeUpstreamCookies(req, &http.Request{}, client.Jar, target, true)
@@ -342,9 +387,42 @@ func fortigateFetchAPIViaJar(ctx context.Context, client *http.Client, target *u
 	if err != nil {
 		return nil, 0
 	}
-	body, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	return body, resp.StatusCode
+	return respBody, resp.StatusCode
+}
+
+func fortigateWriteJarAPIResponse(w http.ResponseWriter, r *http.Request, client *http.Client, target *url.URL, sessionID, rest string, upQ url.Values, state *webSessionState) bool {
+	if client == nil || target == nil || r == nil {
+		return false
+	}
+	var body []byte
+	var code int
+	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+		reqBody, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(reqBody))
+		ct := r.Header.Get("Content-Type")
+		if ct == "" {
+			ct = "application/json"
+		}
+		body, code = fortigateCallAPIViaJar(r.Context(), client, target, r.Method, rest, upQ, reqBody, ct)
+	} else {
+		body, code = fortigateFetchAPIViaJar(r.Context(), client, target, rest, upQ)
+	}
+	if isFortiAuthSessionPath(rest) && (code != http.StatusOK || len(body) == 0) {
+		if cached := fortigateAuthBodyCached(state); len(cached) > 0 {
+			body = cached
+			code = http.StatusOK
+		}
+	}
+	syncUpstreamCookiesToBrowser(w, client.Jar, target, sessionID)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	if len(body) > 0 {
+		_, _ = w.Write(body)
+	}
+	return true
 }
 
 // fortigateFetchDocumentViaJar GETs an HTML/SPA shell using only the upstream jar.
@@ -449,7 +527,7 @@ func fortigateBuildStubBody(state *webSessionState) []byte {
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if len(state.fortiBuildStub) > 0 {
+	if len(state.fortiBuildStub) > 0 && fortigateStubHasGUIConfig(state.fortiBuildStub) {
 		out := make([]byte, len(state.fortiBuildStub))
 		copy(out, state.fortiBuildStub)
 		return out
@@ -511,7 +589,7 @@ func fortigateTryCacheRealFwebBuild(ctx context.Context, client *http.Client, ta
 		if code != http.StatusOK || len(body) == 0 {
 			continue
 		}
-		if !bytes.Contains(body, []byte("CONFIG_GUI")) && !bytes.Contains(body, []byte("results")) {
+		if !fortigateStubHasGUIConfig(body) {
 			continue
 		}
 		state.mu.Lock()
@@ -1245,6 +1323,7 @@ func handleFortiPortalLogin(w http.ResponseWriter, r *http.Request, sessionID st
 	state.fortiLoginDone = true
 	state.mu.Unlock()
 	fortigateCacheBuildStub(r.Context(), state.client, target, state)
+	fortigateTryCacheRealFwebBuild(r.Context(), state.client, target, state)
 	syncUpstreamCookiesToBrowser(w, state.client.Jar, target, sessionID)
 
 	tok := strings.TrimSpace(r.URL.Query().Get("token"))

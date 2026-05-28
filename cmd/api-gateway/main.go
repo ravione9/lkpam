@@ -535,23 +535,18 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		return
 	}
 
+	// FortiGate NG SPA requires fweb_build.json with results.CONFIG_GUI_PUBLIC_PATH.
+	// Upstream often returns 401 even with a valid admin session — always serve stub.
+	if r.Method == http.MethodGet && isFortiBuildManifestPath(rest) && isFortinetSession(creds, state) {
+		log.Printf("web-proxy: fortigate fweb_build.json stub session=%s", sessionID)
+		fortigateWriteBuildStub(w, state, sessionID, httpClient.Jar, targetURL)
+		return
+	}
+
 	portalTokEarly := strings.TrimSpace(r.URL.Query().Get("token"))
 	if portalTokEarly == "" {
 		if c, err := r.Cookie("pam_web_tok"); err == nil {
 			portalTokEarly = strings.TrimSpace(c.Value)
-		}
-	}
-	state.mu.Lock()
-	fortiDoneEarly := state.fortiLoginDone
-	state.mu.Unlock()
-	if fortiDoneEarly && isFortinetSession(creds, state) && r.Method == http.MethodGet && shouldBounceFortinetAuthedToNG(rest) {
-		if fortigateReconcileLoginState(state, httpClient.Jar, targetURL, r) {
-			if fortigateWriteJarDocument(w, r, state, targetURL, sessionID, "/ng/", upQ, creds, portalTokEarly, httpClient) {
-				return
-			}
-			log.Printf("web-proxy: fortigate authed bounce session=%s path=%s -> /ng/", sessionID, rest)
-			http.Redirect(w, r, fortigatePostLoginPath(sessionID, portalTokEarly), http.StatusFound)
-			return
 		}
 	}
 
@@ -566,6 +561,16 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 				syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
 			}
 		}
+	}
+
+	jarAuthed := fortigateJarAuthed(state, httpClient.Jar, targetURL, r)
+	if jarAuthed && isFortinetSession(creds, state) && r.Method == http.MethodGet && shouldBounceFortinetAuthedToNG(rest) {
+		if fortigateWriteJarDocument(w, r, state, targetURL, sessionID, "/ng/", upQ, creds, portalTokEarly, httpClient) {
+			return
+		}
+		log.Printf("web-proxy: fortigate authed bounce session=%s path=%s -> /ng/", sessionID, rest)
+		http.Redirect(w, r, fortigatePostLoginPath(sessionID, portalTokEarly), http.StatusFound)
+		return
 	}
 
 	// Apply a previously-discovered asset prefix
@@ -589,32 +594,16 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		primeUpstreamSession(r.Context(), httpClient, targetURL)
 	}
 
-	preferJarCookies := fortigateReconcileLoginState(state, httpClient.Jar, targetURL, r)
+	preferJarCookies := jarAuthed
 
-	if preferJarCookies && isFortinetSession(creds, state) && r.Method == http.MethodGet {
-		if isFortiBuildManifestPath(rest) {
-			log.Printf("web-proxy: fortigate fweb_build.json stub (pre-upstream) session=%s", sessionID)
-			fortigateWriteBuildStub(w, state, sessionID, httpClient.Jar, targetURL)
+	if jarAuthed && isFortinetSession(creds, state) && isFortiJarAPIPath(rest) {
+		fortigateWriteJarAPIResponse(w, r, httpClient, targetURL, sessionID, rest, upQ, state)
+		return
+	}
+
+	if jarAuthed && isFortinetSession(creds, state) && r.Method == http.MethodGet && isFortinetSPAEntryPath(rest) {
+		if fortigateWriteJarDocument(w, r, state, targetURL, sessionID, rest, upQ, creds, portalTokEarly, httpClient) {
 			return
-		}
-		if isFortiAuthSessionPath(rest) {
-			body, code := fortigateFetchAPIViaJar(r.Context(), httpClient, targetURL, rest, upQ)
-			if code != http.StatusOK || len(body) == 0 {
-				body = fortigateAuthBodyCached(state)
-			}
-			if len(body) > 0 {
-				syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
-				w.Header().Set("Content-Type", "application/json; charset=utf-8")
-				w.Header().Set("Cache-Control", "no-store")
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write(body)
-				return
-			}
-		}
-		if isFortinetSPAEntryPath(rest) {
-			if fortigateWriteJarDocument(w, r, state, targetURL, sessionID, rest, upQ, creds, portalTokEarly, httpClient) {
-				return
-			}
 		}
 	}
 
@@ -740,15 +729,29 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 			log.Printf("web-proxy: fortigate api 401 session=%s url=%s forti_done=%v jar_cookies=%d portal_pw=%v",
 				sessionID, upstreamURL, fortiDone, len(collectJarCookies(httpClient.Jar, targetURL, rest)), creds.PortalPassword != "")
 		}
-		// fweb_build.json: some FortiOS builds 401 even for valid admin sessions.
-		// The SPA reads .build/.version off it and crashes (Cannot read 'message'
-		// of undefined) if the fetch rejects, so serve a synthetic stub.
-		if fortiDone && upResp.StatusCode == http.StatusUnauthorized && isFortiBuildManifestPath(rest) {
-			io.Copy(io.Discard, upResp.Body)
-			upResp.Body.Close()
-			log.Printf("web-proxy: fortigate fweb_build.json 401 — serving synthetic stub session=%s", sessionID)
-			fortigateWriteBuildStub(w, state, sessionID, httpClient.Jar, targetURL)
-			return
+		// fweb_build.json: upstream 401 or invalid body — serve synthetic stub.
+		if isFortiBuildManifestPath(rest) && r.Method == http.MethodGet {
+			if upResp.StatusCode == http.StatusUnauthorized {
+				io.Copy(io.Discard, upResp.Body)
+				upResp.Body.Close()
+				log.Printf("web-proxy: fortigate fweb_build.json upstream 401 — serving stub session=%s", sessionID)
+				fortigateWriteBuildStub(w, state, sessionID, httpClient.Jar, targetURL)
+				return
+			}
+			if upResp.StatusCode == http.StatusOK {
+				rawBody, _ := io.ReadAll(upResp.Body)
+				upResp.Body.Close()
+				body, err := decompressUpstreamBody(rawBody, upResp.Header.Get("Content-Encoding"))
+				if err != nil {
+					body = rawBody
+				}
+				if !fortigateStubHasGUIConfig(body) {
+					log.Printf("web-proxy: fortigate fweb_build.json invalid body — serving stub session=%s", sessionID)
+					fortigateWriteBuildStub(w, state, sessionID, httpClient.Jar, targetURL)
+					return
+				}
+				upResp.Body = io.NopCloser(bytes.NewReader(body))
+			}
 		}
 		if fortiDone {
 			syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)

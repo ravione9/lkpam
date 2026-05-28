@@ -151,3 +151,27 @@ func TestFortigateBuildStubFromStatus(t *testing.T) {
 		t.Fatalf("results.version=%v", results["version"])
 	}
 }
+
+func TestFortigateStubHasGUIConfig(t *testing.T) {
+	if !fortigateStubHasGUIConfig(fortiBuildManifestStubDefault) {
+		t.Fatal("default stub should be valid")
+	}
+	if fortigateStubHasGUIConfig([]byte(`{"version":"v7.4.0","build":2600}`)) {
+		t.Fatal("flat stub should be invalid")
+	}
+}
+
+func TestIsFortiWebUIAPIPath(t *testing.T) {
+	for _, p := range []string{
+		"/api/v2/monitor/web-ui/extend-session",
+		"/api/v2/monitor/web-ui/state",
+		"/api/v2/monitor/web-ui/object-urls",
+	} {
+		if !isFortiWebUIAPIPath(p) {
+			t.Fatalf("expected web-ui path: %s", p)
+		}
+	}
+	if !isFortiJarAPIPath("/api/v2/authentication") {
+		t.Fatal("auth should be jar API path")
+	}
+}
