@@ -283,7 +283,7 @@ func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.UR
 			}
 			log.Printf("web-proxy: fortigate logincheck accepted user=%q url=%s body=%q jar=%d",
 				username, u, truncate(string(body), 80), len(collectJarCookies(client.Jar, target, "/")))
-			if fortigateCompleteSession(ctx, client, target, assetPrefix) {
+			if fortigateCompleteSession(ctx, client, target, assetPrefix, body) {
 				log.Printf("web-proxy: fortigate form login ok user=%q url=%s", username, u)
 				return true
 			}
@@ -316,7 +316,7 @@ func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.UR
 			if !fortigateLoginOK(resp, body) {
 				continue
 			}
-			if fortigateCompleteSession(ctx, client, target, assetPrefix) {
+			if fortigateCompleteSession(ctx, client, target, assetPrefix, body) {
 				log.Printf("web-proxy: fortigate form login ok (redirect) user=%q url=%s", username, u)
 				return true
 			}
@@ -326,9 +326,10 @@ func fortigateFormLogin(ctx context.Context, client *http.Client, target *url.UR
 }
 
 var (
-	fortiHiddenInputTag = regexp.MustCompile(`(?i)<input[^>]*type\s*=\s*["']hidden["'][^>]*>`)
-	fortiInputNameAttr  = regexp.MustCompile(`(?i)name\s*=\s*["']([^"']+)["']`)
-	fortiInputValueAttr = regexp.MustCompile(`(?i)value\s*=\s*["']([^"']*)["']`)
+	fortiHiddenInputTag      = regexp.MustCompile(`(?i)<input[^>]*type\s*=\s*["']hidden["'][^>]*>`)
+	fortiInputNameAttr       = regexp.MustCompile(`(?i)name\s*=\s*["']([^"']+)["']`)
+	fortiInputValueAttr      = regexp.MustCompile(`(?i)value\s*=\s*["']([^"']*)["']`)
+	fortiDocumentLocationRE  = regexp.MustCompile(`(?i)document\.location\s*=\s*["']([^"']+)["']`)
 )
 
 // fortigateFetchLoginForm GETs the login page and returns hidden form fields
@@ -408,45 +409,148 @@ func fortigateLoginOK(resp *http.Response, body []byte) bool {
 	return false
 }
 
-// fortigateCompleteSession accepts post-login disclaimer (if enabled), primes
-// cookies, and verifies /api/v2/static/fweb_build.json returns 200.
-func fortigateCompleteSession(ctx context.Context, client *http.Client, target *url.URL, assetPrefix string) bool {
+// fortigateCompleteSession follows FortiOS post-logincheck redirects (disclaimer,
+// /prompt, redir target) until session cookies and ccsrftoken are established.
+func fortigateCompleteSession(ctx context.Context, client *http.Client, target *url.URL, assetPrefix string, loginBody []byte) bool {
 	if client == nil || target == nil {
 		return false
 	}
-	fortigateAcceptDisclaimer(ctx, client, target)
+	loc := fortigateAbsPath(fortigateParseDocumentLocation(loginBody))
+	log.Printf("web-proxy: fortigate logincheck redirect=%q cookies=[%s]", loc, fortigateJarCookieNames(client.Jar, target))
+
+	disclaimerBody := fortigatePostDisclaimer(ctx, client, target)
+	if next := fortigateAbsPath(fortigateParseDocumentLocation(disclaimerBody)); next != "" {
+		loc = next
+	}
+
+	if strings.Contains(strings.ToLower(loc), "prompt") {
+		fortigateUpstreamGET(ctx, client, target, loc)
+		fortigatePostPrompt(ctx, client, target, loc)
+		if u, err := url.Parse(loc); err == nil {
+			if redir := strings.TrimSpace(u.Query().Get("redir")); redir != "" {
+				fortigateUpstreamGET(ctx, client, target, redir)
+			}
+		}
+	} else if loc != "" && !strings.Contains(strings.ToLower(loc), "logindisclaimer") {
+		fortigateUpstreamGET(ctx, client, target, loc)
+	}
+
 	fortigatePrimeAuthenticatedSession(ctx, client, target, assetPrefix)
 	return fortigateValidateSession(ctx, client, target)
 }
 
-// fortigateAcceptDisclaimer confirms the post-login banner when enabled.
-// Without this step FortiOS sets cookies on logincheck but API calls return 401/403.
-func fortigateAcceptDisclaimer(ctx context.Context, client *http.Client, target *url.URL) {
-	u := buildUpstreamURL(target, "/logindisclaimer", nil)
-	form := url.Values{"confirm": {"1"}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(form.Encode()))
+func fortigateParseDocumentLocation(body []byte) string {
+	m := fortiDocumentLocationRE.FindSubmatch(body)
+	if len(m) >= 2 {
+		return string(m[1])
+	}
+	return ""
+}
+
+func fortigateAbsPath(loc string) string {
+	loc = strings.TrimSpace(loc)
+	if loc == "" {
+		return ""
+	}
+	if strings.HasPrefix(loc, "http://") || strings.HasPrefix(loc, "https://") {
+		if u, err := url.Parse(loc); err == nil {
+			if u.RawQuery != "" {
+				return u.Path + "?" + u.RawQuery
+			}
+			return u.Path
+		}
+	}
+	if !strings.HasPrefix(loc, "/") {
+		loc = "/" + loc
+	}
+	return loc
+}
+
+func fortigateStoreResponseCookies(jar http.CookieJar, pageURL string, resp *http.Response) {
+	if jar == nil || resp == nil || pageURL == "" {
+		return
+	}
+	u, err := url.Parse(pageURL)
 	if err != nil {
 		return
+	}
+	jar.SetCookies(u, resp.Cookies())
+}
+
+func fortigateJarCookieNames(jar http.CookieJar, target *url.URL) string {
+	cs := collectJarCookies(jar, target, "/")
+	names := make([]string, 0, len(cs))
+	for _, c := range cs {
+		names = append(names, c.Name)
+	}
+	return strings.Join(names, ",")
+}
+
+func fortigateUpstreamGET(ctx context.Context, client *http.Client, target *url.URL, path string) []byte {
+	if client == nil || target == nil || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	pageURL := buildUpstreamURL(target, path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return nil
+	}
+	tuneUpstreamRequest(req, target, path)
+	mergeUpstreamCookies(req, &http.Request{}, client.Jar, target, true)
+	fortigateAttachCSRF(req, client.Jar, target)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	fortigateStoreResponseCookies(client.Jar, pageURL, resp)
+	log.Printf("web-proxy: fortigate GET %s status=%d cookies=[%s]", path, resp.StatusCode, fortigateJarCookieNames(client.Jar, target))
+	return body
+}
+
+func fortigateUpstreamPOST(ctx context.Context, client *http.Client, target *url.URL, path string, form url.Values) []byte {
+	if client == nil || target == nil || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	pageURL := buildUpstreamURL(target, path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pageURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Referer", buildUpstreamURL(target, "/", nil))
-	tuneUpstreamRequest(req, target, "/logindisclaimer")
+	tuneUpstreamRequest(req, target, path)
 	mergeUpstreamCookies(req, &http.Request{}, client.Jar, target, true)
+	fortigateAttachCSRF(req, client.Jar, target)
 	resp, err := client.Do(req)
 	if err != nil {
-		return
+		return nil
 	}
-	_, _ = io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
-		log.Printf("web-proxy: fortigate logindisclaimer ok status=%d", resp.StatusCode)
+	fortigateStoreResponseCookies(client.Jar, pageURL, resp)
+	log.Printf("web-proxy: fortigate POST %s status=%d cookies=[%s]", path, resp.StatusCode, fortigateJarCookieNames(client.Jar, target))
+	return body
+}
+
+// fortigateAcceptDisclaimer confirms the post-login banner when enabled.
+func fortigatePostDisclaimer(ctx context.Context, client *http.Client, target *url.URL) []byte {
+	return fortigateUpstreamPOST(ctx, client, target, "/logindisclaimer", url.Values{"confirm": {"1"}})
+}
+
+func fortigatePostPrompt(ctx context.Context, client *http.Client, target *url.URL, promptPath string) {
+	path := strings.TrimSpace(promptPath)
+	if path == "" {
+		path = "/prompt"
 	}
+	fortigateUpstreamPOST(ctx, client, target, path, url.Values{"confirm": {"1"}})
 }
 
 func fortigateCSRFCookie(jar http.CookieJar, target *url.URL, reqPath string) string {
 	for _, c := range collectJarCookies(jar, target, reqPath) {
-		switch strings.ToLower(c.Name) {
-		case "ccsrftoken", "csrftoken":
+		lower := strings.ToLower(c.Name)
+		if lower == "ccsrftoken" || lower == "csrftoken" || strings.HasPrefix(lower, "ccsrftoken") {
 			return strings.Trim(c.Value, `"`)
 		}
 	}
@@ -492,8 +596,8 @@ func fortigateValidateSession(ctx context.Context, client *http.Client, target *
 		log.Printf("web-proxy: fortigate session valid jar_cookies=%d", nJar)
 		return true
 	}
-	log.Printf("web-proxy: fortigate session invalid status=%d jar_cookies=%d csrf=%v",
-		resp.StatusCode, nJar, fortigateCSRFCookie(client.Jar, target, probe) != "")
+	log.Printf("web-proxy: fortigate session invalid status=%d jar_cookies=%d cookies=[%s] csrf=%v",
+		resp.StatusCode, nJar, fortigateJarCookieNames(client.Jar, target), fortigateCSRFCookie(client.Jar, target, probe) != "")
 	return false
 }
 
