@@ -91,3 +91,37 @@ func TestFortigateParseDocumentLocation(t *testing.T) {
 		t.Fatalf("abs path %q", p)
 	}
 }
+
+func TestFortigateBuildStubFromStatus(t *testing.T) {
+	meta := map[string]interface{}{
+		"version": "v7.2.8",
+		"build":   float64(1639),
+		"results": map[string]interface{}{
+			"version":    "v7.2.8",
+			"build":      float64(1639),
+			"branch":     "GA",
+			"model_name": "FortiGate",
+			"hostname":   "HQ_600E",
+		},
+	}
+	raw, err := fortigateBuildStubFromStatus(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stub map[string]interface{}
+	if err := json.Unmarshal(raw, &stub); err != nil {
+		t.Fatal(err)
+	}
+	if stub["version"] != "v7.2.8" {
+		t.Fatalf("version=%v", stub["version"])
+	}
+	if stub["build"].(float64) != 1639 {
+		t.Fatalf("build=%v", stub["build"])
+	}
+	if stub["hostname"] != "HQ_600E" {
+		t.Fatalf("hostname=%v", stub["hostname"])
+	}
+	if _, ok := stub["results"]; ok {
+		t.Fatalf("stub should be flat, got results key: %v", stub)
+	}
+}

@@ -588,6 +588,24 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 
 	preferJarCookies := fortigateReconcileLoginState(state, httpClient.Jar, targetURL, r)
 
+	if preferJarCookies && isFortinetSession(creds, state) && r.Method == http.MethodGet {
+		if isFortiBuildManifestPath(rest) {
+			log.Printf("web-proxy: fortigate fweb_build.json stub (pre-upstream) session=%s", sessionID)
+			fortigateWriteBuildStub(w, state, sessionID, httpClient.Jar, targetURL)
+			return
+		}
+		if isFortiAuthSessionPath(rest) {
+			if body, code := fortigateFetchAPIViaJar(r.Context(), httpClient, targetURL, rest, upQ); code == http.StatusOK && len(body) > 0 {
+				syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(body)
+				return
+			}
+		}
+	}
+
 	upstream, upstreamURL, err := buildWebUpstreamRequest(r, targetURL, effectiveRest, upQ, sessionID, creds, httpClient.Jar, preferJarCookies)
 	if err != nil {
 		writeWebProxyError(w, rest, "proxy build error: "+err.Error(), http.StatusBadGateway)
@@ -717,10 +735,7 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 			io.Copy(io.Discard, upResp.Body)
 			upResp.Body.Close()
 			log.Printf("web-proxy: fortigate fweb_build.json 401 — serving synthetic stub session=%s", sessionID)
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-store")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(fortigateBuildStubBody(state))
+			fortigateWriteBuildStub(w, state, sessionID, httpClient.Jar, targetURL)
 			return
 		}
 		if fortiDone {

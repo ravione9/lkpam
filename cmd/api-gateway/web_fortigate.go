@@ -274,7 +274,7 @@ func fortiLoginCredentials(creds weblaunch.SessionCreds) (user, pass string, ok 
 
 // isFortinetPreAuthRequest is true for login-page assets that must stay unauthenticated.
 // fortiBuildManifestStubDefault is used when monitor/system/status is unavailable.
-var fortiBuildManifestStubDefault = []byte(`{"build":"2600","version":"v7.4.0","branch":"GA","results":{"build":"2600","version":"v7.4.0","branch":"GA"}}`)
+var fortiBuildManifestStubDefault = []byte(`{"build":2600,"version":"v7.4.0","branch":"GA","model_name":"FortiGate"}`)
 
 // isFortiBuildManifestPath matches /api/v2/static/fweb_build.json (with optional query/vdom).
 func isFortiBuildManifestPath(rest string) bool {
@@ -283,6 +283,41 @@ func isFortiBuildManifestPath(rest string) bool {
 		p = p[:i]
 	}
 	return strings.HasSuffix(p, "/api/v2/static/fweb_build.json") || p == "/api/v2/static/fweb_build.json"
+}
+
+func isFortiAuthSessionPath(rest string) bool {
+	p := strings.ToLower(strings.Split(rest, "?")[0])
+	return p == "/api/v2/authentication"
+}
+
+func fortigateWriteBuildStub(w http.ResponseWriter, state *webSessionState, sessionID string, jar http.CookieJar, target *url.URL) {
+	syncUpstreamCookiesToBrowser(w, jar, target, sessionID)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(fortigateBuildStubBody(state))
+}
+
+// fortigateFetchAPIViaJar performs a server-side GET using the upstream cookie jar.
+func fortigateFetchAPIViaJar(ctx context.Context, client *http.Client, target *url.URL, rest string, query url.Values) ([]byte, int) {
+	if client == nil || target == nil {
+		return nil, 0
+	}
+	u := buildUpstreamURL(target, rest, query)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, 0
+	}
+	tuneUpstreamRequest(req, target, rest)
+	mergeUpstreamCookies(req, &http.Request{}, client.Jar, target, true)
+	fortigateAttachCSRF(req, client.Jar, target)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, 0
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return body, resp.StatusCode
 }
 
 // fortigatePostLoginPath is the NG admin SPA entry after server-side auth.
@@ -357,48 +392,51 @@ func fortigateCacheBuildStub(ctx context.Context, client *http.Client, target *u
 		if json.Unmarshal(body, &meta) != nil {
 			continue
 		}
+		stub, err := fortigateBuildStubFromStatus(meta)
+		if err != nil || len(stub) == 0 {
+			continue
+		}
 		version, build := fortigateStatusFields(meta)
-		if version == "" && build == "" {
-			continue
-		}
-		if version == "" {
-			version = "v7.4.0"
-		}
-		if build == "" {
-			build = "2600"
-		}
-		branch := jsonStringField(meta, "branch")
-		if branch == "" {
-			if r, ok := meta["results"].(map[string]interface{}); ok {
-				branch = jsonStringField(r, "branch")
-			}
-		}
-		if branch == "" {
-			branch = "GA"
-		}
-		results := meta["results"]
-		if results == nil {
-			results = map[string]interface{}{
-				"build":   build,
-				"version": version,
-				"branch":  branch,
-			}
-		}
-		stub, err := json.Marshal(map[string]interface{}{
-			"build":   build,
-			"version": version,
-			"branch":  branch,
-			"results": results,
-		})
-		if err != nil {
-			continue
-		}
 		state.mu.Lock()
 		state.fortiBuildStub = stub
 		state.mu.Unlock()
 		log.Printf("web-proxy: fortigate cached fweb_build stub version=%s build=%s", version, build)
 		return
 	}
+}
+
+// fortigateBuildStubFromStatus builds a flat fweb_build.json-shaped payload from
+// /api/v2/monitor/system/status (FortiOS NG reads top-level build/version fields).
+func fortigateBuildStubFromStatus(meta map[string]interface{}) ([]byte, error) {
+	if meta == nil {
+		return nil, fmt.Errorf("empty status")
+	}
+	results, ok := meta["results"].(map[string]interface{})
+	if !ok || results == nil {
+		results = meta
+	}
+	stub := make(map[string]interface{}, len(results)+4)
+	for k, v := range results {
+		stub[k] = v
+	}
+	for _, key := range []string{"version", "build", "branch", "serial", "hostname", "model"} {
+		if _, has := stub[key]; has {
+			continue
+		}
+		if v, ok := meta[key]; ok && v != nil {
+			stub[key] = v
+		}
+	}
+	if _, has := stub["version"]; !has {
+		stub["version"] = "v7.4.0"
+	}
+	if _, has := stub["build"]; !has {
+		stub["build"] = 2600
+	}
+	if _, has := stub["branch"]; !has {
+		stub["branch"] = "GA"
+	}
+	return json.Marshal(stub)
 }
 
 func fortigateStatusFields(meta map[string]interface{}) (version, build string) {
@@ -1273,10 +1311,13 @@ try{
     }
     return u;
   }
+  var want;
+  var wantOrigin;
   if(hosts.length>0){
     try{
-      var want=String(hosts[0]).replace(/:\d+$/,"");
-      [["hostname",want],["host",want]].forEach(function(pair){
+      want=String(hosts[0]).replace(/:\d+$/,"");
+      wantOrigin="https://"+want;
+      [["hostname",want],["host",want],["origin",wantOrigin]].forEach(function(pair){
         var d=Object.getOwnPropertyDescriptor(Location.prototype,pair[0]);
         if(d&&d.get){
           Object.defineProperty(Location.prototype,pair[0],{configurable:true,enumerable:true,get:function(){return pair[1];},set:d.set});
@@ -1288,7 +1329,21 @@ try{
   try{
     var Lp=Location.prototype;
     var d=Object.getOwnPropertyDescriptor(Lp,"href");
-    if(d&&d.set){
+    if(d&&d.get&&d.set){
+      Object.defineProperty(Lp,"href",{
+        configurable:true,enumerable:true,
+        get:function(){
+          var h=d.get.call(this);
+          try{
+            if(typeof want!=="undefined"&&want&&h.indexOf(pfx)>=0){
+              return h.replace(location.protocol+"//"+location.host,wantOrigin);
+            }
+          }catch(e){}
+          return h;
+        },
+        set:function(v){return d.set.call(this,fix(String(v)));}
+      });
+    }else if(d&&d.set){
       Object.defineProperty(Lp,"href",{configurable:true,enumerable:true,get:d.get,set:function(v){return d.set.call(this,fix(String(v)));}});
     }
   }catch(e){}
@@ -1337,14 +1392,7 @@ try{
       if(m){var nu=fix(m[1].trim());metas[i].setAttribute("content",c.replace(m[1],nu));}
     }
   }catch(e){}
-  function hasFortiCookie(){
-    try{
-      var c=document.cookie||"";
-      return c.indexOf("session_key")>=0||c.indexOf("APSCOOKIE")>=0||c.indexOf("ccsrftoken")>=0;
-    }catch(e){return false;}
-  }
   function maybeLeaveLogin(){
-    if(!hasFortiCookie())return;
     var p=location.pathname||"";
     if(p.indexOf("/ng/")>=0)return;
     fetch(pfx+"/api/v2/monitor/web-ui/extend-session",{credentials:"same-origin"})
@@ -1354,10 +1402,24 @@ try{
         location.replace(pfx+"/ng/"+qs);
       }).catch(function(){});
   }
+  function maybeRecoverNG(){
+    var p=location.pathname||"";
+    if(p.indexOf("/ng/")<0)return;
+    fetch(pfx+"/api/v2/monitor/web-ui/extend-session",{credentials:"same-origin"})
+      .then(function(r){
+        if(!r.ok)return;
+        var el=document.querySelector("input[name=username],input[name=ajax_username],#username,.login-page,.login-container");
+        if(!el)return;
+        location.replace(pfx+"/ng/"+(location.search||""));
+      }).catch(function(){});
+  }
   maybeLeaveLogin();
-  document.addEventListener("DOMContentLoaded",maybeLeaveLogin);
+  maybeRecoverNG();
+  document.addEventListener("DOMContentLoaded",function(){maybeLeaveLogin();maybeRecoverNG();});
   setTimeout(maybeLeaveLogin,400);
+  setTimeout(maybeRecoverNG,400);
   setTimeout(maybeLeaveLogin,1500);
+  setTimeout(maybeRecoverNG,1500);
   // Pre-fill portal username only. Do NOT set the password field — FortiOS
   // login.js encrypts the password on submit and breaks when .value is set
   // programmatically (shows "invalid password" without contacting TACACS).
