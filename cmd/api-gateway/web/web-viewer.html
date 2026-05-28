@@ -20,7 +20,10 @@
     .btn { background: #2563eb; color: #fff; border: none; padding: 7px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; }
     .btn.ghost { background: transparent; border: 1px solid #334155; color: #e2e8f0; }
     .btn.danger { background: #991b1b; }
-    .row { display:flex; align-items:center; gap:10px; }
+    .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    #fortiMfaBar input { font-family: inherit; font-size: 13px; }
+    #fortiApplyStatus.ok { color: #4ade80; }
+    #fortiApplyStatus.err { color: #fb923c; }
   </style>
 </head>
 <body>
@@ -39,6 +42,15 @@
   </div>
 </header>
 <div id="credBar" class="cred-box" style="margin:0 16px 6px"></div>
+<div id="fortiMfaBar" class="cred-box" style="display:none;margin:0 16px 6px">
+  <div><b>FortiGate TACACS login</b> — username is prefilled in the form below. Enter your 6-digit MFA and click <b>Apply password</b> (simulates typing so FortiOS accepts it). Then click <b>Login</b> in the FortiGate form.</div>
+  <div class="row" style="margin-top:8px">
+    <label class="muted" for="fortiMfaInput">MFA code</label>
+    <input id="fortiMfaInput" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" style="width:88px;padding:6px 8px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#e2e8f0"/>
+    <button class="btn" id="fortiApplyPwBtn" type="button">Apply password</button>
+    <span class="muted" id="fortiApplyStatus"></span>
+  </div>
+</div>
 <!-- FortiGate (and similar) iframes get a strict sandbox so the appliance's
      `top.location = ...` frame-buster fails silently instead of redirecting
      the whole browser tab to the firewall IP. The bridge script we inject
@@ -77,6 +89,64 @@
   const openDirect2 = document.getElementById("openDirectBtn2");
 
   let targetURL = "";
+  let fortiPortalPassword = "";
+  let fortiTacacsMode = false;
+
+  function findFortiPasswordInput(doc) {
+    if (!doc) return null;
+    const sels = ["input[name=secretkey]", "input[name=passwd]", "#secretkey", "input[type=password]"];
+    for (const s of sels) {
+      const el = doc.querySelector(s);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  // FortiOS login.js expects real keystrokes — setting .value breaks encryption.
+  function typeIntoInput(el, text) {
+    el.focus();
+    el.value = "";
+    el.dispatchEvent(new Event("focus", { bubbles: true }));
+    for (const c of text) {
+      el.value += c;
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: c, bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent("keypress", { key: c, bubbles: true }));
+      try {
+        el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: c }));
+      } catch {
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      el.dispatchEvent(new KeyboardEvent("keyup", { key: c, bubbles: true }));
+    }
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function applyFortiPassword() {
+    const statusEl = document.getElementById("fortiApplyStatus");
+    const mfa = String(document.getElementById("fortiMfaInput").value || "").replace(/\D/g, "");
+    if (mfa.length !== 6) {
+      statusEl.textContent = "Enter a 6-digit MFA code";
+      statusEl.className = "err";
+      return false;
+    }
+    if (!fortiPortalPassword) {
+      statusEl.textContent = "Portal password not cached — sign out and sign in to PAM again";
+      statusEl.className = "err";
+      return false;
+    }
+    let doc;
+    try { doc = frame.contentDocument; } catch { doc = null; }
+    const pwEl = findFortiPasswordInput(doc);
+    if (!pwEl) {
+      statusEl.textContent = "Password field not ready — wait for login page to load";
+      statusEl.className = "err";
+      return false;
+    }
+    typeIntoInput(pwEl, fortiPortalPassword + mfa);
+    statusEl.textContent = "Password applied — now click Login in the form below";
+    statusEl.className = "ok";
+    return true;
+  }
 
   if (!sessionId) {
     nameEl.textContent = "Missing session — launch from the PAM portal.";
@@ -123,14 +193,16 @@
             };
           }
         } else if (info.portal_username) {
+          fortiTacacsMode = true;
+          fortiPortalPassword = info.portal_password || "";
           showCreds.style.display = "";
           const hint = info.auth_hint ? `<p style="margin:0 0 6px">${esc(info.auth_hint)}</p>` : "";
           const pwBlock = info.portal_password
-            ? `Password (portal, add MFA): <span id="pwSpan" style="filter:blur(4px);cursor:pointer" title="click to reveal">${esc(info.portal_password)}</span>
+            ? `Portal password: <span id="pwSpan" style="filter:blur(4px);cursor:pointer" title="click to reveal">${esc(info.portal_password)}</span>
                <button class="btn ghost" style="font-size:11px;padding:2px 8px;margin-left:6px" id="copyPwBtn">Copy</button>`
-            : `Password: your portal password + 6-digit MFA (no space)`;
+            : `Sign out/in to PAM to cache your portal password`;
           credBar.innerHTML = hint + `
-            <b>TACACS login (prefilled in form):</b>
+            <b>TACACS login:</b>
             Username: <b>${esc(info.portal_username)}</b>
             &nbsp;·&nbsp;
             ${pwBlock}`;
@@ -138,8 +210,15 @@
           if (pwEl) pwEl.onclick = function() { this.style.filter = ""; };
           if (info.portal_password) {
             document.getElementById("copyPwBtn").onclick = () => {
-              navigator.clipboard.writeText(info.portal_password).then(() => alert("Copied portal password — append MFA before Login"));
+              navigator.clipboard.writeText(info.portal_password).then(() => alert("Copied portal password"));
             };
+          }
+          if (info.portal_password) {
+            document.getElementById("fortiMfaBar").style.display = "block";
+            document.getElementById("fortiApplyPwBtn").onclick = applyFortiPassword;
+            document.getElementById("fortiMfaInput").addEventListener("keydown", (e) => {
+              if (e.key === "Enter") { e.preventDefault(); applyFortiPassword(); }
+            });
           }
         }
 
@@ -163,6 +242,12 @@
           try {
             const doc = frame.contentDocument;
             if (!doc || doc.URL === "about:blank") throw new Error("blank");
+            if (fortiTacacsMode && fortiPortalPassword) {
+              const pwEl = findFortiPasswordInput(doc);
+              if (pwEl && pwEl.value) {
+                pwEl.value = "";
+              }
+            }
           } catch {
             if (!isForti) showFallback();
           }

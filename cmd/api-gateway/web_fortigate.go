@@ -292,7 +292,7 @@ func injectFortinetLoginAssist(body []byte, creds weblaunch.SessionCreds, sessio
 	}
 	body = neutralizeFortinetFrameBusters(body)
 	targetURL, _ := url.Parse(creds.TargetURL)
-	script := fortinetProxyBridgeScript(sessionID, creds.PortalUsername, creds.PortalPassword, targetURL)
+	script := fortinetProxyBridgeScript(sessionID, creds.PortalUsername, targetURL)
 	// Inject as EARLY as possible (right after <head>) so subsequent inline
 	// scripts cannot navigate away before our location-setter override loads.
 	if i := bytes.Index(bytes.ToLower(body), []byte("<head>")); i >= 0 {
@@ -359,7 +359,7 @@ func loginAssetPrefixFromTarget(rawURL string) string {
 // Location.prototype, which is what FortiOS uses to "frame-bust" out of any
 // embedded viewer. Without this hook, FortiOS does `top.location.href = "https://192.168.48.5/login"`
 // and the browser navigates straight to the firewall, bypassing PAM.
-func fortinetProxyBridgeScript(sessionID, portalUser, portalPass string, target *url.URL) []byte {
+func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []byte {
 	pfx := "/web/" + sessionID
 	hosts := []string{}
 	if target != nil {
@@ -368,7 +368,6 @@ func fortinetProxyBridgeScript(sessionID, portalUser, portalPass string, target 
 	hostsJSON, _ := json.Marshal(hosts)
 	pfxJSON, _ := json.Marshal(pfx)
 	userJSON, _ := json.Marshal(portalUser)
-	passJSON, _ := json.Marshal(portalPass)
 	return []byte(`<script>(function(){
 try{
   var pfx=` + string(pfxJSON) + `;
@@ -441,26 +440,18 @@ try{
       if(m){var nu=fix(m[1].trim());metas[i].setAttribute("content",c.replace(m[1],nu));}
     }
   }catch(e){}
-  // Pre-fill portal username/password (append MFA digits before Login).
+  // Pre-fill portal username only. Do NOT set the password field — FortiOS
+  // login.js encrypts the password on submit and breaks when .value is set
+  // programmatically (shows "invalid password" without contacting TACACS).
   function prefillLogin(){
     var pu=` + string(userJSON) + `;
-    var pp=` + string(passJSON) + `;
-    var done=false;
-    if(pu){
-      var usel=["input[name=username]","input[name=ajax_username]","#username","input[id*=user i]","input[type=text]"];
-      for(var i=0;i<usel.length;i++){
-        var el=document.querySelector(usel[i]);
-        if(el&&!el.value){el.value=pu;done=true;break;}
-      }
+    if(!pu)return false;
+    var usel=["input[name=username]","input[name=ajax_username]","#username","input[id*=user i]","input[type=text]"];
+    for(var i=0;i<usel.length;i++){
+      var el=document.querySelector(usel[i]);
+      if(el&&!el.value){el.value=pu;return true;}
     }
-    if(pp){
-      var pwsel=["input[name=secretkey]","input[name=passwd]","#secretkey","input[type=password]"];
-      for(var j=0;j<pwsel.length;j++){
-        var pw=document.querySelector(pwsel[j]);
-        if(pw&&!pw.value){pw.value=pp;done=true;break;}
-      }
-    }
-    return done;
+    return false;
   }
   if(!prefillLogin()){
     document.addEventListener("DOMContentLoaded",prefillLogin);
