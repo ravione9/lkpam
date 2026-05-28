@@ -367,15 +367,28 @@ func fortigateCacheBuildStub(ctx context.Context, client *http.Client, target *u
 		if build == "" {
 			build = "2600"
 		}
+		branch := jsonStringField(meta, "branch")
+		if branch == "" {
+			if r, ok := meta["results"].(map[string]interface{}); ok {
+				branch = jsonStringField(r, "branch")
+			}
+		}
+		if branch == "" {
+			branch = "GA"
+		}
+		results := meta["results"]
+		if results == nil {
+			results = map[string]interface{}{
+				"build":   build,
+				"version": version,
+				"branch":  branch,
+			}
+		}
 		stub, err := json.Marshal(map[string]interface{}{
 			"build":   build,
 			"version": version,
-			"branch":  "GA",
-			"results": map[string]interface{}{
-				"build":   build,
-				"version": version,
-				"branch":  "GA",
-			},
+			"branch":  branch,
+			"results": results,
 		})
 		if err != nil {
 			continue
@@ -633,7 +646,7 @@ func fortigateLoginViaAPI(ctx context.Context, client *http.Client, target *url.
 
 		switch ar.StatusCode {
 		case 5:
-			fortigatePrimeAuthenticatedSession(ctx, client, target, "")
+			fortigateFinalizeAPILogin(ctx, client, target, "")
 			if !fortigateHasSessionCookies(client.Jar, target) {
 				log.Printf("web-proxy: fortigate LOGIN_SUCCESS but no session cookies in jar")
 				return false
@@ -780,6 +793,32 @@ func fortigateCompleteSession(ctx context.Context, client *http.Client, target *
 
 	fortigatePrimeAuthenticatedSession(ctx, client, target, assetPrefix)
 	return fortigateValidateSession(ctx, client, target)
+}
+
+// fortigateFinalizeAPILogin completes disclaimer/prompt steps that FortiOS
+// normally runs after /logincheck but skips when using /api/v2/authentication.
+func fortigateFinalizeAPILogin(ctx context.Context, client *http.Client, target *url.URL, assetPrefix string) {
+	if client == nil || target == nil {
+		return
+	}
+	disclaimerBody := fortigatePostDisclaimer(ctx, client, target)
+	loc := fortigateAbsPath(fortigateParseDocumentLocation(disclaimerBody))
+	if loc == "" {
+		loc = "/prompt?viewOnly&redir=%2Fng%2F"
+	}
+	if strings.Contains(strings.ToLower(loc), "prompt") || strings.Contains(loc, "viewOnly") {
+		fortigateUpstreamGET(ctx, client, target, loc)
+		fortigatePostPrompt(ctx, client, target, loc)
+		if u, err := url.Parse(loc); err == nil {
+			if redir := strings.TrimSpace(u.Query().Get("redir")); redir != "" {
+				fortigateUpstreamGET(ctx, client, target, redir)
+			}
+		}
+	} else if loc != "" && !strings.Contains(strings.ToLower(loc), "logindisclaimer") {
+		fortigateUpstreamGET(ctx, client, target, loc)
+	}
+	fortigateUpstreamGET(ctx, client, target, "/ng/")
+	fortigatePrimeAuthenticatedSession(ctx, client, target, assetPrefix)
 }
 
 func fortigateParseDocumentLocation(body []byte) string {
@@ -1222,7 +1261,7 @@ try{
     }
     return "";
   }
-  var rootPfx=["/logincheck","/logout","/login","/api/v2/","/static/","/favicon/","/assets/","/ng/","/p/","/sslvpn/"];
+  var rootPfx=["/logincheck","/logout","/login","/logindisclaimer","/prompt","/api/v2/","/static/","/favicon/","/assets/","/ng/","/ui/","/p/","/sslvpn/"];
   function fix(u){
     if(typeof u!=="string"||!u)return u;
     if(u.indexOf(pfx)===0)return u;
@@ -1230,10 +1269,20 @@ try{
     var rel=stripHost(u);
     if(rel){return pfx+rel;}
     if(u.charAt(0)==="/"){
-      if(startsAny(u,rootPfx))return pfx+u;
-      return u;
+      return pfx+u;
     }
     return u;
+  }
+  if(hosts.length>0){
+    try{
+      var want=String(hosts[0]).replace(/:\d+$/,"");
+      [["hostname",want],["host",want]].forEach(function(pair){
+        var d=Object.getOwnPropertyDescriptor(Location.prototype,pair[0]);
+        if(d&&d.get){
+          Object.defineProperty(Location.prototype,pair[0],{configurable:true,enumerable:true,get:function(){return pair[1];},set:d.set});
+        }
+      });
+    }catch(e){}
   }
   // Override location.href setter on Location.prototype so href=/=assign work
   try{
@@ -1247,6 +1296,15 @@ try{
     try{
       var o=Location.prototype[fn];if(!o)return;
       Location.prototype[fn]=function(u){return o.call(this,fix(String(u)));};
+    }catch(e){}
+  });
+  ["pushState","replaceState"].forEach(function(fn){
+    try{
+      var o=history[fn];
+      history[fn]=function(state,title,url){
+        if(typeof url==="string"){url=fix(url);}
+        return o.call(this,state,title,url);
+      };
     }catch(e){}
   });
   // window.open
@@ -1279,6 +1337,27 @@ try{
       if(m){var nu=fix(m[1].trim());metas[i].setAttribute("content",c.replace(m[1],nu));}
     }
   }catch(e){}
+  function hasFortiCookie(){
+    try{
+      var c=document.cookie||"";
+      return c.indexOf("session_key")>=0||c.indexOf("APSCOOKIE")>=0||c.indexOf("ccsrftoken")>=0;
+    }catch(e){return false;}
+  }
+  function maybeLeaveLogin(){
+    if(!hasFortiCookie())return;
+    var p=location.pathname||"";
+    if(p.indexOf("/ng/")>=0)return;
+    fetch(pfx+"/api/v2/monitor/web-ui/extend-session",{credentials:"same-origin"})
+      .then(function(r){
+        if(!r.ok)return;
+        var qs=location.search||"";
+        location.replace(pfx+"/ng/"+qs);
+      }).catch(function(){});
+  }
+  maybeLeaveLogin();
+  document.addEventListener("DOMContentLoaded",maybeLeaveLogin);
+  setTimeout(maybeLeaveLogin,400);
+  setTimeout(maybeLeaveLogin,1500);
   // Pre-fill portal username only. Do NOT set the password field — FortiOS
   // login.js encrypts the password on submit and breaks when .value is set
   // programmatically (shows "invalid password" without contacting TACACS).

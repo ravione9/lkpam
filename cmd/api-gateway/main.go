@@ -1435,6 +1435,8 @@ func rewriteRootPaths(body []byte, pfx, portalToken string) []byte {
 		{`'/favicon/`, `'` + pfx + `/favicon/`},
 		{`"/ng/`, `"` + pfx + `/ng/`},
 		{`'/ng/`, `'` + pfx + `/ng/`},
+		{`"/ui/`, `"` + pfx + `/ui/`},
+		{`'/ui/`, `'` + pfx + `/ui/`},
 		{`"/logincheck`, `"` + pfx + `/logincheck`},
 		{`'/logincheck`, `'` + pfx + `/logincheck`},
 		{`"/login`, `"` + pfx + `/login`},
