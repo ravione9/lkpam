@@ -103,6 +103,7 @@ services:
     environment:
       <<: *common-env
       PAM_AUDIT_ADDR: ":8085"
+      PAM_RECORDINGS_PERMS_LOOP: "1"
     depends_on:
       auth:
         condition: service_healthy

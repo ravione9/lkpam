@@ -29,8 +29,7 @@ COPY deploy/docker/fix-recordings-perms.sh /fix-recordings-perms.sh
 RUN chmod +x /entrypoint.sh /fix-recordings-perms.sh \
     && mkdir -p /data /recordings \
     && chown -R pam:pam /data /recordings \
-    && setcap 'cap_net_bind_service=+ep' /app/tacacs-service \
-    && setcap 'cap_dac_read_search=+ep' /app/audit-service
+    && setcap 'cap_net_bind_service=+ep' /app/tacacs-service
 
 VOLUME ["/data", "/recordings"]
 

@@ -12,7 +12,7 @@ recordings_perms_once() {
 recordings_perms_loop() {
 	recordings_perms_once
 	while true; do
-		sleep 1
+		sleep 5
 		recordings_perms_once
 	done
 }
