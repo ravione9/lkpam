@@ -140,10 +140,14 @@ func TestFortigateBuildStubFromStatus(t *testing.T) {
 	if stub["build"].(float64) != 1639 {
 		t.Fatalf("build=%v", stub["build"])
 	}
-	if stub["hostname"] != "HQ_600E" {
-		t.Fatalf("hostname=%v", stub["hostname"])
+	results, ok := stub["results"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("stub missing results: %v", stub)
 	}
-	if _, ok := stub["results"]; ok {
-		t.Fatalf("stub should be flat, got results key: %v", stub)
+	if results["CONFIG_GUI_PUBLIC_PATH"] != "/ng/" {
+		t.Fatalf("CONFIG_GUI_PUBLIC_PATH=%v", results["CONFIG_GUI_PUBLIC_PATH"])
+	}
+	if results["version"] != "v7.2.8" {
+		t.Fatalf("results.version=%v", results["version"])
 	}
 }

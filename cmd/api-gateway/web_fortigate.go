@@ -274,7 +274,7 @@ func fortiLoginCredentials(creds weblaunch.SessionCreds) (user, pass string, ok 
 
 // isFortinetPreAuthRequest is true for login-page assets that must stay unauthenticated.
 // fortiBuildManifestStubDefault is used when monitor/system/status is unavailable.
-var fortiBuildManifestStubDefault = []byte(`{"build":2600,"version":"v7.4.0","branch":"GA","model_name":"FortiGate"}`)
+var fortiBuildManifestStubDefault = []byte(`{"version":"v7.4.0","build":2600,"branch":"GA","status":"success","results":{"CONFIG_GUI_PUBLIC_PATH":"/ng/","CONFIG_GUI_NOVUE_PATH":"/ng/","CONFIG_GUI_LEGACY_PATH":"/login/","CONFIG_API_V2_PATH":"/api/v2/","version":"v7.4.0","build":2600,"branch":"GA"}}`)
 
 // isFortiBuildManifestPath matches /api/v2/static/fweb_build.json (with optional query/vdom).
 func isFortiBuildManifestPath(rest string) bool {
@@ -497,36 +497,83 @@ func fortigateCacheBuildStub(ctx context.Context, client *http.Client, target *u
 	}
 }
 
-// fortigateBuildStubFromStatus builds a flat fweb_build.json-shaped payload from
-// /api/v2/monitor/system/status (FortiOS NG reads top-level build/version fields).
+// fortigateTryCacheRealFwebBuild stores the real fweb_build.json body when the
+// upstream jar can fetch it (some firmware returns 401 only to browser requests).
+func fortigateTryCacheRealFwebBuild(ctx context.Context, client *http.Client, target *url.URL, state *webSessionState) {
+	if client == nil || target == nil || state == nil {
+		return
+	}
+	for _, probe := range []string{
+		"/api/v2/static/fweb_build.json?vdom=root",
+		"/api/v2/static/fweb_build.json",
+	} {
+		body, code := fortigateFetchAPIViaJar(ctx, client, target, probe, nil)
+		if code != http.StatusOK || len(body) == 0 {
+			continue
+		}
+		if !bytes.Contains(body, []byte("CONFIG_GUI")) && !bytes.Contains(body, []byte("results")) {
+			continue
+		}
+		state.mu.Lock()
+		state.fortiBuildStub = append([]byte(nil), body...)
+		state.mu.Unlock()
+		log.Printf("web-proxy: fortigate cached real fweb_build.json (%d bytes) probe=%s", len(body), probe)
+		return
+	}
+}
+
+// fortigateBuildStubFromStatus builds fweb_build.json with a results object
+// containing CONFIG_GUI_PUBLIC_PATH (required by the FortiOS NG SPA bootstrap).
 func fortigateBuildStubFromStatus(meta map[string]interface{}) ([]byte, error) {
 	if meta == nil {
 		return nil, fmt.Errorf("empty status")
 	}
-	results, ok := meta["results"].(map[string]interface{})
-	if !ok || results == nil {
-		results = meta
+	version, buildStr := fortigateStatusFields(meta)
+	if version == "" {
+		version = "v7.4.0"
 	}
-	stub := make(map[string]interface{}, len(results)+4)
-	for k, v := range results {
-		stub[k] = v
-	}
-	for _, key := range []string{"version", "build", "branch", "serial", "hostname", "model"} {
-		if _, has := stub[key]; has {
-			continue
-		}
-		if v, ok := meta[key]; ok && v != nil {
-			stub[key] = v
+	buildNum := 2600
+	if buildStr != "" {
+		if n, err := strconv.Atoi(buildStr); err == nil {
+			buildNum = n
 		}
 	}
-	if _, has := stub["version"]; !has {
-		stub["version"] = "v7.4.0"
+	branch := jsonStringField(meta, "branch")
+	if branch == "" {
+		if sr, ok := meta["results"].(map[string]interface{}); ok {
+			branch = jsonStringField(sr, "branch")
+		}
 	}
-	if _, has := stub["build"]; !has {
-		stub["build"] = 2600
+	if branch == "" {
+		branch = "GA"
 	}
-	if _, has := stub["branch"]; !has {
-		stub["branch"] = "GA"
+	results := map[string]interface{}{
+		"CONFIG_GUI_PUBLIC_PATH": "/ng/",
+		"CONFIG_GUI_NOVUE_PATH":  "/ng/",
+		"CONFIG_GUI_LEGACY_PATH": "/login/",
+		"CONFIG_API_V2_PATH":     "/api/v2/",
+		"version":                version,
+		"build":                  buildNum,
+		"branch":                 branch,
+	}
+	if sr, ok := meta["results"].(map[string]interface{}); ok {
+		for k, v := range sr {
+			if strings.HasPrefix(k, "CONFIG_") {
+				results[k] = v
+			}
+		}
+		if _, has := results["CONFIG_GUI_PUBLIC_PATH"]; !has {
+			if p := jsonStringField(sr, "CONFIG_GUI_PUBLIC_PATH"); p != "" {
+				results["CONFIG_GUI_PUBLIC_PATH"] = p
+			}
+		}
+	}
+	stub := map[string]interface{}{
+		"version": version,
+		"build":   buildNum,
+		"branch":  branch,
+		"status":  "success",
+		"results": results,
 	}
 	return json.Marshal(stub)
 }
@@ -785,6 +832,7 @@ func fortigateLoginViaAPI(ctx context.Context, client *http.Client, target *url.
 				log.Printf("web-proxy: fortigate api auth LOGIN_SUCCESS but probe 401 — trusting session_key cookies")
 			}
 			fortigateCacheAuthSession(ctx, client, target, state, username)
+			fortigateTryCacheRealFwebBuild(ctx, client, target, state)
 			return true
 		case 3:
 			ackPost = true
@@ -1536,6 +1584,18 @@ try{
         location.replace(pfx+"/ng/"+(location.search||""));
       }).catch(function(){});
   }
+  function cleanRedirLoop(){
+    try{
+      if((location.pathname||"").indexOf("/ng/")<0)return;
+      var qs=new URLSearchParams(location.search||"");
+      if(!qs.has("redir"))return;
+      qs.delete("redir");
+      var s=qs.toString();
+      history.replaceState(null,"",location.pathname+(s?"?"+s:""));
+    }catch(e){}
+  }
+  cleanRedirLoop();
+  document.addEventListener("DOMContentLoaded",cleanRedirLoop);
   maybeLeaveLogin();
   maybeRecoverNG();
   document.addEventListener("DOMContentLoaded",function(){maybeLeaveLogin();maybeRecoverNG();});
