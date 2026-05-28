@@ -396,7 +396,13 @@ func fortigateLoginViaAPI(ctx context.Context, client *http.Client, target *url.
 		switch ar.StatusCode {
 		case 5:
 			fortigatePrimeAuthenticatedSession(ctx, client, target, "")
-			return fortigateValidateSession(ctx, client, target)
+			// LOGIN_SUCCESS is authoritative; even if our probe 401s on this
+			// firmware, the SPA can still use session_key + ccsrftoken cookies
+			// for /ng/ and the documented monitor endpoints.
+			if !fortigateValidateSession(ctx, client, target) {
+				log.Printf("web-proxy: fortigate api auth LOGIN_SUCCESS but probe 401 — trusting session_key cookies")
+			}
+			return true
 		case 3:
 			ackPost = true
 			ackPre = true
@@ -672,30 +678,39 @@ func fortigateAttachCSRF(upstream *http.Request, jar http.CookieJar, target *url
 	}
 }
 
+// fortigateValidateSession probes a documented monitor endpoint. Some FortiOS
+// builds return 401 for /api/v2/static/fweb_build.json even with a valid admin
+// session, so use /api/v2/monitor/system/status?vdom=root for validation.
 func fortigateValidateSession(ctx context.Context, client *http.Client, target *url.URL) bool {
-	const probe = "/api/v2/static/fweb_build.json"
-	u := buildUpstreamURL(target, probe, nil)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return false
+	probes := []string{
+		"/api/v2/monitor/system/status?vdom=root",
+		"/api/v2/monitor/system/status",
 	}
-	tuneUpstreamRequest(req, target, probe)
-	mergeUpstreamCookies(req, &http.Request{}, client.Jar, target, true)
-	fortigateAttachCSRF(req, client.Jar, target)
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("web-proxy: fortigate session validate error: %v", err)
-		return false
-	}
-	_, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
 	nJar := len(collectJarCookies(client.Jar, target, "/"))
-	if resp.StatusCode == http.StatusOK {
-		log.Printf("web-proxy: fortigate session valid jar_cookies=%d", nJar)
-		return true
+	for _, probe := range probes {
+		u := buildUpstreamURL(target, probe, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			continue
+		}
+		tuneUpstreamRequest(req, target, probe)
+		mergeUpstreamCookies(req, &http.Request{}, client.Jar, target, true)
+		fortigateAttachCSRF(req, client.Jar, target)
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("web-proxy: fortigate session validate error probe=%s: %v", probe, err)
+			continue
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			log.Printf("web-proxy: fortigate session valid probe=%s jar_cookies=%d", probe, nJar)
+			return true
+		}
+		log.Printf("web-proxy: fortigate probe %s status=%d jar_cookies=%d cookies=[%s] csrf=%v",
+			probe, resp.StatusCode, nJar, fortigateJarCookieNames(client.Jar, target),
+			fortigateCSRFCookie(client.Jar, target, probe) != "")
 	}
-	log.Printf("web-proxy: fortigate session invalid status=%d jar_cookies=%d cookies=[%s] csrf=%v",
-		resp.StatusCode, nJar, fortigateJarCookieNames(client.Jar, target), fortigateCSRFCookie(client.Jar, target, probe) != "")
 	return false
 }
 
