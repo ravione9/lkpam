@@ -5,20 +5,32 @@
   <title>PAM — RDP Session (Recorded)</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; background: #1e293b; color: #e2e8f0; height: 100vh; display: flex; flex-direction: column; }
-    header { padding: 10px 16px; background: #0f172a; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #334155; flex-wrap: wrap; }
+    html, body { height: 100%; overflow: hidden; }
+    body { font-family: system-ui, sans-serif; background: #1e293b; color: #e2e8f0; display: flex; flex-direction: column; }
+    header { flex-shrink: 0; padding: 10px 16px; background: #0f172a; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #334155; flex-wrap: wrap; }
     header h1 { font-size: 15px; font-weight: 600; }
     header .muted { font-size: 12px; color: #94a3b8; }
     .toolbar { display: flex; align-items: center; gap: 6px; }
     .toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #475569; background: #334155; color: #e2e8f0; cursor: pointer; font-size: 13px; }
     .toolbar button:hover { background: #475569; }
-    #displayWrap { flex: 1; min-height: 320px; overflow: auto; background: #000; display: flex; align-items: center; justify-content: center; }
-    #display { outline: none; line-height: 0; }
+    /* No scrollbars — desktop is always scaled to fit inside the viewport. */
+    #displayWrap {
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+    }
+    #display { outline: none; line-height: 0; max-width: 100%; max-height: 100%; }
     #display.focused { box-shadow: inset 0 0 0 2px #38bdf8; }
     #displayWrap.remote-active,
     #displayWrap.remote-active #display,
+    #displayWrap.remote-active .guacamole-display,
     #displayWrap.remote-active .guacamole-display canvas { cursor: none !important; }
-    #status { padding: 8px 16px; font-size: 12px; background: #0f172a; color: #94a3b8; }
+    #status { flex-shrink: 0; padding: 8px 16px; font-size: 12px; background: #0f172a; color: #94a3b8; }
     .err { color: #f87171; }
   </style>
   <script>window.module={exports:{}};</script>
@@ -31,7 +43,7 @@
       <div class="muted" id="sessionLabel">Connecting…</div>
     </div>
     <div class="toolbar">
-      <button type="button" id="fitBtn" title="Fit desktop to window">Fit to window</button>
+      <button type="button" id="fitBtn" title="Resize remote desktop to match this window">Fit to window</button>
       <button type="button" id="fullscreenBtn" title="Fullscreen">Fullscreen</button>
       <button type="button" id="disconnectBtn">Disconnect</button>
     </div>
@@ -73,29 +85,35 @@
       let connected = false;
       let mouseMovePending = false;
       let lastMoveState = null;
+      let fitTimer = null;
 
-      function wrapperSize() {
+      function viewportSize() {
+        const w = displayWrap.clientWidth;
+        const h = displayWrap.clientHeight;
         return {
-          w: Math.max(displayWrap.clientWidth, 800),
-          h: Math.max(displayWrap.clientHeight, 480),
+          w: Math.max(w > 0 ? w : window.innerWidth, 640),
+          h: Math.max(h > 0 ? h : window.innerHeight - 120, 400),
         };
       }
 
-      /** Use Guacamole's scale() so the canvas is visible AND mouse coords stay aligned. */
+      /** Scale the Guacamole canvas so the full desktop fits (no horizontal scroll). */
       function fitToWindow() {
         const dw = guacDisplay.getWidth();
         const dh = guacDisplay.getHeight();
         if (dw <= 0 || dh <= 0) return;
-        const ww = Math.max(displayWrap.clientWidth, 400);
-        const wh = Math.max(displayWrap.clientHeight, 300);
-        const scale = Math.min(ww / dw, wh / dh);
+        const vp = viewportSize();
+        const scale = Math.min(vp.w / dw, vp.h / dh);
         guacDisplay.scale(scale);
       }
 
-      function sendDisplaySize() {
+      /** Ask Windows to resize to our viewport, then scale if it reports a different size. */
+      function syncViewport() {
         if (!connected) return;
-        const dim = wrapperSize();
-        client.sendSize(dim.w, dim.h);
+        const vp = viewportSize();
+        client.sendSize(vp.w, vp.h);
+        clearTimeout(fitTimer);
+        fitTimer = setTimeout(fitToWindow, 80);
+        fitTimer = setTimeout(fitToWindow, 350);
       }
 
       function scaledMouseState(state) {
@@ -116,7 +134,9 @@
         client.sendMouseState(scaledMouseState(state));
       }
 
-      guacDisplay.onresize = () => fitToWindow();
+      guacDisplay.onresize = () => {
+        fitToWindow();
+      };
 
       const mouse = new Guacamole.Mouse(guacScreen);
       mouse.onmousedown = mouse.onmouseup = state => {
@@ -153,12 +173,12 @@
           if (typeof guacDisplay.showCursor === "function") {
             guacDisplay.showCursor(true);
           }
-          sendDisplaySize();
+          syncViewport();
           setTimeout(() => {
             fitToWindow();
             displayEl.focus();
-          }, 200);
-          statusEl.textContent = "Connected — click the desktop for keyboard and mouse.";
+          }, 400);
+          statusEl.textContent = "Connected — desktop fitted to window. Click to type.";
           statusEl.className = "";
         }
         if (state === Guacamole.Client.State.DISCONNECTED) {
@@ -175,29 +195,30 @@
       };
 
       function connect() {
-        const dim = wrapperSize();
+        const vp = viewportSize();
         client.connect(
           "session=" + encodeURIComponent(sessionId)
           + "&token=" + encodeURIComponent(token)
-          + "&width=" + dim.w
-          + "&height=" + dim.h
+          + "&width=" + vp.w
+          + "&height=" + vp.h
         );
       }
 
       let resizeTimer = null;
-      window.addEventListener("resize", () => {
+      function onViewportChange() {
         if (!connected) return;
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          sendDisplaySize();
-          fitToWindow();
-        }, 250);
-      });
+        resizeTimer = setTimeout(syncViewport, 150);
+      }
+      window.addEventListener("resize", onViewportChange);
+      if (typeof ResizeObserver !== "undefined") {
+        new ResizeObserver(onViewportChange).observe(displayWrap);
+      }
 
       tunnel.onerror = status => {
         let msg = "Tunnel error — ";
         if (status && status.code === 519) {
-          msg += "guacd could not reach or log in to the Windows host. Check credentials and docker logs pam-guacd.";
+          msg += "guacd could not reach or log in to the Windows host.";
         } else if (status && status.message) {
           msg += status.message;
         } else {
@@ -207,15 +228,14 @@
       };
 
       document.getElementById("fitBtn").onclick = () => {
-        sendDisplaySize();
-        fitToWindow();
+        syncViewport();
         displayEl.focus();
       };
       document.getElementById("fullscreenBtn").onclick = async () => {
         try {
           if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
           else await document.exitFullscreen();
-          setTimeout(() => { sendDisplaySize(); fitToWindow(); }, 200);
+          setTimeout(syncViewport, 250);
         } catch (_) {}
       };
       document.getElementById("disconnectBtn").onclick = () => client.disconnect();
