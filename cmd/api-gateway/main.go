@@ -445,6 +445,70 @@ func mustURL(s string) *url.URL {
 	return u
 }
 
+// loadWebSessionCreds first reads credentials from vault-service (authoritative),
+// then falls back to auth-service session metadata when the vault entry was
+// already deleted but the session row is still active.
+func loadWebSessionCreds(ctx context.Context, r *http.Request, sessionID string, authBase, vaultBase *url.URL) (weblaunch.SessionCreds, error) {
+	// 1) Primary source: vault internal web session payload.
+	credsURL := vaultBase.String() + "/internal/web-session/" + sessionID
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, credsURL, nil)
+	req.Header.Set("X-PAM-UID", r.Header.Get("X-PAM-UID"))
+	req.Header.Set("X-PAM-Role", r.Header.Get("X-PAM-Role"))
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		var creds weblaunch.SessionCreds
+		if decErr := json.NewDecoder(resp.Body).Decode(&creds); decErr == nil {
+			return creds, nil
+		}
+	}
+	vaultStatus := 0
+	if resp != nil {
+		vaultStatus = resp.StatusCode
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	// 2) Fallback: auth-service keeps the session row and target metadata.
+	// This avoids hard 404s when the vault payload disappeared unexpectedly.
+	authURL := strings.TrimSuffix(authBase.String(), "/") + "/web-session/" + sessionID
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, authURL, nil)
+	req2.Header.Set("X-PAM-UID", r.Header.Get("X-PAM-UID"))
+	req2.Header.Set("X-PAM-Role", r.Header.Get("X-PAM-Role"))
+	resp2, err2 := http.DefaultClient.Do(req2)
+	if err2 != nil || resp2 == nil {
+		return weblaunch.SessionCreds{}, errors.New("session not found or expired")
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		return weblaunch.SessionCreds{}, errors.New("session not found or expired")
+	}
+	var meta struct {
+		WebURL         string `json:"web_url"`
+		TargetKind     string `json:"target_kind"`
+		Username       string `json:"username"`
+		Password       string `json:"password"`
+		PortalUsername string `json:"portal_username"`
+		PortalPassword string `json:"portal_password"`
+		Active         bool   `json:"active"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&meta); err != nil {
+		return weblaunch.SessionCreds{}, errors.New("invalid session credentials")
+	}
+	if !meta.Active || strings.TrimSpace(meta.WebURL) == "" {
+		return weblaunch.SessionCreds{}, errors.New("session not found or expired")
+	}
+	log.Printf("web-proxy: session=%s vault creds unavailable (status=%d); using auth fallback", sessionID, vaultStatus)
+	return weblaunch.SessionCreds{
+		Username:       strings.TrimSpace(meta.Username),
+		Password:       strings.TrimSpace(meta.Password),
+		TargetURL:      strings.TrimSpace(meta.WebURL),
+		TargetKind:     strings.TrimSpace(meta.TargetKind),
+		PortalUsername: strings.TrimSpace(meta.PortalUsername),
+		PortalPassword: strings.TrimSpace(meta.PortalPassword),
+	}, nil
+}
+
 // webConsoleProxy reverse-proxies a browser to a web-console target.
 // URL format:  /web/{sessionID}/{*rest}
 // On first load the session token is validated. The vault is queried for the
@@ -468,30 +532,16 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		return
 	}
 
-	// Load session credentials from vault via internal vault-service.
-	credsURL := vaultBase.String() + "/internal/web-session/" + sessionID
-	req, _ := http.NewRequestWithContext(r.Context(), "GET", credsURL, nil)
-	// Forward the user's identity headers so the vault service can check ownership.
-	req.Header.Set("X-PAM-UID", r.Header.Get("X-PAM-UID"))
-	req.Header.Set("X-PAM-Role", r.Header.Get("X-PAM-Role"))
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			resp.Body.Close()
-		}
-		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			dropUpstreamClient(sessionID)
+	creds, err := loadWebSessionCreds(r.Context(), r, sessionID, authBase, vaultBase)
+	if err != nil {
+		dropUpstreamClient(sessionID)
+		if strings.Contains(strings.ToLower(err.Error()), "invalid session credentials") {
+			writeWebProxyError(w, rest, "invalid session credentials", http.StatusInternalServerError)
+			return
 		}
 		writeWebProxyError(w, rest, "session not found or expired", http.StatusNotFound)
 		return
 	}
-	var creds weblaunch.SessionCreds
-	if err := json.NewDecoder(resp.Body).Decode(&creds); err != nil {
-		resp.Body.Close()
-		writeWebProxyError(w, rest, "invalid session credentials", http.StatusInternalServerError)
-		return
-	}
-	resp.Body.Close()
 
 	if creds.TargetURL == "" {
 		http.Error(w, "session has no target URL", http.StatusBadRequest)
