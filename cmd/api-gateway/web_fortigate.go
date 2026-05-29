@@ -1459,25 +1459,98 @@ func injectFortinetLoginAssist(body []byte, creds weblaunch.SessionCreds, sessio
 	body = neutralizeFortinetFrameBusters(body)
 	targetURL, _ := url.Parse(creds.TargetURL)
 	script := fortinetProxyBridgeScript(sessionID, creds.PortalUsername, targetURL)
+	tailScript := fortinetTailGuardScript()
 	// Inject as EARLY as possible (right after <head>) so subsequent inline
 	// scripts cannot navigate away before our location-setter override loads.
 	if i := bytes.Index(bytes.ToLower(body), []byte("<head>")); i >= 0 {
 		insert := i + len("<head>")
-		out := make([]byte, 0, len(body)+len(script))
+		out := make([]byte, 0, len(body)+len(script)+len(tailScript))
 		out = append(out, body[:insert]...)
 		out = append(out, script...)
 		out = append(out, body[insert:]...)
+		// Second inject right before </body> re-asserts our config so a delete /
+		// redefine by the FortiOS inline <script> can't clear it. This runs
+		// AFTER all body inline scripts but BEFORE deferred external main.js.
+		out = injectBeforeBodyEnd(out, tailScript)
 		return out
 	}
 	if i := bytes.Index(body, []byte("<html>")); i >= 0 {
 		insert := i + len("<html>")
-		out := make([]byte, 0, len(body)+len(script))
+		out := make([]byte, 0, len(body)+len(script)+len(tailScript))
 		out = append(out, body[:insert]...)
 		out = append(out, script...)
 		out = append(out, body[insert:]...)
+		out = injectBeforeBodyEnd(out, tailScript)
 		return out
 	}
-	return append(script, body...)
+	return append(append(script, body...), tailScript...)
+}
+
+// injectBeforeBodyEnd inserts s right before the last </body> tag (or appends to
+// the end if no closing body tag is present).
+func injectBeforeBodyEnd(body, s []byte) []byte {
+	if len(s) == 0 {
+		return body
+	}
+	lower := bytes.ToLower(body)
+	idx := bytes.LastIndex(lower, []byte("</body>"))
+	if idx < 0 {
+		return append(body, s...)
+	}
+	out := make([]byte, 0, len(body)+len(s))
+	out = append(out, body[:idx]...)
+	out = append(out, s...)
+	out = append(out, body[idx:]...)
+	return out
+}
+
+// fortinetTailGuardScript runs after the FortiOS NG inline <script> blocks
+// in the body. It re-creates window.fweb_build with our CONFIG_GUI_PUBLIC_PATH
+// and locks it non-configurable so subsequent delete/defineProperty attempts
+// silently fail. This is what finally makes the SPA bootstrap able to read
+// results.CONFIG_GUI_PUBLIC_PATH after FortiOS scripts have cleared globals.
+func fortinetTailGuardScript() []byte {
+	return []byte(`<script>(function(){try{
+  var guiCfg={
+    CONFIG_GUI_PUBLIC_PATH:"/ng/",
+    CONFIG_GUI_NOVUE_PATH:"/ng/",
+    CONFIG_GUI_LEGACY_PATH:"/login/",
+    CONFIG_API_V2_PATH:"/api/v2/",
+    version:"v7.4.0",build:2600,branch:"GA"
+  };
+  function makeStub(){
+    var existing;
+    try{existing=window.fweb_build;}catch(e){}
+    var base=(existing&&typeof existing==="object")?existing:{};
+    if(!base.results||typeof base.results!=="object") base.results={};
+    for(var k in guiCfg){if(base.results[k]===undefined) base.results[k]=guiCfg[k];}
+    for(var k2 in guiCfg){if(base[k2]===undefined) base[k2]=guiCfg[k2];}
+    if(!base.status) base.status="success";
+    return base;
+  }
+  var stub=makeStub();
+  try{delete window.fweb_build;}catch(e){}
+  try{
+    Object.defineProperty(window,"fweb_build",{
+      value:stub,writable:false,configurable:false,enumerable:true
+    });
+  }catch(e){window.fweb_build=stub;}
+  try{
+    Object.defineProperty(window,"fwebBuild",{
+      value:stub,writable:false,configurable:false,enumerable:true
+    });
+  }catch(e){window.fwebBuild=stub;}
+  // Also mirror keys at top-level window for code that reads
+  // window.CONFIG_GUI_PUBLIC_PATH directly.
+  for(var k3 in guiCfg){
+    try{
+      if(window[k3]===undefined){
+        Object.defineProperty(window,k3,{value:guiCfg[k3],writable:false,configurable:false,enumerable:true});
+      }
+    }catch(_){}
+  }
+  console.info("pam: tail guard locked fweb_build.results.CONFIG_GUI_PUBLIC_PATH=",stub.results.CONFIG_GUI_PUBLIC_PATH);
+}catch(err){try{console.warn("pam: tail guard failed",err);}catch(_){}}})();</script>`)
 }
 
 // neutralizeFortinetFrameBusters rewrites the common FortiOS top-window escape
