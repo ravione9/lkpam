@@ -1555,27 +1555,48 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
       CONFIG_GUI_LEGACY_PATH:"/login/",
       CONFIG_API_V2_PATH:"/api/v2/"
     };
-    if(!window.fweb_build){
-      window.fweb_build=stub;
-    } else {
-      if(!window.fweb_build.results) window.fweb_build.results=guiCfg;
-      else for(var k in guiCfg){if(window.fweb_build.results[k]===undefined) window.fweb_build.results[k]=guiCfg[k];}
-      for(var k2 in guiCfg){if(window.fweb_build[k2]===undefined) window.fweb_build[k2]=guiCfg[k2];}
+    // Use a setter so any later assignment (e.g. fetch resolution overwriting
+    // window.fweb_build with real data) is MERGED with our stub rather than
+    // erasing the results.CONFIG_GUI_PUBLIC_PATH keys.
+    var _fweb=stub;
+    function mergeFweb(v){
+      if(!v||typeof v!=="object")return;
+      if(!v.results) v.results=guiCfg;
+      else for(var k in guiCfg){if(v.results[k]===undefined) v.results[k]=guiCfg[k];}
+      for(var k2 in guiCfg){if(v[k2]===undefined) v[k2]=guiCfg[k2];}
+      _fweb=v;
     }
-    if(!window.fwebBuild) window.fwebBuild=window.fweb_build;
+    try{
+      Object.defineProperty(window,"fweb_build",{
+        configurable:true,enumerable:true,
+        get:function(){return _fweb;},
+        set:function(v){mergeFweb(v);}
+      });
+      Object.defineProperty(window,"fwebBuild",{
+        configurable:true,enumerable:true,
+        get:function(){return _fweb;},
+        set:function(v){mergeFweb(v);}
+      });
+    }catch(e){
+      window.fweb_build=stub;
+      window.fwebBuild=stub;
+    }
     if(!window.CONFIG) window.CONFIG={};
     for(var k3 in guiCfg){if(window.CONFIG[k3]===undefined) window.CONFIG[k3]=guiCfg[k3];}
-    // Safety net: block uncaught login_redirect calls (FortiOS NG bootstrap uses
-    // it as a generic "I crashed" handler that would navigate the iframe to
-    // /logout?/login? and unauthenticate the proxied session).
+    // Safety net: block uncaught login_redirect calls. The FortiOS HTML defines
+    // it inline (function login_redirect() {...}) which hoists and overwrites a
+    // plain window.login_redirect = ... assignment. We make ours non-writable +
+    // non-configurable so the function declaration is silently rejected.
     try{
-      var origLR=window.login_redirect;
-      window.login_redirect=function(reason){
+      var pamBlockLR=function(reason){
         console.warn("pam: blocked login_redirect:",reason);
-        if(reason && typeof reason==="object" && reason.stack) console.warn(reason.stack);
       };
-      if(origLR){window.__pam_origLR=origLR;}
-    }catch(e){}
+      Object.defineProperty(window,"login_redirect",{
+        value:pamBlockLR,writable:false,configurable:false,enumerable:false
+      });
+    }catch(e){
+      try{window.login_redirect=function(reason){console.warn("pam: blocked login_redirect:",reason);};}catch(_){}
+    }
     console.info("pam: fweb_build inject ok",window.fweb_build.results.CONFIG_GUI_PUBLIC_PATH);
   }catch(e){console.warn("pam: fweb_build inject failed",e);}
 })();
