@@ -105,20 +105,18 @@ func TestFortigateResponseIsLoginHTML(t *testing.T) {
 }
 
 func TestFortigateForceSPABaseHref(t *testing.T) {
-	in := []byte(`<html><head><base href="/web/web-1-7/"><title>FortiGate</title></head><body></body></html>`)
+	// Base must be pinned to the session ROOT (/web/{sid}/) so the URL
+	// /web/{sid}/ng/ strips to "ng/" and hits the FortiOS "ng" route matcher.
+	in := []byte(`<html><head><base href="/web/web-1-7/ng/"><title>FortiGate</title></head><body></body></html>`)
 	out := fortigateForceSPABaseHref(in, "web-1-7", "/ng/")
-	if !bytes.Contains(out, []byte(`<base href="/web/web-1-7/ng/"`)) {
-		t.Fatalf("ng base not forced: %s", out)
+	if !bytes.Contains(out, []byte(`<base href="/web/web-1-7/"`)) {
+		t.Fatalf("base not pinned to session root: %s", out)
 	}
 	if bytes.Count(out, []byte("<base")) != 1 {
 		t.Fatalf("expected one base tag: %s", out)
 	}
-	uiOut := fortigateForceSPABaseHref(in, "web-1-7", "/ui/dashboard")
-	if !bytes.Contains(uiOut, []byte(`<base href="/web/web-1-7/ui/"`)) {
-		t.Fatalf("ui base not forced: %s", uiOut)
-	}
 	noBase := fortigateForceSPABaseHref([]byte(`<html><head><title>x</title></head></html>`), "web-1-7", "/ng/")
-	if !bytes.Contains(noBase, []byte(`<base href="/web/web-1-7/ng/">`)) {
+	if !bytes.Contains(noBase, []byte(`<base href="/web/web-1-7/">`)) {
 		t.Fatalf("base not injected: %s", noBase)
 	}
 }

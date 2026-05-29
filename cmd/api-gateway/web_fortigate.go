@@ -1462,16 +1462,15 @@ func fortigateWriteJarDocument(w http.ResponseWriter, r *http.Request, state *we
 
 var fortiBaseHrefRE = regexp.MustCompile(`(?i)(<base\s+[^>]*href\s*=\s*")([^"]*)(")`)
 
-// fortigateForceSPABaseHref rewrites the <base href="…"> value to the proxied
-// SPA directory (/web/{sid}/ng/ or /web/{sid}/ui/) so the Angular router resolves
-// routes correctly. FortiOS NG routes are rooted at the SPA dir, not the host root.
+// fortigateForceSPABaseHref pins the <base href="…"> to the proxied session root
+// (/web/{sid}/). The FortiOS NG router has a top-level URL matcher for the first
+// path segment "ng" and every internal path is rewritten to /web/{sid}/ng/…, so
+// the base MUST be the session root for the URL /web/{sid}/ng/ to strip to "ng/"
+// and hit that matcher. A base of /web/{sid}/ng/ would strip to "" (the guard-only
+// redirect route) and then navigate to double-prefixed paths that match nothing,
+// leaving an empty <fos-root>.
 func fortigateForceSPABaseHref(body []byte, sessionID, rest string) []byte {
-	dir := "/ng/"
-	p := strings.ToLower(strings.Split(rest, "?")[0])
-	if strings.HasPrefix(p, "/ui/") || p == "/ui" {
-		dir = "/ui/"
-	}
-	want := "/web/" + sessionID + dir
+	want := "/web/" + sessionID + "/"
 	if loc := fortiBaseHrefRE.FindSubmatchIndex(body); loc != nil {
 		var out []byte
 		out = append(out, body[:loc[2]]...)
