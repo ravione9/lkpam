@@ -282,7 +282,7 @@ func fortiLoginCredentials(creds weblaunch.SessionCreds) (user, pass string, ok 
 
 // isFortinetPreAuthRequest is true for login-page assets that must stay unauthenticated.
 // fortiBuildManifestStubDefault is used when monitor/system/status is unavailable.
-var fortiBuildManifestStubDefault = []byte(`{"version":"v7.4.0","build":2600,"branch":"GA","status":"success","CONFIG":{"CONFIG_GUI_PUBLIC_PATH":"/ng/","CONFIG_GUI_NOVUE_PATH":"/ng/","CONFIG_GUI_LEGACY_PATH":"/login/","CONFIG_API_V2_PATH":"/api/v2/","version":"v7.4.0","build":2600,"branch":"GA"},"results":{"CONFIG_GUI_PUBLIC_PATH":"/ng/","CONFIG_GUI_NOVUE_PATH":"/ng/","CONFIG_GUI_LEGACY_PATH":"/login/","CONFIG_API_V2_PATH":"/api/v2/","version":"v7.4.0","build":2600,"branch":"GA"}}`)
+var fortiBuildManifestStubDefault = []byte(`{"version":"v7.4.0","build":2600,"branch":"GA","status":"success","CONFIG":{"CONFIG_GUI_PUBLIC_PATH":"/static","CONFIG_GUI_NOVUE_PATH":"/ng/","CONFIG_GUI_LEGACY_PATH":"/login/","CONFIG_API_V2_PATH":"/api/v2/","version":"v7.4.0","build":2600,"branch":"GA"},"results":{"CONFIG_GUI_PUBLIC_PATH":"/static","CONFIG_GUI_NOVUE_PATH":"/ng/","CONFIG_GUI_LEGACY_PATH":"/login/","CONFIG_API_V2_PATH":"/api/v2/","version":"v7.4.0","build":2600,"branch":"GA"}}`)
 
 // isFortiBuildManifestPath matches /api/v2/static/fweb_build.json (with optional query/vdom).
 func isFortiBuildManifestPath(rest string) bool {
@@ -629,7 +629,7 @@ func fortigateBuildStubFromStatus(meta map[string]interface{}) ([]byte, error) {
 		branch = "GA"
 	}
 	results := map[string]interface{}{
-		"CONFIG_GUI_PUBLIC_PATH": "/ng/",
+		"CONFIG_GUI_PUBLIC_PATH": "/static",
 		"CONFIG_GUI_NOVUE_PATH":  "/ng/",
 		"CONFIG_GUI_LEGACY_PATH": "/login/",
 		"CONFIG_API_V2_PATH":     "/api/v2/",
@@ -1516,7 +1516,7 @@ func injectBeforeBodyEnd(body, s []byte) []byte {
 func fortinetTailGuardScript() []byte {
 	return []byte(`<script>(function(){try{
   var guiCfg={
-    CONFIG_GUI_PUBLIC_PATH:"/ng/",
+    CONFIG_GUI_PUBLIC_PATH:"/static",
     CONFIG_GUI_NOVUE_PATH:"/ng/",
     CONFIG_GUI_LEGACY_PATH:"/login/",
     CONFIG_API_V2_PATH:"/api/v2/",
@@ -1620,7 +1620,7 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
 (function(){
   try{
     var guiCfg={
-      CONFIG_GUI_PUBLIC_PATH:"/ng/",
+      CONFIG_GUI_PUBLIC_PATH:"/static",
       CONFIG_GUI_NOVUE_PATH:"/ng/",
       CONFIG_GUI_LEGACY_PATH:"/login/",
       CONFIG_API_V2_PATH:"/api/v2/",
@@ -1630,7 +1630,7 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
       version:"v7.4.0",build:2600,branch:"GA",status:"success",
       CONFIG:guiCfg,
       results:guiCfg,
-      CONFIG_GUI_PUBLIC_PATH:"/ng/",
+      CONFIG_GUI_PUBLIC_PATH:"/static",
       CONFIG_GUI_NOVUE_PATH:"/ng/",
       CONFIG_GUI_LEGACY_PATH:"/login/",
       CONFIG_API_V2_PATH:"/api/v2/"
