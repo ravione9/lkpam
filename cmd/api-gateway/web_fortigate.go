@@ -1595,13 +1595,30 @@ try{
     return "";
   }
   var rootPfx=["/logincheck","/logout","/login","/logindisclaimer","/prompt","/api/v2/","/static/","/favicon/","/assets/","/ng/","/ui/","/p/","/sslvpn/"];
+  // Block FortiOS auto-logout from inside the iframe. The SPA invokes /logout
+  // whenever its bootstrap throws (e.g. missing CONFIG_GUI_PUBLIC_PATH), which
+  // kills the upstream session and starts a redirect loop. The user can still
+  // end the session via the PAM viewer's End Session button.
+  function isAutoLogout(u){
+    var s=String(u||"").toLowerCase();
+    if(s.indexOf("/logout")<0)return false;
+    return s.indexOf("/web/")>=0 || s.indexOf("/logout?")>=0 || s==="/logout"||
+      s.indexOf(pfx+"/logout")>=0;
+  }
   function fix(u){
     if(typeof u!=="string"||!u)return u;
-    if(u.indexOf(pfx)===0)return u;
+    if(u.indexOf(pfx)===0){
+      if(isAutoLogout(u)){console.warn("pam: blocked logout nav",u);return location.href;}
+      return u;
+    }
     if(u.charAt(0)==="#"||u.indexOf("javascript:")===0||u.indexOf("data:")===0||u.indexOf("blob:")===0)return u;
     var rel=stripHost(u);
-    if(rel){return pfx+rel;}
+    if(rel){
+      if(isAutoLogout(rel)){console.warn("pam: blocked logout nav",rel);return location.href;}
+      return pfx+rel;
+    }
     if(u.charAt(0)==="/"){
+      if(isAutoLogout(u)){console.warn("pam: blocked logout nav",u);return location.href;}
       return pfx+u;
     }
     return u;

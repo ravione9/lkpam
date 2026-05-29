@@ -543,6 +543,19 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		return
 	}
 
+	// FortiGate /logout from inside the iframe is almost always an SPA crash
+	// recovery navigation, not a user-initiated end-session click. Forwarding it
+	// kills the upstream admin session and loops the iframe to /login. Treat as
+	// a no-op — the PAM viewer "End Session" button has its own teardown path.
+	if r.Method == http.MethodGet && isFortinetSession(creds, state) {
+		p := strings.ToLower(strings.Split(rest, "?")[0])
+		if p == "/logout" || p == "/login/logout" {
+			log.Printf("web-proxy: fortigate blocking iframe /logout session=%s rest=%s", sessionID, rest)
+			http.Redirect(w, r, fortigatePostLoginPath(sessionID, ""), http.StatusFound)
+			return
+		}
+	}
+
 	portalTokEarly := strings.TrimSpace(r.URL.Query().Get("token"))
 	if portalTokEarly == "" {
 		if c, err := r.Cookie("pam_web_tok"); err == nil {
