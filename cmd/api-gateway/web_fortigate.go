@@ -1535,6 +1535,18 @@ func fortinetTailGuardScript() []byte {
     return base;
   }
   var stub=makeStub();
+  // BUILD compatibility: keep CONFIG path available for code that reads
+  // (await BUILD).CONFIG.CONFIG_GUI_PUBLIC_PATH.
+  if(!window.BUILD||typeof window.BUILD!=="object"||typeof window.BUILD.then==="function"){
+    window.BUILD={version:stub.version,build:stub.build,branch:stub.branch,status:stub.status,CONFIG:stub.CONFIG||guiCfg,results:stub.results||guiCfg};
+  }else{
+    if(!window.BUILD.CONFIG||typeof window.BUILD.CONFIG!=="object") window.BUILD.CONFIG={};
+    for(var kb in guiCfg){if(window.BUILD.CONFIG[kb]===undefined) window.BUILD.CONFIG[kb]=guiCfg[kb];}
+    if(!window.BUILD.results||typeof window.BUILD.results!=="object") window.BUILD.results={};
+    for(var kbr in guiCfg){if(window.BUILD.results[kbr]===undefined) window.BUILD.results[kbr]=guiCfg[kbr];}
+  }
+  if(window.fweb_build_json===undefined) window.fweb_build_json=window.BUILD;
+  if(window.fwebBuildJson===undefined) window.fwebBuildJson=window.BUILD;
   try{delete window.fweb_build;}catch(e){}
   try{
     Object.defineProperty(window,"fweb_build",{
@@ -1665,6 +1677,22 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
     }
     if(!window.CONFIG) window.CONFIG={};
     for(var k3 in guiCfg){if(window.CONFIG[k3]===undefined) window.CONFIG[k3]=guiCfg[k3];}
+    // Compatibility shim for builds that read BUILD.CONFIG.* instead of fweb_build.
+    var buildShim={version:stub.version,build:stub.build,branch:stub.branch,status:stub.status,CONFIG:guiCfg,results:guiCfg};
+    if(!window.BUILD || typeof window.BUILD!=="object" || typeof window.BUILD.then==="function"){
+      window.BUILD=buildShim;
+    }else{
+      if(!window.BUILD.CONFIG||typeof window.BUILD.CONFIG!=="object") window.BUILD.CONFIG={};
+      for(var kb in guiCfg){if(window.BUILD.CONFIG[kb]===undefined) window.BUILD.CONFIG[kb]=guiCfg[kb];}
+      if(!window.BUILD.results||typeof window.BUILD.results!=="object") window.BUILD.results={};
+      for(var kbr in guiCfg){if(window.BUILD.results[kbr]===undefined) window.BUILD.results[kbr]=guiCfg[kbr];}
+      if(window.BUILD.version===undefined) window.BUILD.version=stub.version;
+      if(window.BUILD.build===undefined) window.BUILD.build=stub.build;
+      if(window.BUILD.branch===undefined) window.BUILD.branch=stub.branch;
+      if(window.BUILD.status===undefined) window.BUILD.status=stub.status;
+    }
+    if(window.fweb_build_json===undefined) window.fweb_build_json=window.BUILD;
+    if(window.fwebBuildJson===undefined) window.fwebBuildJson=window.BUILD;
     // Safety net: block uncaught login_redirect calls. The FortiOS NG inline
     // <script> declares "function login_redirect(){...}" AND assigns to
     // window.__fosLoginRedirect__. Locking window.login_redirect with a
