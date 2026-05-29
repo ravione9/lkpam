@@ -1583,19 +1583,29 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
     }
     if(!window.CONFIG) window.CONFIG={};
     for(var k3 in guiCfg){if(window.CONFIG[k3]===undefined) window.CONFIG[k3]=guiCfg[k3];}
-    // Safety net: block uncaught login_redirect calls. The FortiOS HTML defines
-    // it inline (function login_redirect() {...}) which hoists and overwrites a
-    // plain window.login_redirect = ... assignment. We make ours non-writable +
-    // non-configurable so the function declaration is silently rejected.
+    // Safety net: block uncaught login_redirect calls. The FortiOS NG inline
+    // <script> declares "function login_redirect(){...}" AND assigns to
+    // window.__fosLoginRedirect__. Locking window.login_redirect with a
+    // non-configurable property makes that inline <script> throw SyntaxError,
+    // discarding the entire block including the variable assignments. So we
+    // DON'T touch window.login_redirect. Instead intercept the FortiOS-internal
+    // handler name with a setter that always reflects our no-op.
     try{
       var pamBlockLR=function(reason){
-        console.warn("pam: blocked login_redirect:",reason);
+        console.warn("pam: blocked __fosLoginRedirect__:",reason);
       };
-      Object.defineProperty(window,"login_redirect",{
-        value:pamBlockLR,writable:false,configurable:false,enumerable:false
+      var _lr=pamBlockLR;
+      Object.defineProperty(window,"__fosLoginRedirect__",{
+        configurable:true,enumerable:true,
+        get:function(){return _lr;},
+        set:function(v){
+          // Always reflect our no-op regardless of what FortiOS assigns.
+          if(typeof v==="function") window.__pam_originalFosLR=v;
+          _lr=pamBlockLR;
+        }
       });
     }catch(e){
-      try{window.login_redirect=function(reason){console.warn("pam: blocked login_redirect:",reason);};}catch(_){}
+      try{window.__fosLoginRedirect__=function(reason){console.warn("pam: blocked __fosLoginRedirect__:",reason);};}catch(_){}
     }
     console.info("pam: fweb_build inject ok",window.fweb_build.results.CONFIG_GUI_PUBLIC_PATH);
   }catch(e){console.warn("pam: fweb_build inject failed",e);}
