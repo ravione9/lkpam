@@ -1860,6 +1860,27 @@ try{
     var wo=window.open;
     window.open=function(u,n,f){return wo.call(this,fix(String(u||"")),n,f);};
   }catch(e){}
+  // WebSocket: FortiOS opens ws(s)://<proxyhost><path>/ws/events. The path is
+  // built without our /web/{sid} prefix, so route it through the proxy session.
+  try{
+    var OWS=window.WebSocket;
+    if(OWS){
+      var fixWs=function(u){
+        try{
+          u=String(u);
+          var m=u.match(/^(wss?:\/\/[^\/]+)(\/.*)?$/i);
+          if(!m)return u;
+          var origin=m[1],path=m[2]||"/";
+          if(path.indexOf(pfx+"/")===0)return u;
+          return origin+pfx+path;
+        }catch(e){return u;}
+      };
+      var NWS=function(u,p){return arguments.length>1?new OWS(fixWs(u),p):new OWS(fixWs(u));};
+      NWS.prototype=OWS.prototype;
+      try{NWS.CONNECTING=OWS.CONNECTING;NWS.OPEN=OWS.OPEN;NWS.CLOSING=OWS.CLOSING;NWS.CLOSED=OWS.CLOSED;}catch(e){}
+      window.WebSocket=NWS;
+    }
+  }catch(e){}
   // fetch
   try{
     if(window.fetch){var f=window.fetch;window.fetch=function(u,o){

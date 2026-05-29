@@ -445,6 +445,109 @@ func mustURL(s string) *url.URL {
 	return u
 }
 
+// isWebSocketUpgrade reports whether the request is a WebSocket handshake.
+func isWebSocketUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
+}
+
+// proxyWebSocketUpstream bridges a browser WebSocket to the appliance by hijacking
+// the client connection and relaying the raw stream over a TLS/TCP socket. Session
+// cookies from the proxy jar are attached so the appliance accepts the upgrade.
+func proxyWebSocketUpstream(w http.ResponseWriter, r *http.Request, target *url.URL, rest string, upQ url.Values, sessionID string, jar http.CookieJar) {
+	if target == nil {
+		http.Error(w, "no target", http.StatusBadGateway)
+		return
+	}
+	// Resolve the upstream path+query (rest already excludes /web/{sid}).
+	upStr := buildUpstreamURL(target, rest, upQ)
+	u, err := url.Parse(upStr)
+	if err != nil {
+		http.Error(w, "bad upstream url", http.StatusBadGateway)
+		return
+	}
+	port := target.Port()
+	if port == "" {
+		if target.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	dialAddr := net.JoinHostPort(target.Hostname(), port)
+
+	var upConn net.Conn
+	if target.Scheme == "https" {
+		upConn, err = tls.Dial("tcp", dialAddr, &tls.Config{InsecureSkipVerify: true, ServerName: target.Hostname()})
+	} else {
+		upConn, err = net.Dial("tcp", dialAddr)
+	}
+	if err != nil {
+		log.Printf("web-proxy: ws upstream dial %s failed session=%s: %v", dialAddr, sessionID, err)
+		http.Error(w, "ws upstream dial failed", http.StatusBadGateway)
+		return
+	}
+	defer upConn.Close()
+
+	// Build the upgrade request to the appliance, forwarding the client's
+	// Sec-WebSocket-* headers verbatim so the handshake accept value matches.
+	var b strings.Builder
+	b.WriteString("GET " + u.RequestURI() + " HTTP/1.1\r\n")
+	b.WriteString("Host: " + upstreamHost(target) + "\r\n")
+	b.WriteString("Upgrade: websocket\r\n")
+	b.WriteString("Connection: Upgrade\r\n")
+	for _, h := range []string{"Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"} {
+		if v := r.Header.Get(h); v != "" {
+			b.WriteString(h + ": " + v + "\r\n")
+		}
+	}
+	b.WriteString("Origin: " + target.Scheme + "://" + upstreamHost(target) + "\r\n")
+	if ck := buildUpstreamCookieHeader(jar, target, u.Path); ck != "" {
+		b.WriteString("Cookie: " + ck + "\r\n")
+	}
+	b.WriteString("\r\n")
+	if _, err := upConn.Write([]byte(b.String())); err != nil {
+		http.Error(w, "ws upstream write failed", http.StatusBadGateway)
+		return
+	}
+
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "ws not supported", http.StatusInternalServerError)
+		return
+	}
+	clientConn, clientBuf, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer clientConn.Close()
+	log.Printf("web-proxy: ws bridge established session=%s path=%s", sessionID, u.Path)
+
+	// Relay raw bytes both ways. The upstream's 101 response flows to the client
+	// through the upstream→client copy (client connection is raw after hijack).
+	errc := make(chan error, 2)
+	go func() { _, e := io.Copy(upConn, clientBuf); errc <- e }()
+	go func() { _, e := io.Copy(clientConn, upConn); errc <- e }()
+	<-errc
+}
+
+// buildUpstreamCookieHeader assembles a Cookie header from the proxy jar for the
+// appliance host/path.
+func buildUpstreamCookieHeader(jar http.CookieJar, target *url.URL, path string) string {
+	if jar == nil || target == nil {
+		return ""
+	}
+	cookies := collectJarCookies(jar, target, path)
+	if len(cookies) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cookies))
+	for _, c := range cookies {
+		parts = append(parts, c.Name+"="+c.Value)
+	}
+	return strings.Join(parts, "; ")
+}
+
 // loadWebSessionCreds first reads credentials from vault-service (authoritative),
 // then falls back to auth-service session metadata when the vault entry was
 // already deleted but the session row is still active.
@@ -566,6 +669,15 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 			state.assetPrefix = ap
 		}
 		state.mu.Unlock()
+	}
+
+	// WebSocket upgrade: FortiOS NG opens /ws/events (Security Fabric topology,
+	// live widgets) and blocks route activation until it connects. The HTTP
+	// reverse path can't carry an Upgrade, so bridge the raw TCP/TLS stream to
+	// the appliance with the session cookies attached.
+	if isWebSocketUpgrade(r) {
+		proxyWebSocketUpstream(w, r, targetURL, rest, upQ, sessionID, httpClient.Jar)
+		return
 	}
 
 	// FortiGate TACACS: browser form login encrypts the password client-side and
