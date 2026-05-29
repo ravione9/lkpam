@@ -1534,7 +1534,51 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
 	hostsJSON, _ := json.Marshal(hosts)
 	pfxJSON, _ := json.Marshal(pfx)
 	userJSON, _ := json.Marshal(portalUser)
-	return []byte(`<script>(function(){
+	return []byte(`<script>
+// Inject window.fweb_build BEFORE any FortiOS NG script runs. The SPA bootstrap
+// reads results.CONFIG_GUI_PUBLIC_PATH and crashes with login_redirect when the
+// global is missing. We synthesize it here so the SPA always finds it.
+(function(){
+  try{
+    var guiCfg={
+      CONFIG_GUI_PUBLIC_PATH:"/ng/",
+      CONFIG_GUI_NOVUE_PATH:"/ng/",
+      CONFIG_GUI_LEGACY_PATH:"/login/",
+      CONFIG_API_V2_PATH:"/api/v2/",
+      version:"v7.4.0",build:2600,branch:"GA"
+    };
+    var stub={
+      version:"v7.4.0",build:2600,branch:"GA",status:"success",
+      results:guiCfg,
+      CONFIG_GUI_PUBLIC_PATH:"/ng/",
+      CONFIG_GUI_NOVUE_PATH:"/ng/",
+      CONFIG_GUI_LEGACY_PATH:"/login/",
+      CONFIG_API_V2_PATH:"/api/v2/"
+    };
+    if(!window.fweb_build){
+      window.fweb_build=stub;
+    } else {
+      if(!window.fweb_build.results) window.fweb_build.results=guiCfg;
+      else for(var k in guiCfg){if(window.fweb_build.results[k]===undefined) window.fweb_build.results[k]=guiCfg[k];}
+      for(var k2 in guiCfg){if(window.fweb_build[k2]===undefined) window.fweb_build[k2]=guiCfg[k2];}
+    }
+    if(!window.fwebBuild) window.fwebBuild=window.fweb_build;
+    if(!window.CONFIG) window.CONFIG={};
+    for(var k3 in guiCfg){if(window.CONFIG[k3]===undefined) window.CONFIG[k3]=guiCfg[k3];}
+    // Safety net: block uncaught login_redirect calls (FortiOS NG bootstrap uses
+    // it as a generic "I crashed" handler that would navigate the iframe to
+    // /logout?/login? and unauthenticate the proxied session).
+    try{
+      var origLR=window.login_redirect;
+      window.login_redirect=function(reason){
+        console.warn("pam: blocked login_redirect:",reason);
+        if(reason && typeof reason==="object" && reason.stack) console.warn(reason.stack);
+      };
+      if(origLR){window.__pam_origLR=origLR;}
+    }catch(e){}
+  }catch(e){console.warn("pam: fweb_build inject failed",e);}
+})();
+(function(){
 try{
   var pfx=` + string(pfxJSON) + `;
   var hosts=` + string(hostsJSON) + `;
