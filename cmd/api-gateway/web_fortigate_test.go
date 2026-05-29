@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -100,6 +101,25 @@ func TestFortigateResponseIsLoginHTML(t *testing.T) {
 	ng := []byte(`<!doctype html><html><head><base href="/ng/"></head><body><app-root></app-root></body></html>`)
 	if fortigateResponseIsLoginHTML(ng) {
 		t.Fatal("ng shell should not match login HTML")
+	}
+}
+
+func TestFortigateForceSPABaseHref(t *testing.T) {
+	in := []byte(`<html><head><base href="/web/web-1-7/"><title>FortiGate</title></head><body></body></html>`)
+	out := fortigateForceSPABaseHref(in, "web-1-7", "/ng/")
+	if !bytes.Contains(out, []byte(`<base href="/web/web-1-7/ng/"`)) {
+		t.Fatalf("ng base not forced: %s", out)
+	}
+	if bytes.Count(out, []byte("<base")) != 1 {
+		t.Fatalf("expected one base tag: %s", out)
+	}
+	uiOut := fortigateForceSPABaseHref(in, "web-1-7", "/ui/dashboard")
+	if !bytes.Contains(uiOut, []byte(`<base href="/web/web-1-7/ui/"`)) {
+		t.Fatalf("ui base not forced: %s", uiOut)
+	}
+	noBase := fortigateForceSPABaseHref([]byte(`<html><head><title>x</title></head></html>`), "web-1-7", "/ng/")
+	if !bytes.Contains(noBase, []byte(`<base href="/web/web-1-7/ng/">`)) {
+		t.Fatalf("base not injected: %s", noBase)
 	}
 }
 

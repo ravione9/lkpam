@@ -1436,6 +1436,13 @@ func fortigateWriteJarDocument(w http.ResponseWriter, r *http.Request, state *we
 	}
 	syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
 	body = rewriteHTML(body, targetURL, sessionID, portalTok, creds)
+	// The FortiOS NG Angular app is served from /ng/ and its router resolves
+	// routes RELATIVE to <base href>. After rewriteHTML the base becomes
+	// /web/{sid}/ (the root the appliance used), which leaves the current URL
+	// /web/{sid}/ng/ resolving to route "ng/" — a path no FortiOS route matches,
+	// so the router renders an empty <fos-root> with no error. Force the base to
+	// the SPA directory so the route resolves to "" (default dashboard).
+	body = fortigateForceSPABaseHref(body, sessionID, rest)
 	body = injectFortinetLoginAssist(body, creds, sessionID)
 	if mime := mimeForWebPath(rest); mime != "" {
 		w.Header().Set("Content-Type", mime)
@@ -1451,6 +1458,40 @@ func fortigateWriteJarDocument(w http.ResponseWriter, r *http.Request, state *we
 	_, _ = w.Write(body)
 	log.Printf("web-proxy: fortigate served %s from jar (%d bytes) session=%s", rest, len(body), sessionID)
 	return true
+}
+
+var fortiBaseHrefRE = regexp.MustCompile(`(?i)(<base\s+[^>]*href\s*=\s*")([^"]*)(")`)
+
+// fortigateForceSPABaseHref rewrites the <base href="…"> value to the proxied
+// SPA directory (/web/{sid}/ng/ or /web/{sid}/ui/) so the Angular router resolves
+// routes correctly. FortiOS NG routes are rooted at the SPA dir, not the host root.
+func fortigateForceSPABaseHref(body []byte, sessionID, rest string) []byte {
+	dir := "/ng/"
+	p := strings.ToLower(strings.Split(rest, "?")[0])
+	if strings.HasPrefix(p, "/ui/") || p == "/ui" {
+		dir = "/ui/"
+	}
+	want := "/web/" + sessionID + dir
+	if loc := fortiBaseHrefRE.FindSubmatchIndex(body); loc != nil {
+		var out []byte
+		out = append(out, body[:loc[2]]...)
+		out = append(out, []byte(`<base href="`)...)
+		out = append(out, []byte(want)...)
+		out = append(out, []byte(`"`)...)
+		out = append(out, body[loc[7]:]...)
+		return out
+	}
+	// No base tag present — inject one right after <head>.
+	baseTag := []byte(`<base href="` + want + `">`)
+	if i := bytes.Index(bytes.ToLower(body), []byte("<head>")); i >= 0 {
+		insert := i + len("<head>")
+		out := make([]byte, 0, len(body)+len(baseTag))
+		out = append(out, body[:insert]...)
+		out = append(out, baseTag...)
+		out = append(out, body[insert:]...)
+		return out
+	}
+	return body
 }
 
 func injectFortinetLoginAssist(body []byte, creds weblaunch.SessionCreds, sessionID string) []byte {
