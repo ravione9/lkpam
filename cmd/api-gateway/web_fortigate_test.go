@@ -150,11 +150,21 @@ func TestFortigateBuildStubFromStatus(t *testing.T) {
 	if results["version"] != "v7.2.8" {
 		t.Fatalf("results.version=%v", results["version"])
 	}
+	cfg, ok := stub["CONFIG"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("stub missing CONFIG: %v", stub)
+	}
+	if cfg["CONFIG_GUI_PUBLIC_PATH"] != "/ng/" {
+		t.Fatalf("CONFIG.CONFIG_GUI_PUBLIC_PATH=%v", cfg["CONFIG_GUI_PUBLIC_PATH"])
+	}
 }
 
 func TestFortigateStubHasGUIConfig(t *testing.T) {
 	if !fortigateStubHasGUIConfig(fortiBuildManifestStubDefault) {
 		t.Fatal("default stub should be valid")
+	}
+	if !fortigateStubHasGUIConfig([]byte(`{"CONFIG":{"CONFIG_GUI_PUBLIC_PATH":"/ng/"}}`)) {
+		t.Fatal("CONFIG-only stub should be valid")
 	}
 	if fortigateStubHasGUIConfig([]byte(`{"version":"v7.4.0","build":2600}`)) {
 		t.Fatal("flat stub should be invalid")

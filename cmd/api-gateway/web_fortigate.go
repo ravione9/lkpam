@@ -282,7 +282,7 @@ func fortiLoginCredentials(creds weblaunch.SessionCreds) (user, pass string, ok 
 
 // isFortinetPreAuthRequest is true for login-page assets that must stay unauthenticated.
 // fortiBuildManifestStubDefault is used when monitor/system/status is unavailable.
-var fortiBuildManifestStubDefault = []byte(`{"version":"v7.4.0","build":2600,"branch":"GA","status":"success","results":{"CONFIG_GUI_PUBLIC_PATH":"/ng/","CONFIG_GUI_NOVUE_PATH":"/ng/","CONFIG_GUI_LEGACY_PATH":"/login/","CONFIG_API_V2_PATH":"/api/v2/","version":"v7.4.0","build":2600,"branch":"GA"}}`)
+var fortiBuildManifestStubDefault = []byte(`{"version":"v7.4.0","build":2600,"branch":"GA","status":"success","CONFIG":{"CONFIG_GUI_PUBLIC_PATH":"/ng/","CONFIG_GUI_NOVUE_PATH":"/ng/","CONFIG_GUI_LEGACY_PATH":"/login/","CONFIG_API_V2_PATH":"/api/v2/","version":"v7.4.0","build":2600,"branch":"GA"},"results":{"CONFIG_GUI_PUBLIC_PATH":"/ng/","CONFIG_GUI_NOVUE_PATH":"/ng/","CONFIG_GUI_LEGACY_PATH":"/login/","CONFIG_API_V2_PATH":"/api/v2/","version":"v7.4.0","build":2600,"branch":"GA"}}`)
 
 // isFortiBuildManifestPath matches /api/v2/static/fweb_build.json (with optional query/vdom).
 func isFortiBuildManifestPath(rest string) bool {
@@ -315,11 +315,14 @@ func fortigateStubHasGUIConfig(body []byte) bool {
 	if json.Unmarshal(body, &meta) != nil {
 		return false
 	}
-	results, ok := meta["results"].(map[string]interface{})
-	if !ok || results == nil {
-		return false
+	cfg, ok := meta["CONFIG"].(map[string]interface{})
+	if !ok || cfg == nil {
+		cfg, ok = meta["results"].(map[string]interface{})
+		if !ok || cfg == nil {
+			return false
+		}
 	}
-	v, ok := results["CONFIG_GUI_PUBLIC_PATH"].(string)
+	v, ok := cfg["CONFIG_GUI_PUBLIC_PATH"].(string)
 	return ok && strings.TrimSpace(v) != ""
 }
 
@@ -651,6 +654,7 @@ func fortigateBuildStubFromStatus(meta map[string]interface{}) ([]byte, error) {
 		"build":   buildNum,
 		"branch":  branch,
 		"status":  "success",
+		"CONFIG":  results,
 		"results": results,
 	}
 	return json.Marshal(stub)
@@ -1522,6 +1526,8 @@ func fortinetTailGuardScript() []byte {
     var existing;
     try{existing=window.fweb_build;}catch(e){}
     var base=(existing&&typeof existing==="object")?existing:{};
+    if(!base.CONFIG||typeof base.CONFIG!=="object") base.CONFIG={};
+    for(var kcfg in guiCfg){if(base.CONFIG[kcfg]===undefined) base.CONFIG[kcfg]=guiCfg[kcfg];}
     if(!base.results||typeof base.results!=="object") base.results={};
     for(var k in guiCfg){if(base.results[k]===undefined) base.results[k]=guiCfg[k];}
     for(var k2 in guiCfg){if(base[k2]===undefined) base[k2]=guiCfg[k2];}
@@ -1622,6 +1628,7 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
     };
     var stub={
       version:"v7.4.0",build:2600,branch:"GA",status:"success",
+      CONFIG:guiCfg,
       results:guiCfg,
       CONFIG_GUI_PUBLIC_PATH:"/ng/",
       CONFIG_GUI_NOVUE_PATH:"/ng/",
@@ -1634,6 +1641,8 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
     var _fweb=stub;
     function mergeFweb(v){
       if(!v||typeof v!=="object")return;
+      if(!v.CONFIG||typeof v.CONFIG!=="object") v.CONFIG=guiCfg;
+      else for(var kc in guiCfg){if(v.CONFIG[kc]===undefined) v.CONFIG[kc]=guiCfg[kc];}
       if(!v.results) v.results=guiCfg;
       else for(var k in guiCfg){if(v.results[k]===undefined) v.results[k]=guiCfg[k];}
       for(var k2 in guiCfg){if(v[k2]===undefined) v[k2]=guiCfg[k2];}
