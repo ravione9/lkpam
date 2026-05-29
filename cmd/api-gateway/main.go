@@ -613,12 +613,22 @@ func webConsoleProxy(w http.ResponseWriter, r *http.Request, authBase, vaultBase
 		}
 	}
 
-	// FortiGate: server-side login before authenticated SPA/API paths (TACACS uses portal creds).
-	if isFortinetSession(creds, state) && !isFortinetPreAuthRequest(rest) {
+	// FortiGate: server-side login before authenticated SPA/API paths.
+	// /ng/lang/*.json looks like a static asset, but it is loaded after auth and
+	// returns 401 when only browser cookies are present. Treat all /ng/* and /ui/*
+	// paths as post-auth traffic even when they match isPublicWebAsset.
+	needFortiAuth := !isFortinetPreAuthRequest(rest) || isFortinetSPAEntryPath(rest)
+	if isFortinetSession(creds, state) && needFortiAuth {
 		state.mu.Lock()
 		needLogin := !state.fortiLoginDone
 		assetPrefix := state.assetPrefix
 		state.mu.Unlock()
+		if !needLogin && !fortigateHasSessionCookies(httpClient.Jar, targetURL) {
+			needLogin = true
+			state.mu.Lock()
+			state.fortiLoginDone = false
+			state.mu.Unlock()
+		}
 		if needLogin {
 			if ensureFortiGateAuthenticated(r.Context(), httpClient, targetURL, creds, state, assetPrefix) {
 				syncUpstreamCookiesToBrowser(w, httpClient.Jar, targetURL, sessionID)
