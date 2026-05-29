@@ -1576,6 +1576,7 @@ func fortinetProxyBridgeScript(sessionID, portalUser string, target *url.URL) []
       };
       if(origLR){window.__pam_origLR=origLR;}
     }catch(e){}
+    console.info("pam: fweb_build inject ok",window.fweb_build.results.CONFIG_GUI_PUBLIC_PATH);
   }catch(e){console.warn("pam: fweb_build inject failed",e);}
 })();
 (function(){
@@ -1686,6 +1687,16 @@ try{
       if(m){var nu=fix(m[1].trim());metas[i].setAttribute("content",c.replace(m[1],nu));}
     }
   }catch(e){}
+  // Reload guard: each navigation may only happen ONCE per iframe load.
+  // Without this the bridge re-fires every 400ms+1500ms after a page that
+  // already happens to match its selectors, causing /ng/ to reload forever.
+  window.__pam_navOnce=window.__pam_navOnce||{};
+  function navOnce(key,url,why){
+    if(window.__pam_navOnce[key])return;
+    window.__pam_navOnce[key]=true;
+    console.warn("pam: navigating",key,why||"",url);
+    location.replace(url);
+  }
   function maybeLeaveLogin(){
     var p=location.pathname||"";
     if(p.indexOf("/ng/")>=0)return;
@@ -1693,18 +1704,25 @@ try{
       .then(function(r){
         if(!r.ok)return;
         var qs=location.search||"";
-        location.replace(pfx+"/ng/"+qs);
+        navOnce("leaveLogin",pfx+"/ng/"+qs,"on login, session active");
       }).catch(function(){});
   }
   function maybeRecoverNG(){
     var p=location.pathname||"";
     if(p.indexOf("/ng/")<0)return;
+    // Already on /ng/. ONLY redirect if the upstream returned the bare login form
+    // (i.e. session died mid-flight). Visible-input test avoids reloading just
+    // because the SPA renders a username field for an existing UI dialog.
+    if(window.__pam_recoverFired)return;
+    window.__pam_recoverFired=true;
     fetch(pfx+"/api/v2/monitor/web-ui/extend-session",{credentials:"same-origin"})
       .then(function(r){
         if(!r.ok)return;
-        var el=document.querySelector("input[name=username],input[name=ajax_username],#username,.login-page,.login-container");
+        var el=document.querySelector(".login-container, .login-page, form[action*='logincheck']");
         if(!el)return;
-        location.replace(pfx+"/ng/"+(location.search||""));
+        // Don't reload if we're already past the redir param (avoid loop)
+        if((location.search||"").indexOf("redir=")>=0)return;
+        navOnce("recoverNG",pfx+"/ng/"+(location.search||""),"login form on /ng/");
       }).catch(function(){});
   }
   function cleanRedirLoop(){
@@ -1719,12 +1737,10 @@ try{
   }
   cleanRedirLoop();
   document.addEventListener("DOMContentLoaded",cleanRedirLoop);
+  // Run the recovery probes only on initial load — the navOnce guard already
+  // prevents repeat navigation, but extra timers wasted bandwidth.
   maybeLeaveLogin();
-  maybeRecoverNG();
   document.addEventListener("DOMContentLoaded",function(){maybeLeaveLogin();maybeRecoverNG();});
-  setTimeout(maybeLeaveLogin,400);
-  setTimeout(maybeRecoverNG,400);
-  setTimeout(maybeLeaveLogin,1500);
   setTimeout(maybeRecoverNG,1500);
   // Pre-fill portal username only. Do NOT set the password field — FortiOS
   // login.js encrypts the password on submit and breaks when .value is set
